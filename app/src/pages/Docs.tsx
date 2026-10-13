@@ -1,0 +1,455 @@
+import { useEffect, type ReactNode } from "react";
+import {
+  EMERGENCY_DELAY_SECS,
+  EVICTION_PREMIUM_PERCENT,
+  FEATURE_CONTACT,
+  FREE_UPLOAD_TOTAL_BYTES,
+  MAX_BIDS,
+  MAX_COLLECTION_SIZE,
+  MAX_IMAGE_BYTES,
+  MAX_ITEMS,
+  MAX_NFTS_PER_CLAIM,
+  MAX_ORIGINAL_BYTES,
+  MAX_ROYALTY_BPS,
+  MAX_UPLOADED_ITEMS,
+  NFT_MINT_COST_LAMPORTS,
+  REVEAL_DELAY_SECS,
+} from "../config";
+import { useLoader } from "../components/ui";
+import { fetchFeeConfig, formatPercent } from "../lib/chain";
+import { formatCount, formatSol } from "../lib/format";
+import { formatKb, formatMb } from "../lib/images";
+
+/** Hard caps compiled into the program; no admin can charge more. */
+const MAX_LISTING_FEE_LAMPORTS = 500_000_000n;
+const MAX_SALE_FEE_BPS = 500;
+
+export const DOC_SECTIONS: [string, string][] = [
+  ["how", "How an auction works"],
+  ["bidding", "Bidding"],
+  ["price", "The clearing price"],
+  ["launch", "Drops and collections"],
+  ["nfts", "NFT collections"],
+  ["fees", "Fees"],
+  ["privacy", "What stays private"],
+  ["safety", "If settlement stalls"],
+  ["featured", "Getting featured"],
+];
+
+function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+  return (
+    <section className="doc" id={id} aria-labelledby={`${id}-title`}>
+      <h2 id={`${id}-title`} className="doc__title">
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+export function Docs({ section }: { section: string }) {
+  const fees = useLoader(fetchFeeConfig, []);
+  const listingFee = fees.data ? (fees.data.listingFee > 0n ? `${formatSol(fees.data.listingFee)} SOL` : "free") : "…";
+  const saleFee = fees.data ? formatPercent(fees.data.saleFeeBps) : "…";
+  const days = EMERGENCY_DELAY_SECS / 86_400;
+  const revealDays = REVEAL_DELAY_SECS / 86_400;
+
+  useEffect(() => {
+    if (section) document.getElementById(section)?.scrollIntoView({ block: "start" });
+  }, [section]);
+
+  return (
+    <main className="page docs">
+      <header className="docs__head">
+        <h1 className="page__title">How Veiling works</h1>
+        <p className="page__lede">
+          Veiling sells tokens and NFT collections through sealed bids and a single clearing price. This page
+          explains what happens to your bid, your deposit and your sale, and what everyone else can see.
+        </p>
+      </header>
+      <div className="docs__layout">
+        <nav className="docs__nav" aria-label="On this page">
+          <ul>
+            {DOC_SECTIONS.map(([id, title]) => (
+              <li key={id}>
+                <a href={`#/docs/${id}`} aria-current={section === id ? "true" : undefined}>
+                  {title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <div className="docs__body">
+          <Section id="how" title="How an auction works">
+            <ol className="timeline">
+              <li>
+                <h3>The seller opens it</h3>
+                <p>
+                  A token sale puts the tokens in escrow; a collection sale creates the collection. The seller sets
+                  how much is for sale, a minimum price and, for a token, the smallest budget a bid may bring, or for
+                  a collection, the most NFTs one bid may ask for.
+                </p>
+              </li>
+              <li>
+                <h3>Buyers place sealed bids</h3>
+                <p>
+                  A token bid is a SOL budget and the most it would pay per token. A collection bid is a number of
+                  NFTs and the most it would pay for each. The price is encrypted in the buyer's browser; the SOL
+                  goes into the bid as its deposit.
+                </p>
+              </li>
+              <li>
+                <h3>The bids are checked in private</h3>
+                <p>
+                  After bidding closes, Arcium's network checks each bid against the terms and its deposit, four
+                  at a time. No single machine ever sees a bid.
+                </p>
+              </li>
+              <li>
+                <h3>The clearing price is revealed</h3>
+                <p>
+                  The highest price at which the bids cover the supply. Only that price and the demand at and above
+                  it are revealed.
+                </p>
+              </li>
+              <li>
+                <h3>Each bid is settled</h3>
+                <p>
+                  Every winner pays the clearing price. Payments move to the auction; the rest of each deposit waits
+                  for its owner.
+                </p>
+              </li>
+              <li>
+                <h3>Everyone collects</h3>
+                <p>
+                  Winners receive their tokens or NFTs and every bidder gets the unused part of their deposit back.
+                  The seller claims the proceeds, then closes the auction to get its rent back.
+                </p>
+              </li>
+            </ol>
+            <p className="doc__note">
+              Anyone can take any of the settlement steps for anyone else. Funds and tokens only ever go to their
+              owner, so nobody depends on the seller or the platform to finish an auction.
+            </p>
+          </Section>
+
+          <Section id="bidding" title="Bidding">
+            <p>
+              Set the most you would really pay. Every winner pays the clearing price, which is never above their
+              own, so bidding your true limit is the simple strategy.
+            </p>
+            <dl className="doc__list">
+              <div>
+                <dt>Tokens</dt>
+                <dd>
+                  Deposit the SOL you want to spend and set your highest price per token. If you win above the
+                  clearing price, your whole budget buys tokens at that price, so the lower it ends, the more you
+                  get. The budget is public; the price is not.
+                </dd>
+              </div>
+              <div>
+                <dt>NFTs</dt>
+                <dd>
+                  Choose how many NFTs, up to the auction's limit per bid, and your highest price for each. The
+                  deposit must cover both.
+                </dd>
+              </div>
+            </dl>
+            <p>A collection bid's deposit can be set three ways:</p>
+            <dl className="doc__list">
+              <div>
+                <dt>Private</dt>
+                <dd>Rounds the size and the price up, to 1, 2, 5, 10 and so on. It shows neither exactly.</dd>
+              </div>
+              <div>
+                <dt>Exact</dt>
+                <dd>Exactly price × NFTs. Cheapest to lock up, but anyone can work out your bid from it.</dd>
+              </div>
+              <div>
+                <dt>Custom</dt>
+                <dd>Any amount above the cost. The further it is from price × NFTs, the less it reveals.</dd>
+              </div>
+            </dl>
+            <p>
+              Bids cannot be changed or withdrawn. An auction holds up to {MAX_BIDS} bids; after that, a new bid
+              can replace the one with the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more,
+              and the replaced bid gets its whole deposit back.
+            </p>
+          </Section>
+
+          <Section id="price" title="The clearing price">
+            <p>
+              Bids are lined up from the highest price down. The clearing price is the highest price at which the
+              bids at or above it cover everything for sale: for tokens, what their budgets buy at that price; for
+              NFTs, how many they ask for.
+            </p>
+            <ul className="doc__bullets">
+              <li>
+                Bids above the clearing price win. A token bid spends its whole budget at that price; a collection
+                bid gets every NFT it asked for.
+              </li>
+              <li>
+                Bids exactly at the clearing price share what is left: token bids by budget, collection bids by
+                size. Shares are rounded down. Tokens lost to rounding go back to the seller; NFTs lost to rounding
+                go to the earliest of those bids, one each, so every NFT is sold. Three NFTs and four bids of one
+                each at that price: the first three bids win.
+              </li>
+              <li>Bids below it win nothing and get their whole deposit back.</li>
+              <li>
+                If the bids never cover the supply, every valid bid wins at the minimum price, and what is left goes
+                back to the seller.
+              </li>
+            </ul>
+            <p>
+              A bid below the minimum price counts as no bid, and so does a collection bid that asks for too many
+              NFTs or whose deposit does not cover them. It is refunded in full.
+            </p>
+          </Section>
+
+          <Section id="launch" title="Drops and collections">
+            <p>
+              NFTs can be launched two ways, as on OpenSea. Either way they sell through the same sealed auction:
+              buyers bid for a number of NFTs, everyone who wins pays one price, and which NFTs each winner gets is
+              drawn at random after the sale.
+            </p>
+            <dl className="doc__list">
+              <div>
+                <dt>Drop</dt>
+                <dd>
+                  A whole collection at once. Upload one image per NFT, up to {formatCount(MAX_UPLOADED_ITEMS)}, or one
+                  image every NFT shares, or link to metadata you host. A metadata sheet can give every NFT its own
+                  name, description, link and traits. The art can stay hidden until the sale ends.
+                </dd>
+              </div>
+              <div>
+                <dt>Collection</dt>
+                <dd>
+                  Built item by item, up to {formatCount(MAX_ITEMS)} items. Each item has its own image, name,
+                  description, link and traits, and a number of editions: an item with three editions is three NFTs,
+                  named Name #1 to Name #3; an item with one is named just Name.
+                </dd>
+              </div>
+            </dl>
+            <h3 className="doc__subtitle">The metadata sheet</h3>
+            <p>
+              A CSV file in the format OpenSea uses for drops, one row per NFT. Every column is optional, and
+              spreadsheets saved with semicolons work too. The launch page offers a template with your files already
+              listed.
+            </p>
+            <table className="doc__table">
+              <thead>
+                <tr>
+                  <th scope="col">Column</th>
+                  <th scope="col">What it holds</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">tokenID</th>
+                  <td>The NFT's number, from 1 (or from 0) with none missing. Without it, rows are numbered in order.</td>
+                </tr>
+                <tr>
+                  <th scope="row">name</th>
+                  <td>
+                    The NFT's name, up to 24 bytes, for drops of up to {formatCount(MAX_ITEMS)} NFTs. Leave it empty to
+                    name them Name #1, Name #2 and so on.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">description</th>
+                  <td>The NFT's own description; without one, the collection's.</td>
+                </tr>
+                <tr>
+                  <th scope="row">file_name</th>
+                  <td>Which of the chosen images the NFT shows. Without it, images go in file-name order.</td>
+                </tr>
+                <tr>
+                  <th scope="row">external_url</th>
+                  <td>A link to the NFT's page on your site (https).</td>
+                </tr>
+                <tr>
+                  <th scope="row">attributes[Trait]</th>
+                  <td>One column per trait, such as attributes[Background]; an empty cell leaves the trait out.</td>
+                </tr>
+              </tbody>
+            </table>
+            <h3 className="doc__subtitle">Hidden art</h3>
+            <ul className="doc__bullets">
+              <li>
+                A drop can keep its art hidden until bidding ends, as OpenSea's drops do before their reveal. Bidders
+                see the collection's name, logo, description and a preview image.
+              </li>
+              <li>
+                The link to the art is fixed on chain when the auction opens, so the seller cannot swap the art after
+                seeing the bids. Art uploaded here is signed at launch and stored encrypted, under a key that only the
+                seller's wallet can make again; the reveal publishes exactly those files at that link. Art the seller
+                hosts must be online at that link when they reveal.
+              </li>
+              <li>
+                The seller has {revealDays} days after bidding ends to reveal. Until then no NFT can be minted and the
+                seller is not paid. If they do not reveal in time, every winner takes their payment back and no NFT
+                is ever minted.
+              </li>
+              <li>
+                Hidden art is stored twice, sealed at launch and in the open at the reveal, so it costs about twice
+                as much to store. Hidden drops are numbered rather than named, as names would show before the
+                reveal.
+              </li>
+            </ul>
+          </Section>
+
+          <Section id="nfts" title="NFT collections">
+            <p>
+              A collection sale creates a new Metaplex Core collection when the auction opens, of up to{" "}
+              {formatCount(MAX_COLLECTION_SIZE)} NFTs. While the sale runs, only the auction can add NFTs to it.
+            </p>
+            <ul className="doc__bullets">
+              <li>
+                NFTs are minted only when a winner collects them, straight to the winner. NFTs nobody wins are never
+                minted.
+              </li>
+              <li>
+                The NFTs are Name #1, Name #2 and so on, or named per item: a collection's item list, stored with its
+                auction, gives every NFT its item's name and edition. With one metadata file per NFT, #1 shows the
+                first (0.json in the folder), #2 the second.
+              </li>
+              <li>
+                Which NFTs each winner gets is random. As each winning bid settles it takes the next places in line,
+                one per NFT it won. Once every bid is settled, Arcium's network draws a random seed together, so no
+                single node picks it, and the seed shuffles places into NFT numbers. Nobody knows the seed while
+                places are handed out, so nobody can pick an NFT, not even by timing their bid or their claim. If the
+                draw has still not happened when the safety net opens, each place keeps its own number so winners
+                can always collect.
+              </li>
+              <li>
+                Sellers can upload the art when they launch: a collection image, and one image for every NFT or one
+                per NFT. The app stores the images and their metadata on Arweave through ArDrive Turbo, where they
+                are public and permanent. Sellers pick how: compressed, with each image made{" "}
+                {formatKb(MAX_IMAGE_BYTES)} or smaller, which is free up to {formatMb(FREE_UPLOAD_TOTAL_BYTES)} in all;
+                or their original files, up to {formatMb(MAX_ORIGINAL_BYTES)} each. Either way, hidden details such as
+                where a photo was taken are removed first.
+              </li>
+              <li>
+                Storage beyond the free allowance is paid by the seller, once, in SOL, before the auction opens; the
+                price comes from Turbo when they launch, and bidders never pay for storage. The seller's wallet signs
+                a message that makes their upload key, then sends the SOL to Turbo's address with a note crediting
+                that key. The key can only upload and spend that credit, and credit left over stays for the seller's
+                next upload.
+              </li>
+              <li>
+                Minting costs about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT in rent and Metaplex fees,
+                paid by whoever collects. Up to {MAX_NFTS_PER_CLAIM} NFTs are minted per transaction.
+              </li>
+              <li>
+                A seller can add a royalty of up to {MAX_ROYALTY_BPS / 100}% on resales, paid to them by
+                marketplaces that honour it.
+              </li>
+              <li>
+                When the sale is closed, the seller becomes the collection's update authority. Like any creator,
+                they can then change the collection's and its NFTs' metadata.
+              </li>
+            </ul>
+          </Section>
+
+          <Section id="fees" title="Fees">
+            <table className="doc__table">
+              <thead>
+                <tr>
+                  <th scope="col">Fee</th>
+                  <th scope="col">Now</th>
+                  <th scope="col">Who pays, and when</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Listing</th>
+                  <td>{listingFee}</td>
+                  <td>The seller, when the auction opens. Not refunded if the auction is cancelled.</td>
+                </tr>
+                <tr>
+                  <th scope="row">Sale</th>
+                  <td>{saleFee} of the proceeds</td>
+                  <td>The seller, out of the proceeds when claiming them. Buyers pay nothing extra.</td>
+                </tr>
+                <tr>
+                  <th scope="row">NFT minting</th>
+                  <td>about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL each</td>
+                  <td>Whoever collects the NFT. This is rent and Metaplex's fee, not a platform fee.</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              The program caps the platform's fees at {formatSol(MAX_LISTING_FEE_LAMPORTS)} SOL to list and{" "}
+              {formatPercent(MAX_SALE_FEE_BPS)} of a sale. A seller opens an auction only at the fees shown when
+              signing, and each auction keeps the sale fee it opened with. Account rent for the auction and every
+              bid comes back when they are closed.
+            </p>
+          </Section>
+
+          <Section id="privacy" title="What stays private">
+            <table className="doc__table">
+              <thead>
+                <tr>
+                  <th scope="col">Public</th>
+                  <th scope="col">Private</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>How many bids there are, each deposit and the total deposited</td>
+                  <td>The price of every bid, winning or not</td>
+                </tr>
+                <tr>
+                  <td>The clearing price and the demand at and above it</td>
+                  <td>The size of every losing collection bid</td>
+                </tr>
+                <tr>
+                  <td>What each winner received and paid</td>
+                  <td>Every bid while the bids are checked</td>
+                </tr>
+                <tr>
+                  <td>A hidden drop's details, and the link its art will be at</td>
+                  <td>A hidden drop's art, until its seller reveals it</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              A token bid's budget is its deposit, so it is public; its price never is. Veiling shows only the total
+              deposited and never lists who bid. Solana itself is public, though: each deposit and the wallet that
+              made it can be read from the chain by anyone who looks. Bids exactly at the clearing price are known to
+              be at it once settled.
+            </p>
+          </Section>
+
+          <Section id="safety" title="If settlement stalls">
+            <p>
+              If Arcium's network stops answering, nothing stays locked. {days} days after bidding ends, anyone
+              can return an unsettled bid's whole deposit to its owner, and the seller can take back the tokens and
+              any proceeds already paid. Settled bids can always be collected.
+            </p>
+            <p>
+              A hidden drop that its seller does not reveal within {revealDays} days of the end of bidding pays
+              every winner back in full instead of minting anything; anyone can send those refunds.
+            </p>
+          </Section>
+
+          <Section id="featured" title="Getting featured">
+            <p>
+              Featured auctions are shown first and on the front page. They are picked by hand: send{" "}
+              <a href={FEATURE_CONTACT.href} target="_blank" rel="noreferrer noopener">
+                {FEATURE_CONTACT.label}
+              </a>{" "}
+              a direct message on X with your auction's link. Featuring changes only where an auction is listed,
+              never its terms or funds.
+            </p>
+          </Section>
+
+          <p className="doc__fine">
+            Like any software, Veiling's program and circuits may contain bugs. Bid only what you can afford to
+            lose.
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+}

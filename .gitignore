@@ -1,0 +1,33 @@
+.anchor
+.DS_Store
+target
+**/*.rs.bk
+node_modules
+test-ledger
+.yarn
+.surfpool
+encrypted-ixs/arcis_temp_target
+build
+encrypted-ixs/src/main.rs
+artifacts/
+
+# Never commit secrets or keypairs
+.env
+.env.*
+*keypair*.json
+id.json
+devnet-test.json
+circuits-upload/
+
+# Local logs (deploy output can include one-time buffer recovery phrases)
+*.log
+.circuit-backup/
+
+# Copies of compiled circuits for manual upload
+circuits-for-upload/
+_to_delete/
+
+# Third-party program binaries dumped for tests
+tests/svm/fixtures/
+# Local copies of a previous deployment
+.deploy-backup/

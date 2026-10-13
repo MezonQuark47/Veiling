@@ -1,0 +1,40 @@
+[package]
+name = "sealed_auction"
+version = "0.1.0"
+description = "Sealed-bid uniform-price auctions for SPL tokens, with bids kept private by Arcium MPC"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "sealed_auction"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "arcium-anchor/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
+anchor-spl = { version = "1.0.2" }
+arcium-client = { default-features = false, version = "=0.15.0" }
+arcium-macros = "=0.15.0"
+arcium-anchor = "=0.15.0"
+# Required by Anchor's zero-copy accounts (`BidBook`).
+bytemuck = { version = "1.25.2", features = ["derive", "min_const_generics"] }
+# Curve25519 syscalls for the x25519 key check. The feature acknowledges that
+# the crate's Rust interface may change between major versions; the syscalls
+# themselves are part of the runtime.
+solana-curve25519 = { version = "3.1.14", features = ["agave-unstable-api"] }
+solana-sha256-hasher = "3.1.0"
+
+[dev-dependencies]
+curve25519-dalek = "4.1.3"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
