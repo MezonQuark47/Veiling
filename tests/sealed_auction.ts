@@ -916,6 +916,19 @@ describe("sealed_auction", () => {
         .rpc({ commitment: "confirmed" });
     }
     fees = await program.account.feeConfig.fetch(feeConfigPda);
+    // Crank rewards: auctions cannot open before they are set.
+    const crankConfigPda = PublicKey.findProgramAddressSync([Buffer.from("crank")], program.programId)[0];
+    if (!(await connection.getAccountInfo(crankConfigPda))) {
+      await program.methods
+        .setCrankRewards({
+          checkBatch: new BN(6_000_000),
+          clearing: new BN(25_000_000),
+          settlement: new BN(4_000_000),
+          seedDraw: new BN(3_000_000),
+        })
+        .accountsPartial({ admin: admin.publicKey, config: configPda, crankConfig: crankConfigPda })
+        .rpc({ commitment: "confirmed" });
+    }
     console.log(
       `    Fees: ${fees.listingFee.toNumber() / LAMPORTS_PER_SOL} SOL to open, ` +
         `${fees.saleFeeBps / 100}% of sales, to ${fees.treasury.toBase58()}`

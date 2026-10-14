@@ -53,6 +53,8 @@ import {
   saleFee,
   sharesAreFinal,
   ticksOf,
+  bidCrankFee,
+  priceOf,
 } from "../lib/chain";
 import { type ItemEntry, itemStart } from "../lib/items";
 import { type RevealStep, revealArt } from "../lib/reveal";
@@ -71,6 +73,7 @@ import {
   buildSetListing,
   buildSettleBid,
   findEviction,
+  buildIncreaseBid,
 } from "../lib/actions";
 import { closeNoteInstruction, hasChainNote, noteForNewBid } from "../lib/bidNotes";
 import { forgetClosedBids, forgetNote, noteSize, readNote, saveNote } from "../lib/notes";
@@ -316,11 +319,13 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
           <dt>Deposit now</dt>
           <dd>{formatSol(deposit)} SOL</dd>
         </div>
+        <SettlementFee auction={auction} />
       </dl>
       <p className="hint">
         Every winner pays the same clearing price, never more than their own. A bid above it spends its whole budget
         at that price, so the lower the price, the more {asset.goods} you get. A bid exactly at it shares what is
-        left. Whatever is not spent comes back, and bids cannot be changed or withdrawn.
+        left. Whatever is not spent comes back. Until bidding closes you can raise your bid, but never lower or
+        withdraw it.
       </p>
       <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !valid}>
         {signer ? "Seal and place bid" : "Connect a wallet to bid"}
@@ -328,6 +333,148 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
       {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
+  );
+}
+
+/**
+ * Who pays for the private steps: anyone can run them, and each pays its
+ * runner from the auction's settlement fund once Arcium finishes it.
+ */
+function CrankNote({ auction }: { auction: Auction }) {
+  const r = auction.crankRewards;
+  const active = auction.status === "open" || auction.status === "settling";
+  if (!active || auction.bidCount === 0 || r.checkBatch + r.clearing + r.settlement + r.seedDraw === 0n) return null;
+  const parts = [
+    `${formatSol(r.checkBatch)} SOL per check of ${BATCH_SIZE} bids`,
+    `${formatSol(r.clearing)} SOL for the price`,
+    `${formatSol(r.settlement)} SOL per bid settled`,
+    ...(auction.kind === "collection" ? [`${formatSol(r.seedDraw)} SOL for the shuffle`] : []),
+  ];
+  return (
+    <p className="muted">
+      Anyone can take the steps below. Each one pays whoever runs it from this auction's settlement fund when Arcium
+      finishes it, to cover its network fee: {parts.join(", ")}. {formatSol(auction.crankPool)} SOL is left in the fund;
+      what is not used goes back to the seller.
+    </p>
+  );
+}
+
+/** The bid's share of the settlement fund, if this auction has one. */
+function SettlementFee({ auction }: { auction: Auction }) {
+  const fee = bidCrankFee(auction.crankRewards);
+  if (fee === 0n) return null;
+  return (
+    <div title="Paid to whoever runs the private steps that check and settle the bids. Not refunded.">
+      <dt>Settlement fee</dt>
+      <dd>{formatSol(fee)} SOL</dd>
+    </div>
+  );
+}
+
+/**
+ * Raises an open bid: a new, higher price and size, sealed again, and more
+ * deposit if the new bid needs it. The program only makes sure the deposit
+ * never shrinks, so the form checks that the bid only goes up.
+ */
+function RaiseBid({
+  auction,
+  asset,
+  bid,
+  onDone,
+}: {
+  auction: Auction;
+  asset: AssetInfo;
+  bid: Bid;
+  onDone: () => void;
+}) {
+  const { signer } = useWallet();
+  const action = useAction();
+  const note = readNote(bid.address);
+  const token = auction.kind === "token";
+  const oldTicks = note ? BigInt(note.price) : null;
+  const oldSize = note ? (noteSize(note) > 0n ? noteSize(note) : token ? bid.deposit : 0n) : null;
+  const shownPrice = (ticks: bigint) => {
+    const p = priceOf(auction, ticks, asset.decimals);
+    return p ? formatDecimal(p).replace(/,/g, "") : "";
+  };
+  const [priceInput, setPriceInput] = useState(() => (oldTicks ? shownPrice(oldTicks) : ""));
+  const [sizeInput, setSizeInput] = useState(() =>
+    oldSize === null ? "" : token ? formatSol(oldSize, 9).replace(/,/g, "") : oldSize.toString()
+  );
+  const price = usePriceInput(auction, asset, priceInput);
+  const size = token ? parseSol(sizeInput) : /^\d+$/.test(sizeInput) ? BigInt(sizeInput) : null;
+  const sizeOk =
+    size !== null && (token ? size >= auction.minDeposit : size >= 1n && size <= BigInt(auction.maxPerBid));
+  const notLower =
+    oldTicks === null || oldSize === null || (price.ticks !== null && size !== null && price.ticks >= oldTicks && size >= oldSize);
+  const raised =
+    oldTicks === null || oldSize === null || (price.ticks !== null && size !== null && (price.ticks > oldTicks || size > oldSize));
+  // What the new bid needs covered, rounded up the private way, and never
+  // less than what is already deposited.
+  const needed = !price.ticks || !size ? 0n : token ? size : size * price.ticks * auction.priceScale;
+  const rounded = !price.ticks || !size ? 0n : token ? niceCeil(size) : niceCeil(size) * niceCeil(price.ticks) * auction.priceScale;
+  const deposit = rounded > bid.deposit ? rounded : bid.deposit;
+  const extra = deposit - bid.deposit;
+  const valid = Boolean(price.ticks) && sizeOk && notLower && raised && deposit >= needed;
+
+  const raise = () =>
+    action.run("raise", async () => {
+      if (!signer || !price.ticks || size === null) throw new Error("Connect a wallet first");
+      const tx = await buildIncreaseBid(signer.publicKey, auction, bid, price.ticks, size, extra);
+      const save = await noteForNewBid(signer, bid.address, price.ticks, size);
+      if (save) tx.add(save);
+      const sig = await sendTransaction(tx, signer);
+      saveNote(bid.address, auction.address, price.ticks, size);
+      onDone();
+      return (
+        <>
+          Bid raised and sealed again{extra > 0n ? `, with ${formatSol(extra)} SOL more deposit` : ""}.{" "}
+          <TxLink signature={sig} />
+        </>
+      );
+    });
+
+  return (
+    <div className="raise">
+      <div className="field">
+        <label htmlFor={`raise-price-${bid.index}`}>Most you would pay per {asset.unit} (SOL)</label>
+        <input
+          id={`raise-price-${bid.index}`}
+          inputMode="decimal"
+          value={priceInput}
+          onChange={(e) => setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))}
+          aria-invalid={priceInput !== "" && !price.ticks}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor={`raise-size-${bid.index}`}>{token ? "Budget (SOL)" : "NFTs"}</label>
+        <input
+          id={`raise-size-${bid.index}`}
+          className={token ? undefined : "field__short"}
+          inputMode={token ? "decimal" : "numeric"}
+          value={sizeInput}
+          onChange={(e) => setSizeInput(e.target.value.replace(token ? /[^0-9.]/g : /[^0-9]/g, ""))}
+          aria-invalid={sizeInput !== "" && !sizeOk}
+        />
+      </div>
+      <p className={`hint${notLower ? "" : " hint--error"}`}>
+        {oldTicks === null || oldSize === null
+          ? "This browser has no note of the bid, so check that the new one is not lower: it replaces the old one."
+          : notLower
+            ? "A bid can only go up. The new one replaces the old one, sealed again."
+            : "The price and size can only go up."}{" "}
+        {valid
+          ? extra > 0n
+            ? `Adds ${formatSol(extra)} SOL to your deposit, ${formatSol(deposit)} SOL in all, rounded up so it does not show the bid.`
+            : "Your deposit already covers it."
+          : ""}
+      </p>
+      <Button variant="primary" onClick={raise} busy={action.busy === "raise"} disabled={!signer || !valid}>
+        Raise the bid
+      </Button>
+      {action.error ? <Notice tone="error">{action.error}</Notice> : null}
+      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
+    </div>
   );
 }
 
@@ -467,10 +614,11 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
           <dt>Deposit now</dt>
           <dd>{formatSol(deposit)} SOL</dd>
         </div>
+        <SettlementFee auction={auction} />
       </dl>
       <p className="hint">
         Winners pay the clearing price for each NFT, never more than their own. Bids at exactly that price share
-        what is left. Bids cannot be changed or withdrawn, so bid only what you mean.
+        what is left. Until bidding closes you can raise your bid, but never lower or withdraw it.
       </p>
       <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !valid}>
         {signer ? "Seal and place bid" : "Connect a wallet to bid"}
@@ -778,6 +926,7 @@ function Progress({
       <h2 id="progress-title" className="panel__title">
         {phase === "bidding" || phase === "upcoming" ? "After bidding closes" : "Settlement"}
       </h2>
+      <CrankNote auction={auction} />
 
       {auction.status === "cancelled" ? (
         <p>The seller cancelled this auction before any bids.</p>
@@ -1087,7 +1236,10 @@ function YourBids({
   const action = useAction();
   // Bumped when notes from chain arrive, to show them.
   const [, setNotesOpened] = useState(0);
+  /** The bid whose raise form is open. */
+  const [raising, setRaising] = useState<string | null>(null);
   if (!publicKey) return null;
+  const biddingOpen = phaseOf(auction, now) === "bidding";
   const mine = bids.filter((b) => b.bidder.equals(publicKey));
   if (mine.length === 0) return null;
   const sharesReady = sharesAreFinal(auction);
@@ -1140,6 +1292,23 @@ function YourBids({
                     : `Sealed for ${plural(Number(noteSize(note)), "NFT")} at up to ${sealedAt} each.`}{" "}
                   Only your wallet can read this note, and it is deleted once the bid is collected.
                 </p>
+              ) : null}
+              {biddingOpen && b.status === "sealed" ? (
+                raising === b.address.toBase58() ? (
+                  <RaiseBid
+                    auction={auction}
+                    asset={asset}
+                    bid={b}
+                    onDone={() => {
+                      setRaising(null);
+                      refresh();
+                    }}
+                  />
+                ) : (
+                  <Button variant="quiet" onClick={() => setRaising(b.address.toBase58())}>
+                    Raise this bid
+                  </Button>
+                )
               ) : null}
               <p className="bidlist__state">
                 {b.status === "sealed"

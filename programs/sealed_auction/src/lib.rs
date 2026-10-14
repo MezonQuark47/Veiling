@@ -29,6 +29,10 @@
 //!    `save_bid_note` can keep the bidder's own note of the bid next to it,
 //!    encrypted by their app under a key made from their wallet's signature,
 //!    so they can see what they sealed on any device.
+//!    Each bid also pays a small settlement fee, and the seller one when the
+//!    auction opens, into the auction's crank pool (`CrankRewards`).
+//!    `increase_bid` lets a bidder replace their sealed bid and add to its
+//!    deposit while bidding is open; a deposit can never shrink.
 //! 3. After `end_time`, `check_batch` checks bids `BATCH_SIZE` at a time and
 //!    stores each checked batch, encrypted, in the bid book. One computation
 //!    is in flight at a time.
@@ -56,6 +60,11 @@
 //! (`reveal_collection`), and if that has not happened `REVEAL_DELAY_SECS`
 //! after the end of bidding, winners take their payments back
 //! (`refund_unrevealed`).
+//!
+//! Anyone can run the MPC steps (`check_batch`, `find_clearing`,
+//! `settle_bid`, `draw_nft_seed`). Each pays its caller a reward from the
+//! auction's crank pool when its computation succeeds, to cover the fees the
+//! caller paid to queue it.
 //!
 //! Prices are whole price ticks (u32). A token auction quotes lamports per
 //! `price_unit` base units, a power of ten chosen when it opens so that its
@@ -122,11 +131,13 @@ pub const ASSET_SEED: &[u8] = b"asset";
 pub const ITEMS_SEED: &[u8] = b"items";
 /// A bidder's encrypted note on their bid: `[NOTE_SEED, bid]`.
 pub const NOTE_SEED: &[u8] = b"note";
+/// The rewards paid to whoever runs the MPC steps: `[CRANK_SEED]`.
+pub const CRANK_SEED: &[u8] = b"crank";
 
 /// Account discriminators of this version's auction state. They differ from
 /// the first release's, whose accounts had other layouts, so an account of
 /// that release can never be read as one of these.
-pub const AUCTION_DISCRIMINATOR: &[u8] = b"VAuctn02";
+pub const AUCTION_DISCRIMINATOR: &[u8] = b"VAuctn03";
 pub const BOOK_DISCRIMINATOR: &[u8] = b"VBook_03";
 pub const BID_DISCRIMINATOR: &[u8] = b"VBid__02";
 pub const ITEM_LIST_DISCRIMINATOR: &[u8] = b"VItems01";
@@ -205,6 +216,9 @@ pub const MIN_DURATION_SECS: i64 = 60;
 pub const MAX_DURATION_SECS: i64 = 14 * 24 * 60 * 60;
 /// How far ahead an auction can schedule the start of bidding.
 pub const MAX_START_DELAY_SECS: i64 = 30 * 24 * 60 * 60;
+/// Cap on each crank reward, so no admin can make bidding or listing
+/// expensive through them: 0.1 SOL.
+pub const MAX_CRANK_REWARD: u64 = 100_000_000;
 /// Once an auction holds `MAX_BIDS` bids, a new bid must deposit at least this
 /// much more (in percent, rounded up) than the smallest deposit, which is then
 /// refunded in full. Filling every slot to crowd others out therefore costs
@@ -371,6 +385,23 @@ pub mod sealed_auction {
         Ok(())
     }
 
+    /// Sets the rewards paid to whoever runs each MPC step, for auctions
+    /// opened from now on (each auction keeps the rewards it opened with).
+    /// Each is capped at `MAX_CRANK_REWARD`. Admin only.
+    pub fn set_crank_rewards(ctx: Context<SetCrankRewards>, rewards: CrankRewards) -> Result<()> {
+        require!(
+            [rewards.check_batch, rewards.clearing, rewards.settlement, rewards.seed_draw]
+                .iter()
+                .all(|&r| r <= MAX_CRANK_REWARD),
+            AuctionError::FeeTooHigh
+        );
+        let config = &mut ctx.accounts.crank_config;
+        config.rewards = rewards;
+        config.bump = ctx.bumps.crank_config;
+        emit!(CrankRewardsUpdated { rewards });
+        Ok(())
+    }
+
     /// Registers the `check_bids` circuit. Nodes fetch it from `circuit_url`
     /// and refuse any file whose hash differs from the one compiled into this
     /// program, so the URL's host cannot change what the circuit computes.
@@ -460,6 +491,7 @@ pub mod sealed_auction {
             end_time,
             [ctx.bumps.auction, ctx.bumps.book],
             &ctx.accounts.fee_config,
+            ctx.accounts.crank_config.rewards,
         );
         auction.supply = terms.supply;
         auction.price_unit = terms.price_unit;
@@ -485,6 +517,11 @@ pub mod sealed_auction {
             ctx.accounts.mint.decimals,
         )?;
 
+        fund_crank_pool(
+            &mut ctx.accounts.auction,
+            &ctx.accounts.seller.to_account_info(),
+            &ctx.accounts.system_program,
+        )?;
         emit_auction_created(&ctx.accounts.auction, listing_fee);
         Ok(())
     }
@@ -597,6 +634,7 @@ pub mod sealed_auction {
             end_time,
             [ctx.bumps.auction, ctx.bumps.book],
             &ctx.accounts.fee_config,
+            ctx.accounts.crank_config.rewards,
         );
         auction.supply = terms.supply;
         auction.price_unit = 1;
@@ -616,6 +654,11 @@ pub mod sealed_auction {
         book.auction = auction_key;
         drop(book);
 
+        fund_crank_pool(
+            &mut ctx.accounts.auction,
+            &ctx.accounts.seller.to_account_info(),
+            &ctx.accounts.system_program,
+        )?;
         emit_auction_created(&ctx.accounts.auction, listing_fee);
         Ok(())
     }
@@ -948,12 +991,104 @@ pub mod sealed_auction {
             ),
             deposit,
         )?;
+        // The bid's share of the crank pool: not refunded, it pays whoever
+        // checks and settles the bids.
+        let crank_fee = bid_crank_fee(&ctx.accounts.auction.crank_rewards);
+        add_to_crank_pool(
+            &mut ctx.accounts.auction,
+            &ctx.accounts.bidder.to_account_info(),
+            &ctx.accounts.system_program,
+            crank_fee,
+        )?;
 
         emit!(BidPlaced {
             auction: ctx.accounts.auction.key(),
             bid: ctx.accounts.bid.key(),
             bidder: ctx.accounts.bidder.key(),
             index,
+            deposit,
+            crank_fee,
+        });
+        Ok(())
+    }
+
+    /// Replaces a sealed bid while bidding is open: a new encryption of
+    /// `BidInput { price, quantity }` under a fresh key (with the same
+    /// address-bound nonce as `place_bid`), and `extra_deposit` more lamports
+    /// on its deposit. A deposit can only grow, so a bid can never be shrunk
+    /// or pulled to fake demand; the app only offers raising the price and
+    /// size. Only the latest version is checked when bidding closes, against
+    /// the whole deposit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn increase_bid(
+        ctx: Context<IncreaseBid>,
+        price_ciphertext: [u8; 32],
+        quantity_ciphertext: [u8; 32],
+        client_pubkey: [u8; 32],
+        client_pubkey_edwards_y: [u8; 32],
+        nonce: u128,
+        extra_deposit: u64,
+    ) -> Result<()> {
+        require!(
+            nonce == bid_nonce(&ctx.accounts.bid.key()),
+            AuctionError::InvalidNonce
+        );
+        require!(
+            is_canonical_field_element(&price_ciphertext)
+                && is_canonical_field_element(&quantity_ciphertext),
+            AuctionError::InvalidCiphertext
+        );
+        require!(
+            is_usable_x25519_key(&client_pubkey, &client_pubkey_edwards_y),
+            AuctionError::InvalidEncryptionKey
+        );
+        let now = Clock::get()?.unix_timestamp;
+        let auction = &mut ctx.accounts.auction;
+        require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
+        require!(now >= auction.start_time, AuctionError::BiddingNotStarted);
+        require!(now < auction.end_time, AuctionError::BiddingClosed);
+        require!(
+            ctx.accounts.bid.status == BidStatus::Sealed,
+            AuctionError::BidAlreadySettled
+        );
+
+        let deposit = ctx
+            .accounts
+            .bid
+            .deposit
+            .checked_add(extra_deposit)
+            .ok_or(AuctionError::MathOverflow)?;
+        let index = ctx.accounts.bid.index as usize;
+        let mut book = ctx.accounts.book.load_mut()?;
+        require!(index < MAX_BIDS_USIZE, AuctionError::WrongBidAccounts);
+        book.deposits[index] = deposit;
+        drop(book);
+        auction.total_deposited = auction
+            .total_deposited
+            .checked_add(extra_deposit)
+            .ok_or(AuctionError::MathOverflow)?;
+
+        let bid = &mut ctx.accounts.bid;
+        bid.price_ciphertext = price_ciphertext;
+        bid.quantity_ciphertext = quantity_ciphertext;
+        bid.client_pubkey = client_pubkey;
+        bid.deposit = deposit;
+        if extra_deposit > 0 {
+            system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.key(),
+                    system_program::Transfer {
+                        from: ctx.accounts.bidder.to_account_info(),
+                        to: ctx.accounts.bid.to_account_info(),
+                    },
+                ),
+                extra_deposit,
+            )?;
+        }
+        emit!(BidIncreased {
+            auction: ctx.accounts.auction.key(),
+            bid: ctx.accounts.bid.key(),
+            bidder: ctx.accounts.bidder.key(),
             deposit,
         });
         Ok(())
@@ -1003,6 +1138,10 @@ pub mod sealed_auction {
                 pubkey: book_key,
                 is_writable: true,
             },
+            CallbackAccount {
+                pubkey: ctx.accounts.payer.key(),
+                is_writable: true,
+            },
         ];
         let callback = CheckBidsV2Callback::callback_ix(
             computation_offset,
@@ -1049,6 +1188,8 @@ pub mod sealed_auction {
                 field_0
             }
         };
+        let reward = auction.crank_rewards.check_batch;
+        pay_cranker(auction, &ctx.accounts.cranker.to_account_info(), reward)?;
 
         // Every batch starts at a multiple of BATCH_SIZE, so this is the
         // batch's position in the book.
@@ -1122,10 +1263,16 @@ pub mod sealed_auction {
         let callback = ClearPriceV2Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
-            &[CallbackAccount {
-                pubkey: auction_key,
-                is_writable: true,
-            }],
+            &[
+                CallbackAccount {
+                    pubkey: auction_key,
+                    is_writable: true,
+                },
+                CallbackAccount {
+                    pubkey: ctx.accounts.payer.key(),
+                    is_writable: true,
+                },
+            ],
         )?;
         queue_computation_exact(ctx.accounts, computation_offset, args, callback)?;
         let (slot, counter) = computation_identity(&ctx.accounts.computation_account)?;
@@ -1167,6 +1314,8 @@ pub mod sealed_auction {
                 field_0
             }
         };
+        let reward = auction.crank_rewards.clearing;
+        pay_cranker(auction, &ctx.accounts.cranker.to_account_info(), reward)?;
         let (price, weight_above, weight_at) = (result.field_0, result.field_1, result.field_2);
         // Sanity checks on what MPC revealed; these always hold for an honest
         // cluster and make a broken result fail loudly instead of paying out.
@@ -1240,6 +1389,10 @@ pub mod sealed_auction {
                 pubkey: ctx.accounts.book.key(),
                 is_writable: true,
             },
+            CallbackAccount {
+                pubkey: ctx.accounts.payer.key(),
+                is_writable: true,
+            },
         ];
 
         let computation = ctx.accounts.computation_account.key();
@@ -1292,6 +1445,8 @@ pub mod sealed_auction {
         };
         let outcome = award.field_0;
         let quantity = award.field_1 as u64;
+        let reward = ctx.accounts.auction.crank_rewards.settlement;
+        pay_cranker(&mut ctx.accounts.auction, &ctx.accounts.cranker.to_account_info(), reward)?;
 
         require!(
             ctx.accounts.auction.status == AuctionStatus::Settling,
@@ -1420,10 +1575,16 @@ pub mod sealed_auction {
         let callback = DrawSeedCallback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
-            &[CallbackAccount {
-                pubkey: auction_key,
-                is_writable: true,
-            }],
+            &[
+                CallbackAccount {
+                    pubkey: auction_key,
+                    is_writable: true,
+                },
+                CallbackAccount {
+                    pubkey: ctx.accounts.payer.key(),
+                    is_writable: true,
+                },
+            ],
         )?;
         queue_computation_exact(ctx.accounts, computation_offset, ArgBuilder::new().build(), callback)?;
         let (slot, counter) = computation_identity(&ctx.accounts.computation_account)?;
@@ -1461,6 +1622,8 @@ pub mod sealed_auction {
                 field_0
             }
         };
+        let reward = auction.crank_rewards.seed_draw;
+        pay_cranker(auction, &ctx.accounts.cranker.to_account_info(), reward)?;
         clear_auction_pending(auction);
         // Once the safety net is open, NFTs may already have been minted with
         // places as their numbers; a seed arriving now must not change the
@@ -1816,7 +1979,7 @@ pub mod sealed_auction {
     }
 
     /// Stores the bidder's note on their bid, so they can see what they
-    /// sealed on any device. The note is opaque here: the bidder's app
+    /// sealed on any device, or rewrites it after `increase_bid`. The note is opaque here: the bidder's app
     /// encrypts it under a key made from their wallet's signature, so only
     /// they can read it. Its rent comes back with `close_bid_note`.
     pub fn save_bid_note(ctx: Context<SaveBidNote>, note: [u8; BID_NOTE_LEN]) -> Result<()> {
@@ -2679,6 +2842,7 @@ fn new_auction(
     end_time: i64,
     [bump, book_bump]: [u8; 2],
     fees: &FeeConfig,
+    crank_rewards: CrankRewards,
 ) -> Auction {
     Auction {
         seed,
@@ -2728,6 +2892,8 @@ fn new_auction(
         seed_drawn: false,
         named_items: false,
         unrevealed: false,
+        crank_rewards,
+        crank_pool: 0,
     }
 }
 
@@ -2747,8 +2913,94 @@ fn emit_auction_created(auction: &Account<Auction>, listing_fee: u64) {
         start_time: auction.start_time,
         end_time: auction.end_time,
         listing_fee,
+        crank_pool: auction.crank_pool,
+        bid_crank_fee: bid_crank_fee(&auction.crank_rewards),
         sale_fee_bps: auction.sale_fee_bps,
     });
+}
+
+/// What each bid adds to the crank pool: its share of a batch check and its
+/// own settlement.
+pub fn bid_crank_fee(rewards: &CrankRewards) -> u64 {
+    rewards
+        .check_batch
+        .div_ceil(BATCH_SIZE as u64)
+        .saturating_add(rewards.settlement)
+}
+
+/// What the seller puts in the crank pool when the auction opens: the
+/// clearing, one batch check (bids pay for their share of the others, so a
+/// last, partial batch is covered) and, for a collection, the seed draw.
+pub fn seller_crank_fee(auction: &Auction) -> u64 {
+    let rewards = &auction.crank_rewards;
+    let draw = if auction.kind == AuctionKind::Collection {
+        rewards.seed_draw
+    } else {
+        0
+    };
+    rewards
+        .clearing
+        .saturating_add(rewards.check_batch)
+        .saturating_add(draw)
+}
+
+/// Moves `amount` from `payer` into the auction's crank pool.
+fn add_to_crank_pool<'info>(
+    auction: &mut Account<'info, Auction>,
+    payer: &AccountInfo<'info>,
+    system_program: &Program<'info, System>,
+    amount: u64,
+) -> Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+    system_program::transfer(
+        CpiContext::new(
+            system_program.key(),
+            system_program::Transfer {
+                from: payer.clone(),
+                to: auction.to_account_info(),
+            },
+        ),
+        amount,
+    )?;
+    auction.crank_pool = auction
+        .crank_pool
+        .checked_add(amount)
+        .ok_or(AuctionError::MathOverflow)?;
+    Ok(())
+}
+
+fn fund_crank_pool<'info>(
+    auction: &mut Account<'info, Auction>,
+    seller: &AccountInfo<'info>,
+    system_program: &Program<'info, System>,
+) -> Result<()> {
+    let amount = seller_crank_fee(auction);
+    add_to_crank_pool(auction, seller, system_program, amount)
+}
+
+/// Pays whoever queued a computation that succeeded its reward, as far as
+/// the crank pool reaches. The pool sits in the auction account on top of its
+/// rent and proceeds, so paying from it never touches anyone else's funds.
+fn pay_cranker<'info>(
+    auction: &mut Account<'info, Auction>,
+    cranker: &AccountInfo<'info>,
+    reward: u64,
+) -> Result<()> {
+    let amount = reward.min(auction.crank_pool);
+    if amount == 0 || cranker.key() == auction.key() {
+        return Ok(());
+    }
+    auction.crank_pool -= amount;
+    auction.to_account_info().sub_lamports(amount)?;
+    cranker.add_lamports(amount)?;
+    emit!(CrankPaid {
+        auction: auction.key(),
+        cranker: cranker.key(),
+        amount,
+    });
+    Ok(())
 }
 
 /// Charges the listing fee, provided the seller accepted the current fees,
@@ -3331,6 +3583,25 @@ pub struct FeeConfig {
     pub bump: u8,
 }
 
+/// Lamports paid to whoever runs each MPC step, when its computation
+/// succeeds: a batch check, the clearing, one bid's settlement, and a
+/// collection's seed draw. They cover the fees the caller paid to queue it.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug, Default)]
+pub struct CrankRewards {
+    pub check_batch: u64,
+    pub clearing: u64,
+    pub settlement: u64,
+    pub seed_draw: u64,
+}
+
+/// Crank rewards for auctions opened from now on (`[CRANK_SEED]`).
+#[account]
+#[derive(InitSpace)]
+pub struct CrankConfig {
+    pub rewards: CrankRewards,
+    pub bump: u8,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
 pub enum AuctionKind {
     /// Fungible tokens escrowed in the auction's vault; `mint` is the token.
@@ -3447,6 +3718,12 @@ pub struct Auction {
     /// Hidden collections: whether the art is still to be revealed
     /// (`reveal_collection`). Until then no NFT can be claimed.
     pub unrevealed: bool,
+    /// The rewards this auction pays for its MPC steps, fixed when it opened.
+    pub crank_rewards: CrankRewards,
+    /// Lamports held in this account to pay them: the seller's and every
+    /// bid's crank fee, less the rewards paid. What is left goes to the
+    /// seller when the auction is closed.
+    pub crank_pool: u64,
 }
 
 /// The items of a collection auction named per item. Item `k` covers NFT
@@ -3711,6 +3988,23 @@ pub struct SetFees<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct SetCrankRewards<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ AuctionError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    #[account(
+        init_if_needed,
+        payer = admin,
+        space = 8 + CrankConfig::INIT_SPACE,
+        seeds = [CRANK_SEED],
+        bump,
+    )]
+    pub crank_config: Account<'info, CrankConfig>,
+    pub system_program: Program<'info, System>,
+}
+
 // ---------------------------------------------------------------------------
 // Accounts: auction lifecycle
 // ---------------------------------------------------------------------------
@@ -3763,6 +4057,8 @@ pub struct CreateAuction<'info> {
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+    #[account(seeds = [CRANK_SEED], bump = crank_config.bump)]
+    pub crank_config: Box<Account<'info, CrankConfig>>,
 }
 
 #[derive(Accounts)]
@@ -3805,6 +4101,8 @@ pub struct CreateCollectionAuction<'info> {
         bump = item_list.bump,
     )]
     pub item_list: Option<Box<Account<'info, ItemList>>>,
+    #[account(seeds = [CRANK_SEED], bump = crank_config.bump)]
+    pub crank_config: Box<Account<'info, CrankConfig>>,
 }
 
 #[derive(Accounts)]
@@ -4062,13 +4360,38 @@ pub struct PlaceBid<'info> {
 }
 
 #[derive(Accounts)]
+pub struct IncreaseBid<'info> {
+    #[account(mut)]
+    pub bidder: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(
+        mut,
+        seeds = [BOOK_SEED, auction.key().as_ref()],
+        bump = auction.book_bump,
+    )]
+    pub book: AccountLoader<'info, BidBook>,
+    #[account(
+        mut,
+        has_one = bidder @ AuctionError::Unauthorized,
+        has_one = auction @ AuctionError::WrongBidAccounts,
+    )]
+    pub bid: Box<Account<'info, Bid>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct SaveBidNote<'info> {
     #[account(mut)]
     pub bidder: Signer<'info>,
     #[account(has_one = bidder @ AuctionError::Unauthorized)]
     pub bid: Box<Account<'info, Bid>>,
     #[account(
-        init,
+        init_if_needed,
         payer = bidder,
         space = 8 + BidNote::INIT_SPACE,
         seeds = [NOTE_SEED, bid.key().as_ref()],
@@ -4306,6 +4629,10 @@ pub struct CheckBidsV2Callback<'info> {
     pub auction: Box<Account<'info, Auction>>,
     #[account(mut, seeds = [BOOK_SEED, auction.key().as_ref()], bump = auction.book_bump)]
     pub book: AccountLoader<'info, BidBook>,
+    /// CHECK: whoever queued the check; named by `check_batch`, paid its
+    /// reward.
+    #[account(mut)]
+    pub cranker: UncheckedAccount<'info>,
 }
 
 #[queue_computation_accounts("clear_price_v2", payer)]
@@ -4377,6 +4704,10 @@ pub struct ClearPriceV2Callback<'info> {
     pub instructions_sysvar: UncheckedAccount<'info>,
     #[account(mut, seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()], bump = auction.bump)]
     pub auction: Box<Account<'info, Auction>>,
+    /// CHECK: whoever queued the clearing; named by `find_clearing`, paid
+    /// its reward.
+    #[account(mut)]
+    pub cranker: UncheckedAccount<'info>,
 }
 
 #[queue_computation_accounts("award_bid_v2", payer)]
@@ -4459,6 +4790,10 @@ pub struct AwardBidV2Callback<'info> {
     pub bid: Box<Account<'info, Bid>>,
     #[account(mut, seeds = [BOOK_SEED, auction.key().as_ref()], bump = auction.book_bump)]
     pub book: AccountLoader<'info, BidBook>,
+    /// CHECK: whoever queued the settlement; named by `settle_bid`, paid its
+    /// reward.
+    #[account(mut)]
+    pub cranker: UncheckedAccount<'info>,
 }
 
 #[queue_computation_accounts("draw_seed", payer)]
@@ -4523,6 +4858,10 @@ pub struct DrawSeedCallback<'info> {
     pub instructions_sysvar: UncheckedAccount<'info>,
     #[account(mut, seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()], bump = auction.bump)]
     pub auction: Box<Account<'info, Auction>>,
+    /// CHECK: whoever queued the draw; named by `draw_nft_seed`, paid its
+    /// reward.
+    #[account(mut)]
+    pub cranker: UncheckedAccount<'info>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4640,6 +4979,9 @@ pub struct AuctionCreated {
     pub end_time: i64,
     /// Listing fee paid.
     pub listing_fee: u64,
+    /// What the seller put in the crank pool, and what each bid adds.
+    pub crank_pool: u64,
+    pub bid_crank_fee: u64,
     /// Fee that will be taken from the proceeds.
     pub sale_fee_bps: u16,
 }
@@ -4663,6 +5005,29 @@ pub struct BidPlaced {
     pub bidder: Pubkey,
     pub index: u32,
     pub deposit: u64,
+    /// Paid into the crank pool, not refunded.
+    pub crank_fee: u64,
+}
+
+#[event]
+pub struct BidIncreased {
+    pub auction: Pubkey,
+    pub bid: Pubkey,
+    pub bidder: Pubkey,
+    /// The whole deposit now.
+    pub deposit: u64,
+}
+
+#[event]
+pub struct CrankRewardsUpdated {
+    pub rewards: CrankRewards,
+}
+
+#[event]
+pub struct CrankPaid {
+    pub auction: Pubkey,
+    pub cranker: Pubkey,
+    pub amount: u64,
 }
 
 #[event]
@@ -5000,6 +5365,7 @@ mod tests {
             0,
             [0, 0],
             &fees,
+            CrankRewards::default(),
         )
     }
 
@@ -5511,6 +5877,34 @@ mod tests {
         for terms in bad.iter() {
             assert!(terms.check(0).is_err(), "{terms:?}");
         }
+    }
+
+    #[test]
+    fn crank_fees_cover_every_step() {
+        let rewards = CrankRewards {
+            check_batch: 6_000_001,
+            clearing: 25_000_000,
+            settlement: 4_000_000,
+            seed_draw: 3_000_000,
+        };
+        // A bid's quarter of a check is rounded up.
+        assert_eq!(bid_crank_fee(&rewards), 1_500_001 + 4_000_000);
+        let mut auction = blank_auction();
+        auction.crank_rewards = rewards;
+        assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001);
+        auction.kind = AuctionKind::Collection;
+        assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001 + 3_000_000);
+        // With n bids the pool covers ceil(n / 4) checks, n settlements, the
+        // clearing and the draw.
+        for n in 1..=MAX_BIDS as u64 {
+            let pool = seller_crank_fee(&auction) + n * bid_crank_fee(&rewards);
+            let needed = n.div_ceil(BATCH_SIZE as u64) * rewards.check_batch
+                + n * rewards.settlement
+                + rewards.clearing
+                + rewards.seed_draw;
+            assert!(pool >= needed, "{n} bids");
+        }
+        assert_eq!(bid_crank_fee(&CrankRewards::default()), 0);
     }
 
     #[test]

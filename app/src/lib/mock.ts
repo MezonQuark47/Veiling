@@ -56,6 +56,8 @@ const base = (seed: number, overrides: Partial<Auction>): Auction => ({
   seedDrawn: false,
   namedItems: false,
   unrevealed: false,
+  crankRewards: { checkBatch: 6_000_000n, clearing: 25_000_000n, settlement: 4_000_000n, seedDraw: 3_000_000n },
+  crankPool: 31_000_000n,
   ...overrides,
 });
 

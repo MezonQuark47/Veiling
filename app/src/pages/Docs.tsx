@@ -16,7 +16,7 @@ import {
   REVEAL_DELAY_SECS,
 } from "../config";
 import { useLoader } from "../components/ui";
-import { fetchFeeConfig, formatPercent } from "../lib/chain";
+import { bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee } from "../lib/chain";
 import { formatCount, formatSol } from "../lib/format";
 import { formatKb, formatMb } from "../lib/images";
 
@@ -51,6 +51,10 @@ export function Docs({ section }: { section: string }) {
   const fees = useLoader(fetchFeeConfig, []);
   const listingFee = fees.data ? (fees.data.listingFee > 0n ? `${formatSol(fees.data.listingFee)} SOL` : "free") : "…";
   const saleFee = fees.data ? formatPercent(fees.data.saleFeeBps) : "…";
+  const crank = useLoader(fetchCrankRewards, []);
+  const sellerFund = crank.data ? `${formatSol(sellerCrankFee(crank.data, "token"))} SOL` : "…";
+  const drawReward = crank.data ? `${formatSol(crank.data.seedDraw)} SOL` : "…";
+  const bidFee = crank.data ? `${formatSol(bidCrankFee(crank.data))} SOL` : "…";
   const days = EMERGENCY_DELAY_SECS / 86_400;
   const revealDays = REVEAL_DELAY_SECS / 86_400;
 
@@ -182,7 +186,9 @@ export function Docs({ section }: { section: string }) {
               </div>
             </dl>
             <p>
-              Bids cannot be changed or withdrawn. An auction holds up to {MAX_BIDS} bids; after that, a new bid
+              Until bidding closes you can raise a bid: a higher price or a larger size, sealed again, with more
+              deposit if it needs it. A bid can never be lowered or withdrawn, and a deposit never shrinks, so
+              nobody can show demand and then pull it. An auction holds up to {MAX_BIDS} bids; after that, a new bid
               can replace the one with the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more,
               and the replaced bid gets its whole deposit back.
             </p>
@@ -383,6 +389,16 @@ export function Docs({ section }: { section: string }) {
                   <td>The seller, out of the proceeds when claiming them. Buyers pay nothing extra.</td>
                 </tr>
                 <tr>
+                  <th scope="row">Settlement fund</th>
+                  <td>
+                    {sellerFund} per auction ({drawReward} more for a collection), {bidFee} per bid
+                  </td>
+                  <td>
+                    The seller when the auction opens, and each bidder when bidding. It pays whoever runs the private
+                    steps that settle the sale. Not refunded to bidders; what is left goes back to the seller.
+                  </td>
+                </tr>
+                <tr>
                   <th scope="row">NFT minting</th>
                   <td>about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL each</td>
                   <td>Whoever collects the NFT. This is rent and Metaplex's fee, not a platform fee.</td>
@@ -394,6 +410,12 @@ export function Docs({ section }: { section: string }) {
               {formatPercent(MAX_SALE_FEE_BPS)} of a sale. A seller opens an auction only at the fees shown when
               signing, and each auction keeps the sale fee it opened with. Account rent for the auction and every
               bid comes back when they are closed.
+            </p>
+            <p>
+              The private steps after bidding (checking the bids, finding the price, settling each bid and, for a
+              collection, the shuffle) each cost a network fee to start. Anyone can start them, and each pays whoever
+              did it a fixed reward from the auction's settlement fund once it succeeds, a little above that fee. So
+              a sale settles even if nobody involved is online, and running the steps never costs anyone money.
             </p>
           </Section>
 

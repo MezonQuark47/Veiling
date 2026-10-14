@@ -21,6 +21,7 @@ import {
   PROGRAM_ID,
   REVEAL_DELAY_SECS,
   RPC_URL,
+  BATCH_SIZE,
 } from "../config";
 import { type Decimal, formatDecimal, nftPrice, nftPriceToTicks, tokenPrice, tokenPriceToTicks } from "./price";
 
@@ -175,6 +176,18 @@ export interface Auction {
   namedItems: boolean;
   /** Hidden collections: whether the art is still to be revealed; no NFT can be minted until it is. */
   unrevealed: boolean;
+  /** What this auction pays whoever runs each private step, fixed when it opened. */
+  crankRewards: CrankRewards;
+  /** Lamports left to pay them; what is left goes back to the seller at close. */
+  crankPool: bigint;
+}
+
+/** Lamports paid to whoever runs each private step, when its computation succeeds. */
+export interface CrankRewards {
+  checkBatch: bigint;
+  clearing: bigint;
+  settlement: bigint;
+  seedDraw: bigint;
 }
 
 export interface Bid {
@@ -255,8 +268,21 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     seedDrawn: a.seedDrawn,
     namedItems: a.namedItems,
     unrevealed: a.unrevealed,
+    crankRewards: decodeCrankRewards(a.crankRewards),
+    crankPool: big(a.crankPool),
   };
 }
+
+function decodeCrankRewards(r: { checkBatch: BN; clearing: BN; settlement: BN; seedDraw: BN }): CrankRewards {
+  return { checkBatch: big(r.checkBatch), clearing: big(r.clearing), settlement: big(r.settlement), seedDraw: big(r.seedDraw) };
+}
+
+/** What each bid adds to the crank pool: its share of a batch check and its own settlement. Not refunded. */
+export const bidCrankFee = (r: CrankRewards) => (r.checkBatch + BigInt(BATCH_SIZE) - 1n) / BigInt(BATCH_SIZE) + r.settlement;
+
+/** What a seller puts in the crank pool when the auction opens. */
+export const sellerCrankFee = (r: CrankRewards, kind: AuctionKind) =>
+  r.clearing + r.checkBatch + (kind === "collection" ? r.seedDraw : 0n);
 
 export function decodeBid(address: PublicKey, b: RawBid): Bid {
   return {
@@ -538,6 +564,15 @@ export async function fetchAdminRoles(): Promise<{ admin: PublicKey; pendingAdmi
 }
 
 /** The platform's current fees, or null before the admin has set any. */
+export const crankConfigAddress = PublicKey.findProgramAddressSync([seed("crank")], PROGRAM_ID)[0];
+
+/** The crank rewards auctions open with now; null if the platform has not set them. */
+export async function fetchCrankRewards(): Promise<CrankRewards | null> {
+  if (MOCK) return { checkBatch: 6_000_000n, clearing: 25_000_000n, settlement: 4_000_000n, seedDraw: 3_000_000n };
+  const config = await program.account.crankConfig.fetchNullable(crankConfigAddress);
+  return config ? decodeCrankRewards(config.rewards) : null;
+}
+
 export async function fetchFeeConfig(): Promise<FeeConfig | null> {
   if (MOCK) return { listingFee: 20_000_000n, saleFeeBps: 100, treasury: PublicKey.default };
   const fees = await program.account.feeConfig.fetchNullable(feeConfigAddress);

@@ -50,13 +50,16 @@ import { UploadError, freeTarget, paidTarget } from "../lib/arweave";
 import {
   type TokenInfo,
   auctionAddress,
+  bidCrankFee,
   connection,
   fetchAuction,
+  fetchCrankRewards,
   fetchFeeConfig,
   fetchItemList,
   fetchTokenInfo,
   formatPercent,
   randomU64,
+  sellerCrankFee,
 } from "../lib/chain";
 import {
   formatCount,
@@ -322,6 +325,7 @@ export function Launch() {
   const { signer, publicKey } = useWallet();
   const action = useAction();
   const fees = useLoader(fetchFeeConfig, []);
+  const crank = useLoader(fetchCrankRewards, []);
   const [kind, setKind] = useState<Kind>("drop");
   const [source, setSource] = useState<TokenSource>("new");
 
@@ -768,7 +772,8 @@ export function Launch() {
   };
 
   const startIssue = startProblem(startAt, nowSecs());
-  const problems = startIssue ? [...plan.problems, startIssue] : plan.problems;
+  const crankIssue = crank.data === null ? "The platform's settlement rewards are not set up yet." : null;
+  const problems = [...plan.problems, ...(startIssue ? [startIssue] : []), ...(crankIssue ? [crankIssue] : [])];
   /** The start to send: 0 for right away. A time that has passed by then also opens right away. */
   const chosenStart = () => (startAt === null ? 0 : fromLocalInput(startAt) ?? 0);
 
@@ -1400,6 +1405,19 @@ export function Launch() {
                     <span className="fees__note">Of the proceeds, taken when you claim them. Fixed for this auction.</span>
                   </dd>
                 </div>
+                {crank.data ? (
+                  <div>
+                    <dt>Settlement fund</dt>
+                    <dd>
+                      <span className="fees__amount">{formatSol(sellerCrankFee(crank.data, collection ? "collection" : "token"))} SOL</span>
+                      <span className="fees__note">
+                        Pays whoever runs the private steps that find the price{collection ? " and shuffle the NFTs" : ""}, so
+                        your sale settles without you. Each bid adds {formatSol(bidCrankFee(crank.data))} SOL for its
+                        own steps. What is not used comes back when you close the auction.
+                      </span>
+                    </dd>
+                  </div>
+                ) : null}
               </dl>
             ) : fees.loading ? (
               <p className="muted">Loading the platform's fees…</p>

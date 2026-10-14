@@ -372,6 +372,41 @@ export async function buildPlaceBid(
   return { tx, bid, evicted: eviction?.bid ?? null };
 }
 
+/**
+ * Re-seals an open bid with a new price and size, under a fresh key, and adds
+ * `extraDeposit` to its deposit. The program cannot see inside the sealed bid,
+ * so it only makes sure the deposit never shrinks; the app only offers raising
+ * the price and size. The new deposit must still cover the new bid.
+ */
+export async function buildIncreaseBid(
+  bidder: PublicKey,
+  auction: Auction,
+  bid: Bid,
+  price: bigint,
+  quantity: bigint,
+  extraDeposit: bigint
+) {
+  const deposit = bid.deposit + extraDeposit;
+  if (auction.kind === "token" && (quantity < auction.minDeposit || quantity > deposit)) {
+    throw new Error("The budget must be at least the minimum and covered by the deposit.");
+  }
+  if (auction.kind === "collection" && price * quantity * auction.priceScale > deposit) {
+    throw new Error("The deposit must cover the price for every NFT.");
+  }
+  const enc = await encryptBid(price, quantity, bid.address);
+  return program.methods
+    .increaseBid(
+      enc.priceCiphertext,
+      enc.quantityCiphertext,
+      enc.clientPublicKey,
+      enc.clientPublicKeyEdwardsY,
+      enc.nonce,
+      bn(extraDeposit)
+    )
+    .accountsPartial({ bidder, auction: auction.address, book: bookAddress(auction.address), bid: bid.address })
+    .transaction();
+}
+
 const computeLimit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
 
 /** Checks the next batch of bids; `bids` must be the auction's bids sorted by index. */

@@ -49,6 +49,13 @@ price, and unused deposits are refunded.
    An auction holds up to 256 bids. Once it is full, a new bid must deposit at
    least 10% more than the smallest deposit; that bid is refunded in full and
    replaced. The auction keeps the total of all deposits.
+
+   Until bidding closes, `increase_bid` lets a bidder re-seal their bid (a
+   fresh encryption, bound to the same address nonce) and add to its
+   deposit. The program cannot see inside the bid, so it only makes sure the
+   deposit never shrinks: nobody can show demand with a deposit and pull it
+   later. The app only offers raising the price and size. Whatever version
+   is sealed when bidding closes is the one checked.
 3. **Bids are checked privately.** After the deadline anyone can call
    `check_batch`. MPC decodes four bids at a time, checks each against the
    terms and its deposit (an invalid bid is recorded as price 0, which never
@@ -94,7 +101,7 @@ price, and unused deposits are refunded.
 
 `scripts/crank.ts` takes an ended auction through every step anyone may take
 (steps 3 to 6 and the deliveries), paying only transaction fees and the
-accounts created for winners. `find_clearing` needs about 370,000 compute
+accounts created for winners, and earning the auction's crank rewards. `find_clearing` needs about 370,000 compute
 units, so it is sent with a higher compute limit.
 
 ### Safety net
@@ -165,6 +172,29 @@ auction, and each auction keeps the sale fee and treasury it opened with. If
 the treasury could not receive a fee (a closed account), the fee is skipped
 rather than blocking the seller.
 
+#### Crank rewards
+
+Queueing an MPC computation costs a network fee (measured on devnet with the
+v2 circuits: about 0.0053 SOL to check four bids, 0.0224 SOL to find the
+price, 0.0035 SOL to settle a bid and 0.0028 SOL to draw a collection's
+seed). So that anyone can settle a sale without paying for it, every auction
+keeps a crank pool in its own account:
+
+- the seller pays a clearing, one batch check and, for a collection, a seed
+  draw into it when the auction opens;
+- each bid pays its share of a batch check plus one settlement
+  (`check_batch / 4 + settlement`), not refunded, on top of its deposit;
+- each step's callback, once its computation succeeds, pays whoever queued it
+  the step's reward from the pool (as far as the pool reaches). A failed
+  computation pays nothing, and a stale callback is refused as before, so a
+  step is never paid twice;
+- what is left goes to the seller when the auction is closed.
+
+The admin sets the rewards with `set_crank_rewards`
+(`scripts/set-crank-rewards.ts`), each capped at 0.1 SOL; each auction keeps
+the rewards it opened with. The defaults on devnet are 0.006, 0.025, 0.004
+and 0.003 SOL, a little above the measured fees.
+
 ### What is public and what stays private
 
 | Public | Private |
@@ -234,6 +264,7 @@ tests/sealed_auction.ts    End-to-end test against a live Arcium cluster
 tests/svm/                 The compiled program in LiteSVM (no MPC needed)
 scripts/crank.ts           Takes an ended auction through every public step
 scripts/set-fees.ts        Sets the platform fees (admin only)
+scripts/set-crank-rewards.ts Sets the rewards for running MPC steps (admin only)
 scripts/set-listing.ts     Features or hides auctions in the listing (admin only)
 scripts/upgrade-devnet.sh  Upgrades the devnet program and checks the deployed bytes
 app/                       Web app (Vite + React + TypeScript)
@@ -289,7 +320,7 @@ The CLI extends the program account when the new build is larger; the
 temporary buffer needs about as much SOL as the program's rent, and it is
 returned afterwards. An upgrade that changes an account layout makes existing
 accounts of that type unreadable, so finish and close every open auction
-first. This release's accounts carry their own discriminators (`VAuctn02`,
+first. This release's accounts carry their own discriminators (`VAuctn03`,
 `VBook_03`, `VBid__02`), so accounts from earlier releases are never mistaken
 for them.
 
@@ -297,8 +328,10 @@ Then call `initialize` once (signed by the upgrade authority), register the
 four circuits (`check_bids_v2`, `clear_price_v2`, `award_bid_v2` and
 `draw_seed`) with `init_check_bids_comp_def`, `init_clear_price_comp_def`,
 `init_award_bid_comp_def` and `init_draw_seed_comp_def`, passing the URL of
-each `.arcis` file, and set the fees with `set_fees` (`scripts/set-fees.ts`).
-The end-to-end test does all three if they are missing.
+each `.arcis` file, set the fees with `set_fees` (`scripts/set-fees.ts`) and
+the crank rewards with `set_crank_rewards` (`scripts/set-crank-rewards.ts`);
+no auction can open before both are set. The end-to-end test does the first
+three if they are missing.
 
 ### Circuit hosting
 
@@ -469,7 +502,7 @@ these services.
   4,295 SOL per NFT.
   For a token without decimals the price refers to at least one whole token,
   so such a token can be priced at no more than about 4.29 SOL.
-- Bids cannot be withdrawn before the deadline.
+- Bids cannot be lowered or withdrawn before the deadline, only raised.
 - In-app uploads of one image per NFT stop at 10,000 NFTs, and every image is
   prepared in the browser, which takes a while for large drops. Originals are
   limited to 10 MB each, and animated images and video are not supported.

@@ -198,6 +198,13 @@ export type SealedAuction = {
               }
             ]
           }
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "reward."
+          ],
+          "writable": true
         }
       ],
       "args": [
@@ -730,6 +737,13 @@ export type SealedAuction = {
               }
             ]
           }
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "reward."
+          ],
+          "writable": true
         }
       ],
       "args": [
@@ -1411,6 +1425,13 @@ export type SealedAuction = {
               }
             ]
           }
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "its reward."
+          ],
+          "writable": true
         }
       ],
       "args": [
@@ -2043,6 +2064,23 @@ export type SealedAuction = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "crankConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -2237,6 +2275,23 @@ export type SealedAuction = {
               {
                 "kind": "account",
                 "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107
+                ]
               }
             ]
           }
@@ -2473,6 +2528,13 @@ export type SealedAuction = {
               }
             ]
           }
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "reward."
+          ],
+          "writable": true
         }
       ],
       "args": [
@@ -2794,6 +2856,146 @@ export type SealedAuction = {
       "args": [
         {
           "name": "computationOffset",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "increaseBid",
+      "docs": [
+        "Replaces a sealed bid while bidding is open: a new encryption of",
+        "`BidInput { price, quantity }` under a fresh key (with the same",
+        "address-bound nonce as `place_bid`), and `extra_deposit` more lamports",
+        "on its deposit. A deposit can only grow, so a bid can never be shrunk",
+        "or pulled to fake demand; the app only offers raising the price and",
+        "size. Only the latest version is checked when bidding closes, against",
+        "the whole deposit."
+      ],
+      "discriminator": [
+        244,
+        160,
+        83,
+        58,
+        129,
+        198,
+        54,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "bidder",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "bid"
+          ]
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          },
+          "relations": [
+            "bid"
+          ]
+        },
+        {
+          "name": "book",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  111,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bid",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "priceCiphertext",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "quantityCiphertext",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "clientPubkey",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "clientPubkeyEdwardsY",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "nonce",
+          "type": "u128"
+        },
+        {
+          "name": "extraDeposit",
           "type": "u64"
         }
       ]
@@ -3600,7 +3802,7 @@ export type SealedAuction = {
       "name": "saveBidNote",
       "docs": [
         "Stores the bidder's note on their bid, so they can see what they",
-        "sealed on any device. The note is opaque here: the bidder's app",
+        "sealed on any device, or rewrites it after `increase_bid`. The note is opaque here: the bidder's app",
         "encrypts it under a key made from their wallet's signature, so only",
         "they can read it. Its rent comes back with `close_bid_note`."
       ],
@@ -3660,6 +3862,84 @@ export type SealedAuction = {
               "u8",
               32
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "setCrankRewards",
+      "docs": [
+        "Sets the rewards paid to whoever runs each MPC step, for auctions",
+        "opened from now on (each auction keeps the rewards it opened with).",
+        "Each is capped at `MAX_CRANK_REWARD`. Admin only."
+      ],
+      "discriminator": [
+        185,
+        8,
+        143,
+        191,
+        150,
+        71,
+        122,
+        129
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConfig",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rewards",
+          "type": {
+            "defined": {
+              "name": "crankRewards"
+            }
           }
         }
       ]
@@ -3995,7 +4275,7 @@ export type SealedAuction = {
         116,
         110,
         48,
-        50
+        51
       ]
     },
     {
@@ -4048,6 +4328,19 @@ export type SealedAuction = {
         250,
         204,
         130
+      ]
+    },
+    {
+      "name": "crankConfig",
+      "discriminator": [
+        106,
+        125,
+        200,
+        206,
+        65,
+        247,
+        137,
+        215
       ]
     },
     {
@@ -4183,6 +4476,19 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "bidIncreased",
+      "discriminator": [
+        184,
+        180,
+        215,
+        94,
+        126,
+        126,
+        49,
+        102
+      ]
+    },
+    {
       "name": "bidPlaced",
       "discriminator": [
         135,
@@ -4245,6 +4551,32 @@ export type SealedAuction = {
         33,
         140,
         215
+      ]
+    },
+    {
+      "name": "crankPaid",
+      "discriminator": [
+        30,
+        73,
+        76,
+        251,
+        232,
+        155,
+        234,
+        50
+      ]
+    },
+    {
+      "name": "crankRewardsUpdated",
+      "discriminator": [
+        74,
+        35,
+        130,
+        77,
+        142,
+        109,
+        125,
+        97
       ]
     },
     {
@@ -4992,6 +5324,26 @@ export type SealedAuction = {
               "(`reveal_collection`). Until then no NFT can be claimed."
             ],
             "type": "bool"
+          },
+          {
+            "name": "crankRewards",
+            "docs": [
+              "The rewards this auction pays for its MPC steps, fixed when it opened."
+            ],
+            "type": {
+              "defined": {
+                "name": "crankRewards"
+              }
+            }
+          },
+          {
+            "name": "crankPool",
+            "docs": [
+              "Lamports held in this account to pay them: the seller's and every",
+              "bid's crank fee, less the rewards paid. What is left goes to the",
+              "seller when the auction is closed."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -5131,6 +5483,17 @@ export type SealedAuction = {
             "docs": [
               "Listing fee paid."
             ],
+            "type": "u64"
+          },
+          {
+            "name": "crankPool",
+            "docs": [
+              "What the seller put in the crank pool, and what each bid adds."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bidCrankFee",
             "type": "u64"
           },
           {
@@ -5564,6 +5927,33 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "bidIncreased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "bid",
+            "type": "pubkey"
+          },
+          {
+            "name": "bidder",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit",
+            "docs": [
+              "The whole deposit now."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "bidNote",
       "docs": [
         "A bidder's note on their bid (see `save_bid_note`)."
@@ -5621,6 +6011,13 @@ export type SealedAuction = {
           },
           {
             "name": "deposit",
+            "type": "u64"
+          },
+          {
+            "name": "crankFee",
+            "docs": [
+              "Paid into the crank pool, not refunded."
+            ],
             "type": "u64"
           }
         ]
@@ -6226,6 +6623,94 @@ export type SealedAuction = {
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankConfig",
+      "docs": [
+        "Crank rewards for auctions opened from now on (`[CRANK_SEED]`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rewards",
+            "type": {
+              "defined": {
+                "name": "crankRewards"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankPaid",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "cranker",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankRewards",
+      "docs": [
+        "Lamports paid to whoever runs each MPC step, when its computation",
+        "succeeds: a batch check, the clearing, one bid's settlement, and a",
+        "collection's seed draw. They cover the fees the caller paid to queue it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "checkBatch",
+            "type": "u64"
+          },
+          {
+            "name": "clearing",
+            "type": "u64"
+          },
+          {
+            "name": "settlement",
+            "type": "u64"
+          },
+          {
+            "name": "seedDraw",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankRewardsUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rewards",
+            "type": {
+              "defined": {
+                "name": "crankRewards"
+              }
+            }
           }
         ]
       }

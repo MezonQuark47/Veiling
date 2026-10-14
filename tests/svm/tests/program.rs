@@ -512,6 +512,10 @@ impl Env {
         let admin = env.admin.insecure_clone();
         let ix = env.set_fees_ix(&admin.pubkey(), LISTING_FEE, SALE_FEE_BPS, env.treasury.pubkey());
         env.send(&[ix], &admin, &[]).expect("set fees");
+        // No crank rewards unless a test sets them, so the other tests'
+        // balances only show what they are about.
+        let ix = env.set_crank_rewards_ix(&admin.pubkey(), [0; 4]);
+        env.send(&[ix], &admin, &[]).expect("set crank rewards");
         env
     }
 
@@ -639,6 +643,8 @@ impl Env {
             ("seed_drawn", 1),
             ("named_items", 1),
             ("unrevealed", 1),
+            ("crank_rewards", 32),
+            ("crank_pool", 8),
         ] {
             if name == field {
                 return at;
@@ -828,6 +834,56 @@ impl Env {
         )
     }
 
+    /// `set_crank_rewards`: check batch, clearing, settlement, seed draw.
+    fn set_crank_rewards_ix(&self, admin: &Address, rewards: [u64; 4]) -> Instruction {
+        let args = rewards.iter().fold(Args::default(), |a, r| a.u64(*r));
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("set_crank_rewards", &args.0),
+            vec![signer(*admin), r(pda(&[b"config"])), w(crank_config()), r(SYSTEM_PROGRAM)],
+        )
+    }
+
+    fn read_crank_pool(&self, auction: &Address) -> u64 {
+        let at = self.auction_tail(auction, "crank_pool");
+        u64::from_le_bytes(self.data(auction)[at..at + 8].try_into().unwrap())
+    }
+
+    fn read_crank_rewards(&self, auction: &Address) -> [u64; 4] {
+        let at = self.auction_tail(auction, "crank_rewards");
+        let data = self.data(auction);
+        std::array::from_fn(|i| u64::from_le_bytes(data[at + 8 * i..at + 8 * i + 8].try_into().unwrap()))
+    }
+
+    /// `increase_bid` on `bid` by `bidder`, with a fresh encryption under
+    /// `key` and `extra` more deposit.
+    #[allow(clippy::too_many_arguments)]
+    fn increase_bid_ix(
+        &self,
+        view: &AuctionInfo,
+        bidder: &Address,
+        bid: Address,
+        key: [u8; 32],
+        seed: u64,
+        nonce: Option<u128>,
+        extra: u64,
+    ) -> Instruction {
+        let digest = solana_sha256_hasher::hashv(&[b"sealed-auction/bid-nonce/v1", bid.as_ref()]).to_bytes();
+        let nonce = nonce.unwrap_or_else(|| u128::from_le_bytes(digest[..16].try_into().unwrap()));
+        let args = Args::default()
+            .bytes(&ciphertext(seed))
+            .bytes(&ciphertext(seed + 1_000_000))
+            .bytes(&key)
+            .bytes(&edwards_y(&key))
+            .u128(nonce)
+            .u64(extra);
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("increase_bid", &args.0),
+            vec![signer(*bidder), w(view.auction), w(view.book), w(bid), r(SYSTEM_PROGRAM)],
+        )
+    }
+
     fn set_listing_ix(&self, admin: &Address, auction: &Address, featured: bool, hidden: bool) -> Instruction {
         Instruction::new_with_bytes(
             PROGRAM_ID,
@@ -901,6 +957,7 @@ impl Env {
                 r(TOKEN_PROGRAM),
                 r(ATA_PROGRAM),
                 r(SYSTEM_PROGRAM),
+                r(crank_config()),
             ],
         );
         let info = AuctionInfo {
@@ -975,6 +1032,7 @@ impl Env {
                 r(SYSTEM_PROGRAM),
                 // Optional accounts that are absent are passed as the program id.
                 item_list.map(w).unwrap_or(r(PROGRAM_ID)),
+                r(crank_config()),
             ],
         );
         let info = AuctionInfo {
@@ -1225,6 +1283,11 @@ impl Env {
     }
 }
 
+/// The crank rewards config.
+fn crank_config() -> Address {
+    pda(&[b"crank"])
+}
+
 /// The note on `bid`.
 fn note_address(bid: &Address) -> Address {
     pda(&[b"note", bid.as_ref()])
@@ -1317,7 +1380,7 @@ fn opening_checks_the_sale_terms() {
     let mint = env.fixed_supply_mint(&seller, 1_000);
 
     // Accounts of the earlier releases cannot be mistaken for these.
-    for (account, discriminator) in [("Auction", b"VAuctn02"), ("BidBook", b"VBook_03"), ("Bid", b"VBid__02")] {
+    for (account, discriminator) in [("Auction", b"VAuctn03"), ("BidBook", b"VBook_03"), ("Bid", b"VBid__02")] {
         assert_eq!(env.idl.account_discriminators[account], discriminator.to_vec());
     }
 
@@ -2259,9 +2322,15 @@ fn bidders_keep_an_encrypted_note_on_chain_and_get_its_rent_back() {
     assert_eq!(env.idl.account_discriminators["BidNote"], b"VNote_01".to_vec());
     let rent = env.balance(&note);
 
-    // Each bid has one note.
+    // Each bid has one note, which its bidder can rewrite (after raising
+    // the bid) without paying its rent again.
+    let rent_before = env.balance(&note_address(&bid));
     let ix = env.save_note_ix(&bidder.pubkey(), bid, [1; 32]);
-    assert!(env.send(&[ix], &bidder, &[]).is_err(), "a second note on the same bid");
+    env.send(&[ix], &bidder, &[]).expect("rewrite the note");
+    assert_eq!(&env.data(&note_address(&bid))[72..104], &[1u8; 32]);
+    assert_eq!(env.balance(&note_address(&bid)), rent_before);
+    let ix = env.save_note_ix(&bidder.pubkey(), bid, sealed);
+    env.send(&[ix], &bidder, &[]).expect("write it back");
 
     // Nobody else can write a note on a bid.
     let key = honest_key(2);
@@ -2300,6 +2369,101 @@ fn bidders_keep_an_encrypted_note_on_chain_and_get_its_rent_back() {
     env.send(&ixs, &bidder, &[]).expect("third bid with its note");
     let ix = env.close_note_ix(&bidder.pubkey(), stranger.pubkey(), third);
     env.expect_error(&[ix], &bidder, &[], "Unauthorized");
+}
+
+#[test]
+fn crank_fees_fill_a_pool_that_goes_back_to_the_seller() {
+    let mut env = Env::new();
+    let admin = env.admin.insecure_clone();
+    // Rewards: a batch check, the clearing, one settlement, a seed draw.
+    let rewards = [6_000_000, 25_000_000, 4_000_000, 3_000_000];
+    let stranger = env.funded(1);
+    let ix = env.set_crank_rewards_ix(&stranger.pubkey(), rewards);
+    env.expect_error(&[ix], &stranger, &[], "Unauthorized");
+    let ix = env.set_crank_rewards_ix(&admin.pubkey(), [0, 100_000_001, 0, 0]);
+    env.expect_error(&[ix], &admin, &[], "FeeTooHigh");
+    let ix = env.set_crank_rewards_ix(&admin.pubkey(), rewards);
+    env.send(&[ix], &admin, &[]).expect("set crank rewards");
+
+    // The seller funds the clearing and one batch check (and, for a
+    // collection, the seed draw); each bid its share of a check and its own
+    // settlement.
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let a = env.create_auction(&seller, 1, mint, TOKEN_TERMS);
+    assert_eq!(env.read_crank_rewards(&a.auction), rewards);
+    assert_eq!(env.read_crank_pool(&a.auction), 25_000_000 + 6_000_000);
+    let c = env.create_collection(
+        &seller,
+        2,
+        NftTerms { supply: 3, min_price: 900, max_per_bid: 1, duration_secs: DURATION_SECS, start_time: 0 },
+    );
+    assert_eq!(env.read_crank_pool(&c.auction), 25_000_000 + 6_000_000 + 3_000_000);
+
+    let bidder = env.funded(1);
+    let before = env.balance(&bidder.pubkey());
+    let bid = env.bid(&a, &bidder, 1, 10_000);
+    let bid_fee = 6_000_000 / 4 + 4_000_000;
+    assert_eq!(env.read_crank_pool(&a.auction), 31_000_000 + bid_fee);
+    // The bid account holds the deposit and its rent; the fee went to the pool.
+    assert_eq!(before - env.balance(&bidder.pubkey()), env.balance(&bid) + bid_fee + TX_FEE);
+    assert_eq!(env.bid_u64(&bid, "deposit"), 10_000, "the fee is not part of the deposit");
+
+    // Later changes apply to auctions opened afterwards only.
+    let ix = env.set_crank_rewards_ix(&admin.pubkey(), [1, 1, 1, 1]);
+    env.send(&[ix], &admin, &[]).expect("change crank rewards");
+    assert_eq!(env.read_crank_rewards(&a.auction), rewards);
+
+    // A sale called off before any bid returns the seller's crank fund with
+    // everything else; only the listing fee is gone.
+    let before = env.balance(&seller.pubkey());
+    let held = env.balance(&c.auction) + env.balance(&c.book);
+    let ixs = [
+        env.collection_seller_ix("cancel_collection_auction", &c),
+        env.collection_seller_ix("close_collection_auction", &c),
+    ];
+    env.send(&ixs, &seller, &[]).expect("cancel and close");
+    assert_eq!(env.balance(&seller.pubkey()) + TX_FEE - before, held);
+    assert!(held > 34_000_000);
+}
+
+#[test]
+fn bids_can_be_raised_while_bidding_is_open() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let a = env.create_auction(&seller, 1, mint, TOKEN_TERMS);
+    let bidder = env.funded(1);
+    let bid = env.bid(&a, &bidder, 1, 10_000);
+    let total = env.read_u64(&a.auction, "Auction", "total_deposited");
+
+    // A fresh encryption and 5_000 more deposit.
+    let key = honest_key(41);
+    let ix = env.increase_bid_ix(&a, &bidder.pubkey(), bid, key, 41, None, 5_000);
+    env.send(&[ix], &bidder, &[]).expect("raise the bid");
+    assert_eq!(env.bid_u64(&bid, "deposit"), 15_000);
+    assert_eq!(env.book_deposit(&a, 0), 15_000);
+    assert_eq!(env.read_u64(&a.auction, "Auction", "total_deposited"), total + 5_000);
+    let data = env.data(&bid);
+    assert_eq!(&data[8..40], &ciphertext(41));
+    assert_eq!(&data[40..72], &ciphertext(41 + 1_000_000));
+    assert_eq!(&data[72..104], &key);
+    // Re-sealing alone, with nothing added, is fine too.
+    let key = honest_key(42);
+    let ix = env.increase_bid_ix(&a, &bidder.pubkey(), bid, key, 42, None, 0);
+    env.send(&[ix], &bidder, &[]).expect("re-seal the bid");
+    assert_eq!(env.bid_u64(&bid, "deposit"), 15_000);
+
+    // Only the bidder, with the bid's own nonce, while bidding is open.
+    let stranger = env.funded(1);
+    let ix = env.increase_bid_ix(&a, &stranger.pubkey(), bid, honest_key(43), 43, None, 1);
+    env.expect_error(&[ix], &stranger, &[], "Unauthorized");
+    let ix = env.increase_bid_ix(&a, &bidder.pubkey(), bid, honest_key(44), 44, Some(7), 1);
+    env.expect_error(&[ix], &bidder, &[], "InvalidNonce");
+    env.set_time(a.end_time);
+    let ix = env.increase_bid_ix(&a, &bidder.pubkey(), bid, honest_key(45), 45, None, 1);
+    env.expect_error(&[ix], &bidder, &[], "BiddingClosed");
+    assert_eq!(env.bid_u64(&bid, "deposit"), 15_000);
 }
 
 #[test]

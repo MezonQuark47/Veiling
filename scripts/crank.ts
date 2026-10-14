@@ -6,7 +6,8 @@
  * collection's winners wait for the seller's reveal; if it does not come in
  * time, they get their payments back. Funds only ever go to their owners; the
  * signing wallet pays the transaction fees and the accounts created for
- * winners. The seller's own steps, revealing hidden art, claiming the
+ * winners, and is paid the auction's crank reward for every MPC step that
+ * succeeds, which covers the network fee of queueing it. The seller's own steps, revealing hidden art, claiming the
  * proceeds and closing the auction, are left to the seller.
  *
  *   ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
@@ -101,8 +102,12 @@ async function main() {
     await awaitComputationFinalization(provider, offset, program.programId, "confirmed", 180_000);
   }
 
+  const startBalance = await provider.connection.getBalance(payer, "confirmed");
   let auction = await fetchAuction();
   console.log(`Auction ${auctionAddress.toBase58()}: ${variant(auction.status)}, ${auction.bidCount} bids`);
+  console.log(
+    `Settlement fund: ${auction.crankPool.toNumber() / 1e9} SOL; each step pays this wallet its reward when it succeeds.`
+  );
 
   if (variant(auction.status) === "open") {
     // A computation that fails leaves the count where it was; give up after
@@ -264,6 +269,8 @@ async function main() {
   }
 
   auction = await fetchAuction();
+  const net = (await provider.connection.getBalance(payer, "confirmed")) - startBalance;
+  console.log(`This wallet's net for the run, fees and rewards together: ${net / 1e9} SOL`);
   console.log(
     `Done: ${variant(auction.status)}, ${auction.resolvedCount}/${auction.bidCount} bids resolved, ` +
       `${auction.liveBids} bid account(s) open. The seller can now claim the proceeds and close the auction.`

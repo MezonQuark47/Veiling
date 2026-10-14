@@ -30,8 +30,9 @@ if [ "$NEEDED" -gt "$CURRENT" ]; then
   fi
 fi
 
+# The public devnet RPC rate-limits the buffer writes, so allow many tries.
 if ! solana program deploy "$SO" --program-id "$PROGRAM_ID" -u "$RPC" -k "$KEYPAIR" \
-  --upgrade-authority "$KEYPAIR" >> upgrade-devnet.log 2>&1; then
+  --upgrade-authority "$KEYPAIR" --max-sign-attempts 60 >> upgrade-devnet.log 2>&1; then
   echo "Deploy failed. Reason (recovery phrases filtered out):"
   grep -iE "error|insufficient|failed|requires" upgrade-devnet.log | grep -viE "seed phrase|recover" | head -5
   echo "Close any leftover buffer to get its SOL back: solana program close --buffers -u devnet -k <keypair>"
