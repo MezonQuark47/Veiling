@@ -10,6 +10,20 @@ KEYPAIR=${KEYPAIR:-$HOME/.config/solana/devnet-test.json}
 RPC=${RPC:-https://api.devnet.solana.com}
 SO=target/deploy/sealed_auction.so
 
+# The program pins each circuit by the hash in build/<circuit>.hash. The
+# circuits registered on chain are the hosted copies in the repository root,
+# and `arcium build` does not always compile an unchanged circuit to the same
+# bytes, so refuse to deploy a build whose hashes are not the hosted files'.
+for HOSTED in *.arcis; do
+  NAME=${HOSTED%.arcis}
+  [ -f "build/$NAME.hash" ] || continue
+  PINNED=$(python3 -c "import json,sys; print(bytes(json.load(open(sys.argv[1]))).hex())" "build/$NAME.hash")
+  if [ "$PINNED" != "$(shasum -a 256 "$HOSTED" | cut -d' ' -f1)" ]; then
+    echo "build/$NAME.hash is not the hash of the hosted $HOSTED. Copy $HOSTED into build/, write its hash and rebuild with anchor build (touch the program first)." >&2
+    exit 1
+  fi
+done
+
 echo "Local build: $(shasum -a 256 "$SO" | cut -d' ' -f1) ($(wc -c < "$SO" | tr -d ' ') bytes)"
 echo "Deployer balance: $(solana balance -u "$RPC" -k "$KEYPAIR")"
 

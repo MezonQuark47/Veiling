@@ -214,8 +214,8 @@ keeps a crank pool in its own account:
 - the seller pays a clearing, one batch check and, for a collection, a seed
   draw into it when the auction opens, and the clearing steps each added
   page may need (`page_crank_fee`: 9 steps with the second page, 8 more with
-  each further one; a step pays 90% of the clearing reward, about what it
-  costs);
+  each further one; a step pays the clearing reward, as it costs about the
+  same: 0.0232 SOL measured on devnet);
 - each bid pays its share of a batch check plus one settlement
   (`check_batch / 4 + settlement`), not refunded, on top of its deposit;
 - each step's callback, once its computation succeeds, pays whoever queued it

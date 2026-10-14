@@ -2875,10 +2875,10 @@ fn sellers_add_pages_for_up_to_1024_bids() {
     let mut env = Env::new();
     let admin = env.admin.insecure_clone();
     // Rewards: a batch check, the clearing, one settlement, a seed draw. A
-    // step of the paged clearing pays 80% of the clearing reward.
+    // step of the paged clearing pays the clearing reward too.
     let ix = env.set_crank_rewards_ix(&admin.pubkey(), [0, 25_000_000, 0, 0]);
     env.send(&[ix], &admin, &[]).expect("set crank rewards");
-    let fold_reward = 22_500_000;
+    let fold_reward = 25_000_000;
 
     let seller = env.funded(10);
     let bidder = env.funded(100);

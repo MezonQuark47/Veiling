@@ -33,7 +33,7 @@ export const MAX_BIDS = PAGE_BIDS * MAX_PAGES;
 /** Passes of the clearing across pages, each fixing four bits of the price. */
 export const FOLD_PASSES = 8;
 /** What one step of that clearing pays its caller, as a share of the clearing reward. */
-export const FOLD_REWARD_PERCENT = 90n;
+export const FOLD_REWARD_PERCENT = 100n;
 /** A bid into a full auction must out-deposit the smallest bid by this much. */
 export const EVICTION_PREMIUM_PERCENT = 10n;
 export const PENDING_TIMEOUT_SECS = 30 * 60;

@@ -237,8 +237,11 @@ function BidRoom({ pages, onPages }: { pages: number; onPages: (pages: number) =
 }
 
 const U64_MAX = (1n << 64n) - 1n;
-/** The smallest default for the smallest bid: 0.001 SOL. */
-const MIN_SUGGESTED_DEPOSIT = 1_000_000n;
+/**
+ * The smallest default for the smallest bid: 0.1 SOL. The seller can set any
+ * lower amount; the default keeps throwaway bids from taking places.
+ */
+const MIN_SUGGESTED_DEPOSIT = 100_000_000n;
 /** Rent-exempt lamports per byte of account data, with the 128 bytes every account carries. */
 const RENT_PER_BYTE = 6_960n;
 /** An item list's size: its header, then one entry per item (see `ItemList`). */
@@ -1398,7 +1401,8 @@ export function Launch() {
                   The least a bidder can deposit, and the smallest sealed budget a bid can name. The auction takes up
                   to {formatCount(pages * PAGE_BIDS)} bids (see Room for bids); after that, larger deposits replace the
                   smallest. The suggestion splits the sale's worth at your minimum price across every place, so nobody
-                  can take them all for less.
+                  can take them all for less, and is at least {formatSol(MIN_SUGGESTED_DEPOSIT)} SOL. You can set a
+                  lower amount.
                 </p>
               </>
             )}

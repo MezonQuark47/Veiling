@@ -252,9 +252,10 @@ pub const FOLD_STATE_CIPHERTEXTS: usize = 7;
 pub const FOLD_STATE_OFFSET: u32 = 8;
 pub const FOLD_STATE_LEN: u32 = 32 * FOLD_STATE_CIPHERTEXTS as u32;
 /// What one `fold_batch` step pays its caller, as a share of the auction's
-/// clearing reward, in percent: a step reads one page and costs about this
-/// much of a whole `clear_price` run.
-pub const FOLD_REWARD_PERCENT: u64 = 90;
+/// clearing reward, in percent. A step reads one page and costs about as
+/// much as a whole `clear_price` run (measured on devnet: 0.0232 SOL against
+/// 0.0224), so it pays the same.
+pub const FOLD_REWARD_PERCENT: u64 = 100;
 pub const MIN_DURATION_SECS: i64 = 60;
 pub const MAX_DURATION_SECS: i64 = 14 * 24 * 60 * 60;
 /// How far ahead an auction can schedule the start of bidding.
