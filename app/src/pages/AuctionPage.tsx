@@ -73,7 +73,7 @@ import {
   findEviction,
 } from "../lib/actions";
 import { closeNoteInstruction, hasChainNote, noteForNewBid } from "../lib/bidNotes";
-import { forgetClosedBids, forgetNote, readNote, saveNote } from "../lib/notes";
+import { forgetClosedBids, forgetNote, noteSize, readNote, saveNote } from "../lib/notes";
 import { NoteUnlock } from "../components/BidNotes";
 import { formatCount, formatDateTime, formatDuration, formatSol, parseSol, plural } from "../lib/format";
 import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/price";
@@ -176,7 +176,7 @@ function placedMessage(sig: string, evicted: Bid | null, noted: boolean) {
  * sign for the key) and, when it replaces a bid, closes that bid's note so its
  * rent goes back to its owner. Returns whether the note was added.
  */
-async function addNotes(tx: Transaction, signer: WalletSigner, bid: PublicKey, price: bigint, quantity: number, evicted: Bid | null) {
+async function addNotes(tx: Transaction, signer: WalletSigner, bid: PublicKey, price: bigint, quantity: bigint, evicted: Bid | null) {
   const save = await noteForNewBid(signer, bid, price, quantity);
   if (save) tx.add(save);
   if (evicted && (await hasChainNote(evicted.address))) {
@@ -185,17 +185,28 @@ async function addNotes(tx: Transaction, signer: WalletSigner, bid: PublicKey, p
   return save !== null;
 }
 
-/** A token bid: a SOL budget, which is the deposit, and the most it pays per token. */
+/**
+ * A token bid: a SOL budget and the most it pays per token, both sealed, and
+ * a public deposit that covers the budget without showing it.
+ */
 function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset: AssetInfo; onPlaced: () => void }) {
   const { signer } = useWallet();
   const action = useAction();
   const [budgetInput, setBudgetInput] = useState("");
   const [priceInput, setPriceInput] = useState("");
+  const [mode, setMode] = useState<DepositMode>("private");
+  const [customInput, setCustomInput] = useState("");
   const evict = useEviction(auction);
   const price = usePriceInput(auction, asset, priceInput);
   const budget = parseSol(budgetInput) ?? 0n;
-  const enoughToEnter = !evict.full || (Boolean(evict.eviction.data) && budget >= evict.minimumDeposit);
-  const budgetValid = budget >= auction.minDeposit && enoughToEnter;
+  const budgetValid = budget >= auction.minDeposit;
+  // A private deposit rounds the budget up to 1, 2, 5, 10, ... steps, so it
+  // bounds the budget without showing it.
+  const custom = parseSol(customInput);
+  const chosen = mode === "private" ? (budget > 0n ? niceCeil(budget) : 0n) : mode === "exact" ? budget : (custom ?? 0n);
+  const deposit = mode === "private" && budget > 0n && chosen < evict.minimumDeposit ? evict.minimumDeposit : chosen;
+  const enoughToEnter = !evict.full || (Boolean(evict.eviction.data) && deposit >= evict.minimumDeposit);
+  const valid = budgetValid && price.ticks !== null && deposit >= budget && enoughToEnter;
   const min = formatPrice(auction, auction.minPrice, asset.decimals);
   const max = maxPriceOf(auction, asset.decimals);
   const cap = (amount: bigint) => (amount < auction.supply ? amount : auction.supply);
@@ -206,10 +217,10 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
     action.run("place", async () => {
       if (!signer) throw new Error("Connect a wallet first");
       if (!price.ticks) throw new Error("Enter a valid price");
-      const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, 0, budget);
-      const noted = await addNotes(tx, signer, bid, price.ticks, 0, evicted);
+      const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, budget, deposit);
+      const noted = await addNotes(tx, signer, bid, price.ticks, budget, evicted);
       const sig = await sendTransaction(tx, signer);
-      saveNote(bid, auction.address, price.ticks, 0);
+      saveNote(bid, auction.address, price.ticks, budget);
       onPlaced();
       evict.eviction.reload();
       return placedMessage(sig, evicted, noted);
@@ -231,11 +242,10 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
           aria-invalid={budgetInput !== "" && !budgetValid}
           aria-describedby="budget-hint"
         />
-        <p id="budget-hint" className={`hint${budgetInput !== "" && budget < auction.minDeposit ? " hint--error" : ""}`}>
-          The SOL you want to spend, at least {formatSol(auction.minDeposit)}. It is your deposit, so its size is
-          public; your price is not.
+        <p id="budget-hint" className={`hint${budgetInput !== "" && !budgetValid ? " hint--error" : ""}`}>
+          The most SOL you want to spend, at least {formatSol(auction.minDeposit)} SOL. Sealed like your price:
+          only a winning budget is ever revealed.
         </p>
-        <EvictionHint {...evict} enough={enoughToEnter} bidCount={auction.bidCount} />
       </div>
       <div className="field">
         <label htmlFor="price">Most you would pay per {asset.unit} (SOL)</label>
@@ -255,6 +265,44 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
           {price.rounded && price.shown ? ` Rounded down to ${price.shown}.` : ""}
         </p>
       </div>
+      <fieldset className="field">
+        <legend>Deposit</legend>
+        <div className="segmented" role="group">
+          {(Object.keys(DEPOSIT_LABELS) as DepositMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`segmented__item${mode === m ? " segmented__item--on" : ""}`}
+              aria-pressed={mode === m}
+              onClick={() => setMode(m)}
+            >
+              {DEPOSIT_LABELS[m]}
+            </button>
+          ))}
+        </div>
+        {mode === "custom" ? (
+          <input
+            className="field__extra"
+            inputMode="decimal"
+            placeholder={`At least ${formatSol(budget)} SOL`}
+            value={customInput}
+            onChange={(e) => setCustomInput(e.target.value.replace(/[^0-9.]/g, ""))}
+            aria-label="Deposit in SOL"
+            aria-invalid={customInput !== "" && !valid}
+          />
+        ) : null}
+        <p className={`hint${mode === "exact" ? " hint--warn" : ""}`}>
+          {mode === "private"
+            ? budgetValid
+              ? `Deposits are public. This one would cover a budget of up to ${formatSol(deposit)} SOL, so it does not show yours.`
+              : "Deposits are public. A private deposit is rounded up, so it does not show your budget."
+            : mode === "exact"
+              ? "Anyone looking at the chain sees your budget in an exact deposit. Use it only if you do not mind that."
+              : `Any amount from your budget up. The further it is from your budget, the less it reveals.`}{" "}
+          Whatever you do not spend comes back after settlement.
+        </p>
+        <EvictionHint {...evict} enough={enoughToEnter} bidCount={auction.bidCount} />
+      </fieldset>
       <dl className="sums">
         <div>
           <dt>If the price ends at yours</dt>
@@ -264,13 +312,17 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
           <dt>If it ends at the minimum</dt>
           <dd>{budget > 0n ? goodsAmount(atMinimum, asset) : "—"}</dd>
         </div>
+        <div>
+          <dt>Deposit now</dt>
+          <dd>{formatSol(deposit)} SOL</dd>
+        </div>
       </dl>
       <p className="hint">
         Every winner pays the same clearing price, never more than their own. A bid above it spends its whole budget
         at that price, so the lower the price, the more {asset.goods} you get. A bid exactly at it shares what is
         left. Whatever is not spent comes back, and bids cannot be changed or withdrawn.
       </p>
-      <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !budgetValid || !price.ticks}>
+      <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !valid}>
         {signer ? "Seal and place bid" : "Connect a wallet to bid"}
       </Button>
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
@@ -318,10 +370,11 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
     action.run("place", async () => {
       if (!signer) throw new Error("Connect a wallet first");
       if (!price.ticks) throw new Error("Enter a valid price");
-      const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, quantity, deposit);
-      const noted = await addNotes(tx, signer, bid, price.ticks, quantity, evicted);
+      const size = BigInt(quantity);
+      const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, size, deposit);
+      const noted = await addNotes(tx, signer, bid, price.ticks, size, evicted);
       const sig = await sendTransaction(tx, signer);
-      saveNote(bid, auction.address, price.ticks, quantity);
+      saveNote(bid, auction.address, price.ticks, size);
       onPlaced();
       evict.eviction.reload();
       return placedMessage(sig, evicted, noted);
@@ -1077,14 +1130,14 @@ function YourBids({
               <div className="bidlist__main">
                 <strong>Bid {b.index + 1}</strong>
                 <span className="muted">
-                  {auction.kind === "token" ? "Budget" : "Deposit"} {formatSol(b.deposit)} SOL
+                  Deposit {formatSol(b.deposit)} SOL
                 </span>
               </div>
               {note && sealedAt ? (
                 <p className="bidlist__note">
                   {auction.kind === "token"
-                    ? `Sealed at up to ${sealedAt} per ${asset.unit}.`
-                    : `Sealed for ${plural(note.quantity, "NFT")} at up to ${sealedAt} each.`}{" "}
+                    ? `Sealed: a budget of ${formatSol(noteSize(note) > 0n ? noteSize(note) : b.deposit)} SOL at up to ${sealedAt} per ${asset.unit}.`
+                    : `Sealed for ${plural(Number(noteSize(note)), "NFT")} at up to ${sealedAt} each.`}{" "}
                   Only your wallet can read this note, and it is deleted once the bid is collected.
                 </p>
               ) : null}
@@ -1416,7 +1469,7 @@ export function AuctionPage({ address }: { address: string }) {
               <dd>
                 {collection
                   ? `One NFT at the minimum price, ${formatSol(auction.minDeposit)} SOL`
-                  : `A budget of ${formatSol(auction.minDeposit)} SOL`}
+                  : `A sealed budget of ${formatSol(auction.minDeposit)} SOL`}
               </dd>
             </div>
             {collection ? (

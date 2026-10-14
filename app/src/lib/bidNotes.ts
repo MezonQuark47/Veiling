@@ -6,8 +6,10 @@
 // deterministic, so the same wallet makes the same key everywhere, and
 // nobody without the wallet can.
 //
-// Layout of the 32 bytes: version (1), then the ciphertext of price (u32 LE,
-// price ticks) and quantity (u32 LE) with its 16-byte tag (24), then zeros.
+// Layout of the 32 bytes: version (2), then the ciphertext of price (u32 LE,
+// price ticks) and size (u64 LE: a token bid's budget in lamports, or NFTs)
+// with its 16-byte tag (28), then zeros. Version 1 notes held the size as a
+// u32 and are still read.
 // The IV comes from the bid's address, which is unique, and the address is
 // also bound in as associated data, so a note cannot be moved to another bid.
 import { utils } from "@anchor-lang/core";
@@ -21,8 +23,9 @@ import { readNote, saveNote } from "./notes";
 import type { WalletSigner } from "./tx";
 
 export const BID_NOTE_LEN = 32;
-const VERSION = 1;
-const PLAIN_LEN = 8;
+const VERSION = 2;
+/** Plaintext bytes by version: price u32 and size u32 (1), or size u64 (2). */
+const PLAIN_LEN: Record<number, number> = { 1: 8, 2: 12 };
 const TAG_LEN = 16;
 const DISCRIMINATOR = utf8ToBytes("VNote_01");
 /** Discriminator, bid, bidder, note, bump. */
@@ -74,13 +77,17 @@ export function walletNoteKey(signer: WalletSigner): Promise<CryptoKey> {
 
 const ivOf = (bid: PublicKey) => plainBytes(sha256(concatBytes(utf8ToBytes("veiling/bid-note-iv/v1"), bid.toBytes())).slice(0, 12));
 
-/** The 32 bytes stored for a bid of `quantity` NFTs (0 for tokens) at up to `price` ticks. */
-export async function sealBidNote(key: CryptoKey, bid: PublicKey, price: bigint, quantity: number): Promise<Uint8Array> {
+/**
+ * The 32 bytes stored for a bid at up to `price` ticks, of `quantity`: a
+ * token bid's budget in lamports, or a collection bid's NFTs.
+ */
+export async function sealBidNote(key: CryptoKey, bid: PublicKey, price: bigint, quantity: bigint): Promise<Uint8Array> {
   if (price < 0n || price > 0xffff_ffffn) throw new Error("Price out of range");
-  const plain = new Uint8Array(PLAIN_LEN);
+  if (quantity < 0n || quantity > 0xffff_ffff_ffff_ffffn) throw new Error("Size out of range");
+  const plain = new Uint8Array(PLAIN_LEN[VERSION]);
   const view = new DataView(plain.buffer);
   view.setUint32(0, Number(price), true);
-  view.setUint32(4, quantity, true);
+  view.setBigUint64(4, quantity, true);
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt({ name: "AES-GCM", iv: ivOf(bid), additionalData: plainBytes(bid.toBytes()) }, key, plain)
   );
@@ -95,18 +102,20 @@ export async function openBidNote(
   key: CryptoKey,
   bid: PublicKey,
   bytes: Uint8Array
-): Promise<{ price: bigint; quantity: number } | null> {
-  if (bytes.length !== BID_NOTE_LEN || bytes[0] !== VERSION) return null;
+): Promise<{ price: bigint; quantity: bigint } | null> {
+  const length = PLAIN_LEN[bytes[0]];
+  if (bytes.length !== BID_NOTE_LEN || !length) return null;
   try {
     const plain = new Uint8Array(
       await crypto.subtle.decrypt(
         { name: "AES-GCM", iv: ivOf(bid), additionalData: plainBytes(bid.toBytes()) },
         key,
-        plainBytes(bytes.slice(1, 1 + PLAIN_LEN + TAG_LEN))
+        plainBytes(bytes.slice(1, 1 + length + TAG_LEN))
       )
     );
     const view = new DataView(plain.buffer);
-    return { price: BigInt(view.getUint32(0, true)), quantity: view.getUint32(4, true) };
+    const quantity = length === 8 ? BigInt(view.getUint32(4, true)) : view.getBigUint64(4, true);
+    return { price: BigInt(view.getUint32(0, true)), quantity };
   } catch {
     return null;
   }
@@ -135,7 +144,7 @@ export async function noteForNewBid(
   signer: WalletSigner,
   bid: PublicKey,
   price: bigint,
-  quantity: number
+  quantity: bigint
 ): Promise<TransactionInstruction | null> {
   try {
     const key = await walletNoteKey(signer);

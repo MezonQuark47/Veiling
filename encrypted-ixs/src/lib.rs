@@ -4,25 +4,33 @@
 //!
 //! A bid is a private `(price, quantity)` pair. Prices are whole "price
 //! ticks" (a u32); the auction fixes what a tick is worth.
-//! - Token auctions: a bid is a SOL budget (its public deposit) and the
-//!   highest price per token it accepts. `quantity` is unused.
+//! - Token auctions: `quantity` is the bid's budget in lamports, the most it
+//!   spends, and `price` the highest price per token it accepts. The budget
+//!   is private too: the public deposit only has to cover it, so a deposit
+//!   says nothing exact about the demand behind it.
 //! - Collection auctions: a bid asks for `quantity` NFTs at up to `price`
 //!   each, and its deposit must cover that.
 //!
+//! The circuits carry a `_v2` suffix: the first version took token budgets
+//! from the public deposits, and its computation definitions stay registered
+//! under the old names.
+//!
 //! Flow after bidding closes:
-//! 1. `check_bids` decodes and checks bids four at a time and stores them as
+//! 1. `check_bids_v2` decodes and checks bids four at a time and stores them as
 //!    one MXE-encrypted batch record. An invalid bid is recorded as price 0,
 //!    which never wins.
-//! 2. `clear_price` reads every batch record and finds the clearing price
+//! 2. `clear_price_v2` reads every batch record and finds the clearing price
 //!    exactly, bit by bit from the top: the highest price at which demand
 //!    covers the supply. Only that price and the demand above and at it are
 //!    revealed.
-//! 3. `award_bid` decides one bid's outcome from its batch record against
-//!    that public result.
+//! 3. `award_bid_v2` decides one bid's outcome from its batch record against
+//!    that public result, and reveals its size (budget or NFTs) only if it
+//!    wins something: the program needs it to work out the award in the
+//!    open. A losing bid's price and size are never revealed.
 //! 4. Collections only: once every bid is settled, `draw_seed` draws the
 //!    random seed that decides which NFTs each winner gets.
 //!
-//! Each client ciphertext is decoded exactly once, in `check_bids`. A
+//! Each client ciphertext is decoded exactly once, in `check_bids_v2`. A
 //! malformed plaintext (a value outside its type's range) decodes to some
 //! value in range, but not necessarily the same one twice, so the clearing
 //! and every award come from that single decoding.
@@ -40,24 +48,22 @@ mod circuits {
     /// Batch records an auction can have.
     pub const MAX_BATCHES: usize = 64;
     pub const MAX_BIDS: usize = BATCH_SIZE * MAX_BATCHES;
-    /// Deposits reach `clear_price` two to a u128.
-    pub const DEPOSIT_PAIRS: usize = MAX_BIDS / 2;
-
     /// A bidder's private order, encrypted client-side.
     #[derive(Clone, Copy)]
     pub struct BidInput {
         pub price: u32,
-        pub quantity: u16,
+        /// Lamports of budget for a token bid, NFTs for a collection bid.
+        pub quantity: u64,
     }
 
     /// A bid after checking. `price == 0` means it does not count.
     #[derive(Clone, Copy)]
     pub struct CheckedBid {
         pub price: u32,
-        pub quantity: u16,
+        pub quantity: u64,
     }
 
-    /// The checked bids of one batch, packed into a single ciphertext.
+    /// The checked bids of one batch, packed into two ciphertexts.
     pub type BatchRecord = Pack<[CheckedBid; BATCH_SIZE]>;
 
     /// Revealed result of `clear_price`.
@@ -76,33 +82,41 @@ mod circuits {
         /// 0 = nothing, 1 = above the clearing price (or every valid bid when
         /// demand never covered the supply), 2 = exactly at it.
         pub outcome: u8,
-        /// NFTs asked for, for outcomes 1 and 2 of a collection auction.
-        pub quantity: u16,
+        /// For outcomes 1 and 2: the bid's budget in lamports (tokens) or
+        /// the NFTs it asked for (collections). 0 otherwise.
+        pub quantity: u64,
     }
 
     /// Checks one bid against the public terms and its deposit.
+    ///
+    /// A token bid needs a budget of at least `min_budget` (and at least one
+    /// lamport) that its deposit covers. A collection bid needs 1 to
+    /// `max_quantity` NFTs and a deposit that covers them at its price.
     fn check_bid(
         bid: BidInput,
         deposit: u64,
         is_token: bool,
         min_price: u32,
         price_scale: u64,
-        max_quantity: u16,
+        max_quantity: u64,
+        min_budget: u64,
     ) -> CheckedBid {
         let price_ok = bid.price >= min_price;
-        let quantity_ok = bid.quantity >= 1u16 && bid.quantity <= max_quantity;
-        // price * scale * quantity < 2^32 * 2^64 * 2^16, so u128 cannot
-        // overflow.
-        let cost = (bid.price as u128) * (price_scale as u128) * (bid.quantity as u128);
+        let budget_ok = bid.quantity >= min_budget && bid.quantity >= 1u64 && bid.quantity <= deposit;
+        let quantity_ok = bid.quantity >= 1u64 && bid.quantity <= max_quantity;
+        // An out-of-range size is invalid anyway; leaving it out keeps
+        // price * scale * size below 2^32 * 2^64 * 2^16, inside a u128.
+        let size = if quantity_ok { bid.quantity } else { 0u64 };
+        let cost = (bid.price as u128) * (price_scale as u128) * (size as u128);
         let funded = cost <= deposit as u128;
         let valid = if is_token {
-            price_ok
+            price_ok && budget_ok
         } else {
             price_ok && quantity_ok && funded
         };
         CheckedBid {
             price: if valid { bid.price } else { 0u32 },
-            quantity: if valid && !is_token { bid.quantity } else { 0u16 },
+            quantity: if valid { bid.quantity } else { 0u64 },
         }
     }
 
@@ -111,7 +125,7 @@ mod circuits {
     /// recorded as empty. The record is encrypted under a fresh nonce.
     #[instruction]
     #[allow(clippy::too_many_arguments)]
-    pub fn check_bids(
+    pub fn check_bids_v2(
         bid_0: Enc<Shared, BidInput>,
         deposit_0: u64,
         bid_1: Enc<Shared, BidInput>,
@@ -124,13 +138,14 @@ mod circuits {
         is_token: bool,
         min_price: u32,
         price_scale: u64,
-        max_quantity: u16,
+        max_quantity: u64,
+        min_budget: u64,
     ) -> Enc<Mxe, BatchRecord> {
         let bids = [bid_0.to_arcis(), bid_1.to_arcis(), bid_2.to_arcis(), bid_3.to_arcis()];
         let deposits = [deposit_0, deposit_1, deposit_2, deposit_3];
         let mut record = [CheckedBid {
             price: 0u32,
-            quantity: 0u16,
+            quantity: 0u64,
         }; BATCH_SIZE];
         for k in 0..BATCH_SIZE {
             let checked = check_bid(
@@ -140,11 +155,12 @@ mod circuits {
                 min_price,
                 price_scale,
                 max_quantity,
+                min_budget,
             );
             let active = (k as u8) < active_count;
             record[k] = CheckedBid {
                 price: if active { checked.price } else { 0u32 },
-                quantity: if active { checked.quantity } else { 0u16 },
+                quantity: if active { checked.quantity } else { 0u64 },
             };
         }
         Mxe::get().from_arcis(Pack::new(record))
@@ -153,19 +169,18 @@ mod circuits {
     /// Finds the clearing price from every batch record.
     ///
     /// Demand at price `c` is the weight of the bids at or above `c`: their
-    /// budgets for a token auction, their quantities for a collection. It
+    /// private budgets for a token auction, their quantities for a
+    /// collection; either way the `quantity` each record holds. It
     /// covers the supply when `demand * price_unit >= supply * c` (tokens:
     /// the budgets buy the whole supply at `c`) or `demand >= supply`
     /// (collections). Demand only falls as `c` rises, so the highest such `c`
     /// is found bit by bit from the top, keeping for each bid whether its
     /// price still matches the bits chosen so far.
     ///
-    /// `deposits` holds bid `2j` in the low and bid `2j + 1` in the high 64
-    /// bits of entry `j`. Records at or beyond `active_batches` are ignored.
+    /// Records at or beyond `active_batches` are ignored.
     #[instruction]
-    pub fn clear_price(
+    pub fn clear_price_v2(
         records: [Enc<Mxe, BatchRecord>; MAX_BATCHES],
-        deposits: [u128; DEPOSIT_PAIRS],
         active_batches: u8,
         is_token: bool,
         price_unit: u64,
@@ -178,15 +193,8 @@ mod circuits {
             let active = (b as u8) < active_batches;
             for k in 0..BATCH_SIZE {
                 let i = b * BATCH_SIZE + k;
-                let pair = deposits[i / 2];
-                let deposit = if i % 2 == 0 { pair % (1u128 << 64) } else { pair >> 64 };
-                let weight = if is_token {
-                    deposit
-                } else {
-                    record[k].quantity as u128
-                };
                 prices[i] = record[k].price;
-                weights[i] = if active { weight } else { 0u128 };
+                weights[i] = if active { record[k].quantity as u128 } else { 0u128 };
             }
         }
         // Token demand is compared as budget * price_unit against
@@ -237,9 +245,10 @@ mod circuits {
     }
 
     /// Decides the bid in `slot` of a batch record against the public
-    /// clearing price. Reveals the quantity only when the bid wins something.
+    /// clearing price. Reveals the size (a token bid's budget, a collection
+    /// bid's NFTs) only when the bid wins something.
     #[instruction]
-    pub fn award_bid(
+    pub fn award_bid_v2(
         record_ctxt: Enc<Mxe, BatchRecord>,
         slot: u8,
         clearing_price: u32,
@@ -248,7 +257,7 @@ mod circuits {
         let record = record_ctxt.to_arcis().unpack();
         let mut bid = CheckedBid {
             price: 0u32,
-            quantity: 0u16,
+            quantity: 0u64,
         };
         for k in 0..BATCH_SIZE {
             if slot == k as u8 {
@@ -267,7 +276,7 @@ mod circuits {
         };
         Award {
             outcome,
-            quantity: if above || at { bid.quantity } else { 0u16 },
+            quantity: if above || at { bid.quantity } else { 0u64 },
         }
         .reveal()
     }

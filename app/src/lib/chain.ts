@@ -182,7 +182,7 @@ export interface Bid {
   auction: PublicKey;
   bidder: PublicKey;
   index: number;
-  /** Lamports escrowed; a token bid's budget. */
+  /** Lamports escrowed: they cover a token bid's sealed budget, or a collection bid's cost. */
   deposit: bigint;
   status: BidStatus;
   pendingComputation: PublicKey;
@@ -468,9 +468,9 @@ export async function fetchItemList(auction: PublicKey): Promise<ItemList | null
   return parseItemList(address, account.data);
 }
 
-// Deposits sit after the 8-byte discriminator, 64 batch records of 32 bytes
+// Deposits sit after the 8-byte discriminator, 64 batch records of 64 bytes
 // and 64 nonces of 16 bytes (see `BidBook` in the program).
-const BOOK_DEPOSITS_OFFSET = 8 + 64 * 32 + 64 * 16;
+const BOOK_DEPOSITS_OFFSET = 8 + 64 * 64 + 64 * 16;
 
 /** The deposit of the bid at each index, as the program sees it. */
 export async function fetchBookDeposits(auction: PublicKey): Promise<bigint[]> {

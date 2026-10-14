@@ -214,8 +214,8 @@ export function Home() {
             <li>
               <h3>Name your price</h3>
               <p>
-                For a token, deposit the SOL you want to spend and set the most you would pay per token. For an
-                NFT collection, choose how many NFTs and the most you would pay for each.
+                For a token, set the SOL you want to spend and the most you would pay per token. For an NFT
+                collection, choose how many NFTs and the most you would pay for each. Your deposit covers it.
               </p>
             </li>
             <li>

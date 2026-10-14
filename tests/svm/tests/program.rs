@@ -1317,7 +1317,7 @@ fn opening_checks_the_sale_terms() {
     let mint = env.fixed_supply_mint(&seller, 1_000);
 
     // Accounts of the earlier releases cannot be mistaken for these.
-    for (account, discriminator) in [("Auction", b"VAuctn02"), ("BidBook", b"VBook_02"), ("Bid", b"VBid__02")] {
+    for (account, discriminator) in [("Auction", b"VAuctn02"), ("BidBook", b"VBook_03"), ("Bid", b"VBid__02")] {
         assert_eq!(env.idl.account_discriminators[account], discriminator.to_vec());
     }
 

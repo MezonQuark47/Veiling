@@ -94,8 +94,8 @@ export function Docs({ section }: { section: string }) {
                 <h3>Buyers place sealed bids</h3>
                 <p>
                   A token bid is a SOL budget and the most it would pay per token. A collection bid is a number of
-                  NFTs and the most it would pay for each. The price is encrypted in the buyer's browser; the SOL
-                  goes into the bid as its deposit.
+                  NFTs and the most it would pay for each. Both are encrypted in the buyer's browser; SOL that covers
+                  them goes into the bid as its deposit.
                 </p>
               </li>
               <li>
@@ -147,9 +147,10 @@ export function Docs({ section }: { section: string }) {
               <div>
                 <dt>Tokens</dt>
                 <dd>
-                  Deposit the SOL you want to spend and set your highest price per token. If you win above the
-                  clearing price, your whole budget buys tokens at that price, so the lower it ends, the more you
-                  get. The budget is public; the price is not.
+                  Set the SOL you want to spend and your highest price per token. If you win above the clearing
+                  price, your whole budget buys tokens at that price, so the lower it ends, the more you get. Both
+                  are sealed. Your deposit only has to cover the budget, so it does not show it, and a large deposit
+                  says nothing about real demand.
                 </dd>
               </div>
               <div>
@@ -160,19 +161,24 @@ export function Docs({ section }: { section: string }) {
                 </dd>
               </div>
             </dl>
-            <p>A collection bid's deposit can be set three ways:</p>
+            <p>The deposit only has to cover the bid, and it can be set three ways:</p>
             <dl className="doc__list">
               <div>
                 <dt>Private</dt>
-                <dd>Rounds the size and the price up, to 1, 2, 5, 10 and so on. It shows neither exactly.</dd>
+                <dd>
+                  Rounds up to 1, 2, 5, 10 and so on: a token budget, or a collection bid's size and price. It shows
+                  neither exactly.
+                </dd>
               </div>
               <div>
                 <dt>Exact</dt>
-                <dd>Exactly price × NFTs. Cheapest to lock up, but anyone can work out your bid from it.</dd>
+                <dd>
+                  Exactly the budget, or price × NFTs. Cheapest to lock up, but anyone can work out your bid from it.
+                </dd>
               </div>
               <div>
                 <dt>Custom</dt>
-                <dd>Any amount above the cost. The further it is from price × NFTs, the less it reveals.</dd>
+                <dd>Any amount above what it covers. The further from it, the less it reveals.</dd>
               </div>
             </dl>
             <p>
@@ -406,7 +412,7 @@ export function Docs({ section }: { section: string }) {
                 </tr>
                 <tr>
                   <td>The clearing price and the demand at and above it</td>
-                  <td>The size of every losing collection bid</td>
+                  <td>The budget of every losing token bid and the size of every losing collection bid</td>
                 </tr>
                 <tr>
                   <td>What each winner received and paid</td>
@@ -419,7 +425,9 @@ export function Docs({ section }: { section: string }) {
               </tbody>
             </table>
             <p>
-              A token bid's budget is its deposit, so it is public; its price never is. Veiling shows only the total
+              Deposits are public, but a deposit only covers a bid: a token bid's budget and a collection bid's
+              price times size are sealed, and a deposit can be larger to hide them. A winning bid's budget or size
+              becomes known when it is settled, because its payment is public. Veiling shows only the total
               deposited and never lists who bid. Solana itself is public, though: each deposit and the wallet that
               made it can be read from the chain by anyone who looks. Bids exactly at the clearing price are known to
               be at it once settled.

@@ -106,16 +106,16 @@ export type SealedAuction = {
       ]
     },
     {
-      "name": "awardBidCallback",
+      "name": "awardBidV2Callback",
       "discriminator": [
-        80,
-        116,
-        237,
-        216,
-        185,
-        142,
-        254,
-        149
+        127,
+        0,
+        162,
+        231,
+        94,
+        184,
+        180,
+        88
       ],
       "accounts": [
         {
@@ -211,7 +211,7 @@ export type SealedAuction = {
                   "kind": "type",
                   "type": {
                     "defined": {
-                      "name": "awardBidOutput"
+                      "name": "awardBidV2Output"
                     }
                   }
                 }
@@ -645,16 +645,16 @@ export type SealedAuction = {
       ]
     },
     {
-      "name": "checkBidsCallback",
+      "name": "checkBidsV2Callback",
       "discriminator": [
+        58,
         242,
-        239,
-        238,
-        46,
-        82,
-        55,
-        5,
-        253
+        246,
+        18,
+        117,
+        108,
+        42,
+        32
       ],
       "accounts": [
         {
@@ -743,7 +743,7 @@ export type SealedAuction = {
                   "kind": "type",
                   "type": {
                     "defined": {
-                      "name": "checkBidsOutput"
+                      "name": "checkBidsV2Output"
                     }
                   }
                 }
@@ -1347,16 +1347,16 @@ export type SealedAuction = {
       "args": []
     },
     {
-      "name": "clearPriceCallback",
+      "name": "clearPriceV2Callback",
       "discriminator": [
-        153,
-        45,
-        224,
+        111,
+        128,
         151,
-        156,
-        243,
-        184,
-        108
+        222,
+        112,
+        136,
+        189,
+        25
       ],
       "accounts": [
         {
@@ -1424,7 +1424,7 @@ export type SealedAuction = {
                   "kind": "type",
                   "type": {
                     "defined": {
-                      "name": "clearPriceOutput"
+                      "name": "clearPriceV2Output"
                     }
                   }
                 }
@@ -1875,7 +1875,8 @@ export type SealedAuction = {
         "",
         "Prices are lamports per `terms.price_unit` base units, a power of ten",
         "up to `MAX_PRICE_UNIT`; bids below `terms.min_price` do not count, and",
-        "every bid deposits at least `terms.min_deposit`, its budget. `fees` are",
+        "every bid deposits at least `terms.min_deposit` and names a private",
+        "budget of at least that much, which its deposit covers. `fees` are",
         "the most the seller accepts to pay; opening fails if the platform's",
         "are higher."
       ],
@@ -3240,10 +3241,12 @@ export type SealedAuction = {
         "deposit must exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid",
         "is closed and its owner gets the deposit and rent back.",
         "",
-        "For a token auction the deposit is the bid's budget. For a collection",
-        "auction a bid whose price times quantity exceeds the deposit counts as",
-        "no bid and is fully refunded later; the deposit may exceed that cost",
-        "to hide the bid."
+        "For a token auction the encrypted quantity is the bid's budget in",
+        "lamports: a budget the deposit does not cover, or below",
+        "`min_deposit`, counts as no bid. For a collection auction a bid whose",
+        "price times quantity exceeds the deposit counts as no bid. Either way",
+        "such a bid is fully refunded later, and the deposit may exceed what it",
+        "covers to hide the bid."
       ],
       "discriminator": [
         238,
@@ -4018,7 +4021,7 @@ export type SealedAuction = {
         107,
         95,
         48,
-        50
+        51
       ]
     },
     {
@@ -5175,7 +5178,7 @@ export type SealedAuction = {
       }
     },
     {
-      "name": "awardBidOutput",
+      "name": "awardBidV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
         "as anchor does not support tuples and tuple structs yet."
@@ -5187,7 +5190,7 @@ export type SealedAuction = {
             "name": "field0",
             "type": {
               "defined": {
-                "name": "awardBidOutputStruct0"
+                "name": "awardBidV2OutputStruct0"
               }
             }
           }
@@ -5195,7 +5198,7 @@ export type SealedAuction = {
       }
     },
     {
-      "name": "awardBidOutputStruct0",
+      "name": "awardBidV2OutputStruct0",
       "type": {
         "kind": "struct",
         "fields": [
@@ -5205,7 +5208,7 @@ export type SealedAuction = {
           },
           {
             "name": "field1",
-            "type": "u16"
+            "type": "u64"
           }
         ]
       }
@@ -5305,8 +5308,8 @@ export type SealedAuction = {
           {
             "name": "deposit",
             "docs": [
-              "Lamports escrowed in this account on top of its rent; a token bid's",
-              "budget."
+              "Lamports escrowed in this account on top of its rent. It covers a",
+              "token bid's private budget, or a collection bid's price times size."
             ],
             "type": "u64"
           },
@@ -5430,16 +5433,21 @@ export type SealedAuction = {
             "name": "batchRecords",
             "docs": [
               "The MXE-encrypted record of each checked batch: the `(price,",
-              "quantity)` of its bids, packed into one ciphertext. Must stay the",
-              "first field: the MPC cluster reads records in place at",
-              "`BATCH_RECORDS_OFFSET`."
+              "quantity)` of its bids (a token bid's quantity is its budget), packed",
+              "into two ciphertexts. Must stay the first field: the MPC cluster reads",
+              "records in place at `BATCH_RECORDS_OFFSET`."
             ],
             "type": {
               "array": [
                 {
                   "array": [
-                    "u8",
-                    32
+                    {
+                      "array": [
+                        "u8",
+                        32
+                      ]
+                    },
+                    2
                   ]
                 },
                 64
@@ -5466,8 +5474,8 @@ export type SealedAuction = {
           {
             "name": "deposits",
             "docs": [
-              "Deposit of the bid at each index: the budgets of a token auction, and",
-              "how the smallest deposit is found when the auction is full."
+              "Deposit of the bid at each index: how the smallest deposit is found",
+              "when the auction is full."
             ],
             "type": {
               "array": [
@@ -5699,7 +5707,7 @@ export type SealedAuction = {
       }
     },
     {
-      "name": "checkBidsOutput",
+      "name": "checkBidsV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
         "as anchor does not support tuples and tuple structs yet."
@@ -5715,7 +5723,7 @@ export type SealedAuction = {
                 "generics": [
                   {
                     "kind": "const",
-                    "value": "1"
+                    "value": "2"
                   }
                 ]
               }
@@ -5763,7 +5771,7 @@ export type SealedAuction = {
       }
     },
     {
-      "name": "clearPriceOutput",
+      "name": "clearPriceV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
         "as anchor does not support tuples and tuple structs yet."
@@ -5775,7 +5783,7 @@ export type SealedAuction = {
             "name": "field0",
             "type": {
               "defined": {
-                "name": "clearPriceOutputStruct0"
+                "name": "clearPriceV2OutputStruct0"
               }
             }
           }
@@ -5783,7 +5791,7 @@ export type SealedAuction = {
       }
     },
     {
-      "name": "clearPriceOutputStruct0",
+      "name": "clearPriceV2OutputStruct0",
       "type": {
         "kind": "struct",
         "fields": [
@@ -7148,7 +7156,8 @@ export type SealedAuction = {
           {
             "name": "minDeposit",
             "docs": [
-              "Smallest budget a bid may deposit, in lamports."
+              "Smallest deposit, and smallest private budget, a bid may make, in",
+              "lamports."
             ],
             "type": "u64"
           },

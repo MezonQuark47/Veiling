@@ -2,7 +2,8 @@
 
 Veiling lets anyone sell a fixed-supply token, or a new NFT collection, through
 a sealed-bid, uniform-price ("Dutch") auction. Bidders name any price they
-like; the price is encrypted in their browser and stays encrypted on chain.
+like; the price, and the size of the bid, are encrypted in their browser and
+stay encrypted on chain.
 Arcium's multi-party computation (MPC) network finds a single clearing price
 without any single party seeing individual bids. Every winner pays the same
 price, and unused deposits are refunded.
@@ -15,7 +16,8 @@ price, and unused deposits are refunded.
    - A *token auction* escrows `supply` base units of the token. Only tokens
      whose mint and freeze authorities are revoked are accepted, and
      Token-2022 mints may only use the metadata extensions. The seller sets a
-     minimum price per token and the smallest budget a bid may deposit.
+     minimum price per token and the smallest deposit and budget a bid may
+     make.
    - A *collection auction* creates a new Metaplex Core collection of up to
      10,000 NFTs, with the auction as its update authority. Its NFTs are
      minted only when winners collect them. The seller sets a minimum price
@@ -35,8 +37,11 @@ price, and unused deposits are refunded.
 2. **Bidders place sealed bids.** A bid is an encrypted `(price, quantity)`
    pair plus a public SOL deposit, and commits to the auction terms the
    bidder saw; it is refused if the auction has any other terms.
-   - A token bid is a budget, its deposit, and the most it pays per token
-     (`quantity` is unused).
+   - A token bid names a budget in lamports (`quantity`), the most it
+     spends, and the most it pays per token (`price`). It counts only if its
+     deposit covers the budget and the budget is at least the minimum, so a
+     deposit is an upper bound, not the bid's real demand: a large deposit
+     can hide a small budget and the other way round.
    - A collection bid asks for `quantity` NFTs at up to `price` each. It
      counts only if the deposit covers `price × quantity`; deposits may be
      larger to hide the bid.
@@ -47,11 +52,12 @@ price, and unused deposits are refunded.
 3. **Bids are checked privately.** After the deadline anyone can call
    `check_batch`. MPC decodes four bids at a time, checks each against the
    terms and its deposit (an invalid bid is recorded as price 0, which never
-   wins) and stores them, still encrypted, as one record in the bid book.
+   wins) and stores them, still encrypted, as one record of two ciphertexts
+   in the bid book.
    Each bid is decoded exactly once, so everything after agrees about it.
 4. **The clearing price is revealed.** `find_clearing` reads every record and
    finds, bit by bit from the top, the highest price `p` at which demand
-   covers the supply: for tokens, the budgets of the bids at or above `p` buy
+   covers the supply: for tokens, the sealed budgets of the bids at or above `p` buy
    the whole supply at `p`; for a collection, they ask for at least the whole
    supply. Only `p` and the demand above and at it are revealed. If demand
    never covers the supply at the minimum price, every valid bid wins at the
@@ -164,12 +170,18 @@ rather than blocking the seller.
 | Public | Private |
 | --- | --- |
 | Who bid, how many bids and each deposit | The price of every bid, winning or not |
-| The clearing price, demand above and at it | The size of every losing collection bid |
-| Each winner's outcome, what it won and paid | Individual bids while they are checked |
+| The clearing price, demand above and at it | The budget of every losing token bid |
+| Each winner's outcome, what it won and paid | The size of every losing collection bid |
+| | Individual bids while they are checked |
 
-A token bid's budget is its deposit, so it is public; its price never is. A
-collection bid's deposit of exactly `price × quantity` gives the bid away; the
-app's default "Private" deposit rounds both up to 1, 2, 5, 10, ... steps. The
+A deposit only bounds a bid. A token bid's budget is sealed with its price,
+so the deposits on chain say nothing exact about demand, and a "whale wall"
+of large deposits proves nothing. When a bid wins, `award_bid_v2` reveals
+its budget (or NFTs) so the program can work out its award in the open;
+that is no more than its public payment shows. A deposit of exactly the
+budget, or exactly `price × quantity` for a collection bid, gives the bid
+away; the app's default "Private" deposit rounds it up to 1, 2, 5, 10, ...
+steps. The
 app shows only the total deposited and never lists bidders, but anyone can
 read them from the chain. A bid at exactly the clearing price is known to be
 at it once settled.
@@ -278,23 +290,24 @@ temporary buffer needs about as much SOL as the program's rent, and it is
 returned afterwards. An upgrade that changes an account layout makes existing
 accounts of that type unreadable, so finish and close every open auction
 first. This release's accounts carry their own discriminators (`VAuctn02`,
-`VBook_02`, `VBid__02`), so accounts from earlier releases are never mistaken
+`VBook_03`, `VBid__02`), so accounts from earlier releases are never mistaken
 for them.
 
 Then call `initialize` once (signed by the upgrade authority), register the
-four circuits with `init_check_bids_comp_def`, `init_clear_price_comp_def`,
+four circuits (`check_bids_v2`, `clear_price_v2`, `award_bid_v2` and
+`draw_seed`) with `init_check_bids_comp_def`, `init_clear_price_comp_def`,
 `init_award_bid_comp_def` and `init_draw_seed_comp_def`, passing the URL of
 each `.arcis` file, and set the fees with `set_fees` (`scripts/set-fees.ts`).
 The end-to-end test does all three if they are missing.
 
 ### Circuit hosting
 
-The compiled circuits (`build/check_bids.arcis`, `build/clear_price.arcis`,
-about 6 MB, `build/award_bid.arcis` and `build/draw_seed.arcis`) are too large
+The compiled circuits (`build/check_bids_v2.arcis`, `build/clear_price_v2.arcis`,
+several MB, `build/award_bid_v2.arcis` and `build/draw_seed.arcis`) are too large
 to store on chain cheaply, so they are served from a public URL. Upload exactly the files
 produced by the build that compiled the program, and register them with a URL
 that names a commit rather than a branch, such as
-`https://raw.githubusercontent.com/<user>/<repo>/<commit>/check_bids.arcis`, so
+`https://raw.githubusercontent.com/<user>/<repo>/<commit>/check_bids_v2.arcis`, so
 the file behind the URL cannot change. For mainnet, prefer permanent storage
 such as Arweave or IPFS with pinning.
 

@@ -10,8 +10,12 @@ import type { PublicKey } from "@solana/web3.js";
 export interface BidNote {
   /** The most the bid pays, in the auction's price ticks (a decimal string). */
   price: string;
-  /** NFTs asked for; 0 for a token bid, whose size is its deposit. */
-  quantity: number;
+  /**
+   * The sealed size: a token bid's budget in lamports, or a collection bid's
+   * NFTs (a decimal string). Notes from before budgets were sealed hold the
+   * number 0 for token bids, whose budget was their deposit.
+   */
+  quantity: string | number;
   auction: string;
   savedAt: number;
 }
@@ -31,8 +35,13 @@ function storage(): Storage | null {
   }
 }
 
-export function saveNote(bid: PublicKey, auction: PublicKey, price: bigint, quantity: number) {
-  const note: BidNote = { price: price.toString(), quantity, auction: auction.toBase58(), savedAt: Date.now() };
+export function saveNote(bid: PublicKey, auction: PublicKey, price: bigint, quantity: bigint) {
+  const note: BidNote = {
+    price: price.toString(),
+    quantity: quantity.toString(),
+    auction: auction.toBase58(),
+    savedAt: Date.now(),
+  };
   memory.set(bid.toBase58(), note);
   try {
     storage()?.setItem(PREFIX + bid.toBase58(), JSON.stringify(note));
@@ -48,11 +57,14 @@ function isNote(value: unknown): value is BidNote {
     note !== null &&
     typeof note.price === "string" &&
     /^\d+$/.test(note.price) &&
-    typeof note.quantity === "number" &&
+    (typeof note.quantity === "number" || (typeof note.quantity === "string" && /^\d+$/.test(note.quantity))) &&
     typeof note.auction === "string" &&
     typeof note.savedAt === "number"
   );
 }
+
+/** A note's sealed size: a budget in lamports or a number of NFTs; 0 if unknown. */
+export const noteSize = (note: BidNote): bigint => BigInt(note.quantity);
 
 export function readNote(bid: PublicKey): BidNote | null {
   const kept = memory.get(bid.toBase58());

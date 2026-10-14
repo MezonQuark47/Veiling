@@ -710,7 +710,7 @@ export function Launch() {
       }
     }
 
-    // A token bid's deposit is its budget. By default the smallest one is
+    // The smallest token bid: its deposit and its sealed budget. By default it is
     // the sale's worth at the minimum price split across every bid place,
     // so nobody can take every place for less than the whole sale.
     let suggested = saleValue > 0n ? (saleValue + BigInt(MAX_BIDS) - 1n) / BigInt(MAX_BIDS) : MIN_SUGGESTED_DEPOSIT;
@@ -1350,7 +1350,7 @@ export function Launch() {
                   />
                 </div>
                 <p id="mindeposit-hint" className="hint">
-                  A token bid is a SOL budget, so this is the least a bidder can deposit. An auction takes up to{" "}
+                  The least a bidder can deposit, and the smallest sealed budget a bid can name. An auction takes up to{" "}
                   {MAX_BIDS} bids; after that, larger deposits replace the smallest. The suggestion splits the sale's
                   worth at your minimum price across every place, so nobody can take them all for less.
                 </p>

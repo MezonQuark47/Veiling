@@ -4,7 +4,7 @@
 //! Anyone can open an auction, either for a fixed-supply token or for a new
 //! Metaplex Core NFT collection, with a minimum price. Bidders name any price
 //! they like in an encrypted bid with a public SOL deposit:
-//! - for tokens, the deposit is the bid's budget and the bid names the
+//! - for tokens, the bid names a budget, the most it spends, and the
 //!   highest price per token it accepts;
 //! - for collections, the bid names how many NFTs it wants and the highest
 //!   price per NFT, and the deposit has to cover that.
@@ -102,9 +102,9 @@ declare_id!("CjUVaVK3jF9o4EehHWtB13TGg9SPXBWKGBepmZHwyLK2");
 // Constants
 // ---------------------------------------------------------------------------
 
-const COMP_DEF_OFFSET_CHECK_BIDS: u32 = comp_def_offset("check_bids");
-const COMP_DEF_OFFSET_CLEAR_PRICE: u32 = comp_def_offset("clear_price");
-const COMP_DEF_OFFSET_AWARD_BID: u32 = comp_def_offset("award_bid");
+const COMP_DEF_OFFSET_CHECK_BIDS: u32 = comp_def_offset("check_bids_v2");
+const COMP_DEF_OFFSET_CLEAR_PRICE: u32 = comp_def_offset("clear_price_v2");
+const COMP_DEF_OFFSET_AWARD_BID: u32 = comp_def_offset("award_bid_v2");
 const COMP_DEF_OFFSET_DRAW_SEED: u32 = comp_def_offset("draw_seed");
 
 pub const CONFIG_SEED: &[u8] = b"config";
@@ -127,7 +127,7 @@ pub const NOTE_SEED: &[u8] = b"note";
 /// the first release's, whose accounts had other layouts, so an account of
 /// that release can never be read as one of these.
 pub const AUCTION_DISCRIMINATOR: &[u8] = b"VAuctn02";
-pub const BOOK_DISCRIMINATOR: &[u8] = b"VBook_02";
+pub const BOOK_DISCRIMINATOR: &[u8] = b"VBook_03";
 pub const BID_DISCRIMINATOR: &[u8] = b"VBid__02";
 pub const ITEM_LIST_DISCRIMINATOR: &[u8] = b"VItems01";
 pub const BID_NOTE_DISCRIMINATOR: &[u8] = b"VNote_01";
@@ -189,9 +189,11 @@ pub const BATCH_SIZE: usize = 4;
 pub const BID_CIPHERTEXT_OFFSET: u32 = 8;
 pub const BID_CIPHERTEXT_LEN: u32 = 64;
 /// Byte offset of the batch records inside `BidBook` (right after the
-/// discriminator) and the length of one record (a single ciphertext).
+/// discriminator) and the length of one record: two ciphertexts, the four
+/// bids' `(price: u32, quantity: u64)` packed by the circuits.
 pub const BATCH_RECORDS_OFFSET: u32 = 8;
-pub const BATCH_RECORD_LEN: u32 = 32;
+pub const BATCH_RECORD_CIPHERTEXTS: usize = 2;
+pub const BATCH_RECORD_LEN: u32 = 32 * BATCH_RECORD_CIPHERTEXTS as u32;
 
 pub const MAX_BIDS: u32 = 256;
 const MAX_BIDS_USIZE: usize = MAX_BIDS as usize;
@@ -378,7 +380,7 @@ pub mod sealed_auction {
     ) -> Result<()> {
         init_computation_def(
             ctx.accounts,
-            circuit_source(circuit_url, circuit_hash!("check_bids"))?,
+            circuit_source(circuit_url, circuit_hash!("check_bids_v2"))?,
         )?;
         Ok(())
     }
@@ -389,7 +391,7 @@ pub mod sealed_auction {
     ) -> Result<()> {
         init_computation_def(
             ctx.accounts,
-            circuit_source(circuit_url, circuit_hash!("clear_price"))?,
+            circuit_source(circuit_url, circuit_hash!("clear_price_v2"))?,
         )?;
         Ok(())
     }
@@ -400,7 +402,7 @@ pub mod sealed_auction {
     ) -> Result<()> {
         init_computation_def(
             ctx.accounts,
-            circuit_source(circuit_url, circuit_hash!("award_bid"))?,
+            circuit_source(circuit_url, circuit_hash!("award_bid_v2"))?,
         )?;
         Ok(())
     }
@@ -426,7 +428,8 @@ pub mod sealed_auction {
     ///
     /// Prices are lamports per `terms.price_unit` base units, a power of ten
     /// up to `MAX_PRICE_UNIT`; bids below `terms.min_price` do not count, and
-    /// every bid deposits at least `terms.min_deposit`, its budget. `fees` are
+    /// every bid deposits at least `terms.min_deposit` and names a private
+    /// budget of at least that much, which its deposit covers. `fees` are
     /// the most the seller accepts to pay; opening fails if the platform's
     /// are higher.
     pub fn create_auction(
@@ -803,10 +806,12 @@ pub mod sealed_auction {
     /// deposit must exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid
     /// is closed and its owner gets the deposit and rent back.
     ///
-    /// For a token auction the deposit is the bid's budget. For a collection
-    /// auction a bid whose price times quantity exceeds the deposit counts as
-    /// no bid and is fully refunded later; the deposit may exceed that cost
-    /// to hide the bid.
+    /// For a token auction the encrypted quantity is the bid's budget in
+    /// lamports: a budget the deposit does not cover, or below
+    /// `min_deposit`, counts as no bid. For a collection auction a bid whose
+    /// price times quantity exceeds the deposit counts as no bid. Either way
+    /// such a bid is fully refunded later, and the deposit may exceed what it
+    /// covers to hide the bid.
     #[allow(clippy::too_many_arguments)]
     pub fn place_bid(
         ctx: Context<PlaceBid>,
@@ -962,7 +967,7 @@ pub mod sealed_auction {
         ctx: Context<'info, CheckBatch<'info>>,
         computation_offset: u64,
     ) -> Result<()> {
-        require_pinned_circuit(&ctx.accounts.comp_def_account, circuit_hash!("check_bids"))?;
+        require_pinned_circuit(&ctx.accounts.comp_def_account, circuit_hash!("check_bids_v2"))?;
         let now = Clock::get()?.unix_timestamp;
         let auction = &ctx.accounts.auction;
         let count = check_allowed(auction, now)?;
@@ -975,7 +980,8 @@ pub mod sealed_auction {
             .plaintext_bool(auction.kind == AuctionKind::Token)
             .plaintext_u32(auction.min_price)
             .plaintext_u64(auction.price_scale)
-            .plaintext_u16(auction.max_per_bid)
+            .plaintext_u64(auction.max_per_bid as u64)
+            .plaintext_u64(min_budget(auction))
             .build();
 
         let auction_key = auction.key();
@@ -987,7 +993,7 @@ pub mod sealed_auction {
         auction.pending_batch = count as u8;
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
-        // Order must match the custom accounts of `CheckBidsCallback`.
+        // Order must match the custom accounts of `CheckBidsV2Callback`.
         let callback_accounts = [
             CallbackAccount {
                 pubkey: auction_key,
@@ -998,7 +1004,7 @@ pub mod sealed_auction {
                 is_writable: true,
             },
         ];
-        let callback = CheckBidsCallback::callback_ix(
+        let callback = CheckBidsV2Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &callback_accounts,
@@ -1010,10 +1016,10 @@ pub mod sealed_auction {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "check_bids")]
-    pub fn check_bids_callback(
-        ctx: Context<CheckBidsCallback>,
-        output: SignedComputationOutputs<CheckBidsOutput>,
+    #[arcium_callback(encrypted_ix = "check_bids_v2")]
+    pub fn check_bids_v2_callback(
+        ctx: Context<CheckBidsV2Callback>,
+        output: SignedComputationOutputs<CheckBidsV2Output>,
     ) -> Result<()> {
         let auction = &mut ctx.accounts.auction;
         check_callback_computation(
@@ -1036,7 +1042,7 @@ pub mod sealed_auction {
                 return Ok(());
             }
             other => {
-                let CheckBidsOutput { field_0 } = other.verify_output(
+                let CheckBidsV2Output { field_0 } = other.verify_output(
                     &ctx.accounts.cluster_account,
                     &ctx.accounts.computation_account,
                 )?;
@@ -1049,7 +1055,7 @@ pub mod sealed_auction {
         let batch = auction.checked_count as usize / BATCH_SIZE;
         require!(batch < MAX_BATCHES, AuctionError::MathOverflow);
         let mut book = ctx.accounts.book.load_mut()?;
-        book.batch_records[batch] = record.ciphertexts[0];
+        book.batch_records[batch] = record.ciphertexts;
         book.batch_nonces[batch] = record.nonce.to_le_bytes();
         drop(book);
 
@@ -1075,7 +1081,7 @@ pub mod sealed_auction {
     pub fn find_clearing(ctx: Context<FindClearing>, computation_offset: u64) -> Result<()> {
         require_pinned_circuit(
             &ctx.accounts.comp_def_account,
-            circuit_hash!("clear_price"),
+            circuit_hash!("clear_price_v2"),
         )?;
         let auction = &ctx.accounts.auction;
         let now = Clock::get()?.unix_timestamp;
@@ -1096,7 +1102,7 @@ pub mod sealed_auction {
         let args = {
             let book = ctx.accounts.book.load()?;
             clearing_arguments(
-                &book,
+                &book.batch_nonces,
                 ctx.accounts.book.key(),
                 active_batches,
                 auction.kind == AuctionKind::Token,
@@ -1113,7 +1119,7 @@ pub mod sealed_auction {
         auction.pending_batch = 0;
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
-        let callback = ClearPriceCallback::callback_ix(
+        let callback = ClearPriceV2Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &[CallbackAccount {
@@ -1128,10 +1134,10 @@ pub mod sealed_auction {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "clear_price")]
-    pub fn clear_price_callback(
-        ctx: Context<ClearPriceCallback>,
-        output: SignedComputationOutputs<ClearPriceOutput>,
+    #[arcium_callback(encrypted_ix = "clear_price_v2")]
+    pub fn clear_price_v2_callback(
+        ctx: Context<ClearPriceV2Callback>,
+        output: SignedComputationOutputs<ClearPriceV2Output>,
     ) -> Result<()> {
         let auction = &mut ctx.accounts.auction;
         check_callback_computation(
@@ -1154,7 +1160,7 @@ pub mod sealed_auction {
                 return Ok(());
             }
             other => {
-                let ClearPriceOutput { field_0 } = other.verify_output(
+                let ClearPriceV2Output { field_0 } = other.verify_output(
                     &ctx.accounts.cluster_account,
                     &ctx.accounts.computation_account,
                 )?;
@@ -1190,7 +1196,7 @@ pub mod sealed_auction {
     /// afterwards with `claim_tokens` and `close_bid`, so settlement never
     /// depends on the bidder's accounts.
     pub fn settle_bid(ctx: Context<SettleBid>, computation_offset: u64) -> Result<()> {
-        require_pinned_circuit(&ctx.accounts.comp_def_account, circuit_hash!("award_bid"))?;
+        require_pinned_circuit(&ctx.accounts.comp_def_account, circuit_hash!("award_bid_v2"))?;
         let auction = &ctx.accounts.auction;
         let bid = &ctx.accounts.bid;
         let now = Clock::get()?.unix_timestamp;
@@ -1219,7 +1225,7 @@ pub mod sealed_auction {
             .plaintext_bool(auction.filled)
             .build();
 
-        // Order must match the custom accounts of `AwardBidCallback`. The book
+        // Order must match the custom accounts of `AwardBidV2Callback`. The book
         // records the size of a collection bid at the clearing price.
         let callback_accounts = [
             CallbackAccount {
@@ -1242,7 +1248,7 @@ pub mod sealed_auction {
         bid.pending_since = now;
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
-        let callback = AwardBidCallback::callback_ix(
+        let callback = AwardBidV2Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &callback_accounts,
@@ -1254,10 +1260,10 @@ pub mod sealed_auction {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "award_bid")]
-    pub fn award_bid_callback(
-        ctx: Context<AwardBidCallback>,
-        output: SignedComputationOutputs<AwardBidOutput>,
+    #[arcium_callback(encrypted_ix = "award_bid_v2")]
+    pub fn award_bid_v2_callback(
+        ctx: Context<AwardBidV2Callback>,
+        output: SignedComputationOutputs<AwardBidV2Output>,
     ) -> Result<()> {
         check_callback_computation(
             &ctx.accounts.computation_account,
@@ -1277,7 +1283,7 @@ pub mod sealed_auction {
                 return Ok(());
             }
             other => {
-                let AwardBidOutput { field_0 } = other.verify_output(
+                let AwardBidV2Output { field_0 } = other.verify_output(
                     &ctx.accounts.cluster_account,
                     &ctx.accounts.computation_account,
                 )?;
@@ -1297,8 +1303,14 @@ pub mod sealed_auction {
         );
 
         if ctx.accounts.auction.kind == AuctionKind::Token {
-            require!(quantity == 0, AuctionError::InvalidAllocation);
-            let (won, payment) = token_award(&ctx.accounts.auction, outcome, ctx.accounts.bid.deposit)?;
+            // The bid's private budget, revealed because it won something;
+            // the check made sure its deposit covers it.
+            let budget = quantity;
+            require!(
+                (outcome == OUTCOME_NONE) == (budget == 0) && budget <= ctx.accounts.bid.deposit,
+                AuctionError::InvalidAllocation
+            );
+            let (won, payment) = token_award(&ctx.accounts.auction, outcome, budget)?;
             let auction = &mut ctx.accounts.auction;
             auction.sold = auction.sold.checked_add(won).ok_or(AuctionError::MathOverflow)?;
             require!(auction.sold <= auction.supply, AuctionError::Oversold);
@@ -3090,6 +3102,15 @@ fn load_batch<'info>(
 
 /// Appends `BATCH_SIZE` bid slots. Unused slots repeat the first bid with a
 /// zero deposit; the circuit ignores them because of `active_count`.
+/// The smallest budget a bid may name: the minimum deposit of a token
+/// auction. Collection bids have no budget.
+fn min_budget(auction: &Auction) -> u64 {
+    match auction.kind {
+        AuctionKind::Token => auction.min_deposit,
+        AuctionKind::Collection => 0,
+    }
+}
+
 fn push_bid_batch(mut builder: ArgBuilder, bids: &[Account<Bid>], count: usize) -> ArgBuilder {
     for k in 0..BATCH_SIZE {
         let (bid, deposit) = if k < count {
@@ -3115,32 +3136,27 @@ fn push_bid_batch(mut builder: ArgBuilder, bids: &[Account<Bid>], count: usize) 
 /// doubling: on Solana's bump allocator every outgrown buffer stays
 /// allocated, and these arguments are large enough for that to matter.
 fn clearing_arguments(
-    book: &BidBook,
+    batch_nonces: &[[u8; 16]; MAX_BATCHES],
     book_key: Pubkey,
     active_batches: u8,
     is_token: bool,
     price_unit: u64,
     supply: u64,
 ) -> ArgumentList {
-    const DEPOSIT_PAIRS: usize = MAX_BIDS_USIZE / 2;
     // An argument reference holds a u8 index into its collection.
-    const _: () = assert!(MAX_BATCHES + DEPOSIT_PAIRS <= 256);
-    let mut args = Vec::with_capacity(2 * MAX_BATCHES + DEPOSIT_PAIRS + 4);
-    let mut values = Vec::with_capacity(MAX_BATCHES + DEPOSIT_PAIRS);
+    const _: () = assert!(MAX_BATCHES <= 256);
+    let mut args = Vec::with_capacity(2 * MAX_BATCHES + 4);
+    let mut values = Vec::with_capacity(MAX_BATCHES);
     let mut accounts = Vec::with_capacity(MAX_BATCHES);
     for batch in 0..MAX_BATCHES {
         args.push(ArgumentRef::PlaintextU128(values.len() as u8));
-        values.push(u128::from_le_bytes(book.batch_nonces[batch]));
+        values.push(u128::from_le_bytes(batch_nonces[batch]));
         args.push(ArgumentRef::Account(accounts.len() as u8));
         accounts.push(AccountArgument {
             pubkey: book_key,
             offset: BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32,
             length: BATCH_RECORD_LEN,
         });
-    }
-    for pair in book.deposits.chunks_exact(2) {
-        args.push(ArgumentRef::PlaintextU128(values.len() as u8));
-        values.push(pair[0] as u128 | (pair[1] as u128) << 64);
     }
     args.push(ArgumentRef::PlaintextU8(active_batches));
     args.push(ArgumentRef::PlaintextBool(is_token));
@@ -3465,14 +3481,14 @@ pub struct NewItem {
 #[repr(C)]
 pub struct BidBook {
     /// The MXE-encrypted record of each checked batch: the `(price,
-    /// quantity)` of its bids, packed into one ciphertext. Must stay the
-    /// first field: the MPC cluster reads records in place at
-    /// `BATCH_RECORDS_OFFSET`.
-    pub batch_records: [[u8; 32]; MAX_BATCHES],
+    /// quantity)` of its bids (a token bid's quantity is its budget), packed
+    /// into two ciphertexts. Must stay the first field: the MPC cluster reads
+    /// records in place at `BATCH_RECORDS_OFFSET`.
+    pub batch_records: [[[u8; 32]; BATCH_RECORD_CIPHERTEXTS]; MAX_BATCHES],
     /// Little-endian nonce of each batch record.
     pub batch_nonces: [[u8; 16]; MAX_BATCHES],
-    /// Deposit of the bid at each index: the budgets of a token auction, and
-    /// how the smallest deposit is found when the auction is full.
+    /// Deposit of the bid at each index: how the smallest deposit is found
+    /// when the auction is full.
     pub deposits: [u64; MAX_BIDS_USIZE],
     pub auction: Pubkey,
     /// NFTs asked for by the bid at each index if it was revealed at the
@@ -3519,7 +3535,8 @@ pub struct TokenSaleTerms {
     pub price_unit: u64,
     /// Lowest price that counts, in lamports per `price_unit`.
     pub min_price: u32,
-    /// Smallest budget a bid may deposit, in lamports.
+    /// Smallest deposit, and smallest private budget, a bid may make, in
+    /// lamports.
     pub min_deposit: u64,
     pub duration_secs: i64,
     /// When bidding opens (unix seconds); 0 or a past time for right away.
@@ -3593,8 +3610,8 @@ pub struct Bid {
     pub bidder: Pubkey,
     /// Position in the auction's check order.
     pub index: u32,
-    /// Lamports escrowed in this account on top of its rent; a token bid's
-    /// budget.
+    /// Lamports escrowed in this account on top of its rent. It covers a
+    /// token bid's private budget, or a collection bid's price times size.
     pub deposit: u64,
     pub status: BidStatus,
     /// Computation in flight for this bid, with the slot and per-slot counter
@@ -4217,7 +4234,7 @@ pub struct ClaimTokens<'info> {
 // Accounts: MPC computations
 // ---------------------------------------------------------------------------
 
-#[queue_computation_accounts("check_bids", payer)]
+#[queue_computation_accounts("check_bids_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct CheckBatch<'info> {
@@ -4269,9 +4286,9 @@ pub struct CheckBatch<'info> {
 
 /// Custom accounts after `instructions_sysvar` must match the order of the
 /// `CallbackAccount` list built in `check_batch`.
-#[callback_accounts("check_bids")]
+#[callback_accounts("check_bids_v2")]
 #[derive(Accounts)]
-pub struct CheckBidsCallback<'info> {
+pub struct CheckBidsV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CHECK_BIDS))]
     pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
@@ -4291,7 +4308,7 @@ pub struct CheckBidsCallback<'info> {
     pub book: AccountLoader<'info, BidBook>,
 }
 
-#[queue_computation_accounts("clear_price", payer)]
+#[queue_computation_accounts("clear_price_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct FindClearing<'info> {
@@ -4342,9 +4359,9 @@ pub struct FindClearing<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("clear_price")]
+#[callback_accounts("clear_price_v2")]
 #[derive(Accounts)]
-pub struct ClearPriceCallback<'info> {
+pub struct ClearPriceV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CLEAR_PRICE))]
     pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
@@ -4362,7 +4379,7 @@ pub struct ClearPriceCallback<'info> {
     pub auction: Box<Account<'info, Auction>>,
 }
 
-#[queue_computation_accounts("award_bid", payer)]
+#[queue_computation_accounts("award_bid_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct SettleBid<'info> {
@@ -4416,9 +4433,9 @@ pub struct SettleBid<'info> {
 
 /// Custom accounts after `instructions_sysvar` must match the order of the
 /// `CallbackAccount` list built in `settle_bid`.
-#[callback_accounts("award_bid")]
+#[callback_accounts("award_bid_v2")]
 #[derive(Accounts)]
-pub struct AwardBidCallback<'info> {
+pub struct AwardBidV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_AWARD_BID))]
     pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
@@ -4513,7 +4530,7 @@ pub struct DrawSeedCallback<'info> {
 // the circuit upload authority)
 // ---------------------------------------------------------------------------
 
-#[init_computation_definition_accounts("check_bids", payer)]
+#[init_computation_definition_accounts("check_bids_v2", payer)]
 #[derive(Accounts)]
 pub struct InitCheckBidsCompDef<'info> {
     #[account(mut)]
@@ -4535,7 +4552,7 @@ pub struct InitCheckBidsCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[init_computation_definition_accounts("clear_price", payer)]
+#[init_computation_definition_accounts("clear_price_v2", payer)]
 #[derive(Accounts)]
 pub struct InitClearPriceCompDef<'info> {
     #[account(mut)]
@@ -4557,7 +4574,7 @@ pub struct InitClearPriceCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[init_computation_definition_accounts("award_bid", payer)]
+#[init_computation_definition_accounts("award_bid_v2", payer)]
 #[derive(Accounts)]
 pub struct InitAwardBidCompDef<'info> {
     #[account(mut)]
@@ -4941,9 +4958,6 @@ mod tests {
         for (i, nonce) in book.batch_nonces.iter_mut().enumerate() {
             *nonce = (0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10u128 * (i as u128 + 1)).to_le_bytes();
         }
-        for (i, deposit) in book.deposits.iter_mut().enumerate() {
-            *deposit = 1_000_000_007 * (i as u64 + 1);
-        }
         let key = Pubkey::new_from_array([9; 32]);
         let mut expected = ArgBuilder::new();
         for batch in 0..MAX_BATCHES {
@@ -4951,16 +4965,14 @@ mod tests {
                 .plaintext_u128(u128::from_le_bytes(book.batch_nonces[batch]))
                 .account(key, BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32, BATCH_RECORD_LEN);
         }
-        for pair in book.deposits.chunks_exact(2) {
-            expected = expected.plaintext_u128(pair[0] as u128 | (pair[1] as u128) << 64);
-        }
+        // No deposits: token budgets come from the encrypted records.
         let expected = expected
             .plaintext_u8(37)
             .plaintext_bool(true)
             .plaintext_u64(1_000_000)
             .plaintext_u64(u64::MAX - 5)
             .build();
-        let actual = clearing_arguments(&book, key, 37, true, 1_000_000, u64::MAX - 5);
+        let actual = clearing_arguments(&book.batch_nonces, key, 37, true, 1_000_000, u64::MAX - 5);
         assert_eq!(borsh::to_vec(&actual).unwrap(), borsh::to_vec(&expected).unwrap());
         // Every vector was allocated at its final size.
         assert_eq!(actual.args.capacity(), actual.args.len());
@@ -5145,23 +5157,25 @@ mod tests {
         assert_eq!(std::mem::offset_of!(BidBook, batch_records), 0);
         assert_eq!(
             std::mem::size_of::<BidBook>(),
-            32 * MAX_BATCHES + 16 * MAX_BATCHES + 8 * MAX_BIDS_USIZE + 32 + 4 * MAX_BIDS_USIZE
+            64 * MAX_BATCHES + 16 * MAX_BATCHES + 8 * MAX_BIDS_USIZE + 32 + 4 * MAX_BIDS_USIZE
         );
         // The app reads deposits and clearing sizes at these offsets.
-        assert_eq!(std::mem::offset_of!(BidBook, deposits), 48 * MAX_BATCHES);
+        assert_eq!(std::mem::offset_of!(BidBook, deposits), 80 * MAX_BATCHES);
         assert_eq!(
             std::mem::offset_of!(BidBook, clearing_quantities),
-            48 * MAX_BATCHES + 8 * MAX_BIDS_USIZE + 32
+            80 * MAX_BATCHES + 8 * MAX_BIDS_USIZE + 32
         );
         assert!(std::mem::align_of::<BidBook>() <= 8);
+        // A batch's two ciphertexts sit side by side, as the circuits read
+        // them in place.
         let mut book: BidBook = bytemuck::Zeroable::zeroed();
-        book.batch_records[0] = [1u8; 32];
-        book.batch_records[MAX_BATCHES - 1] = [2u8; 32];
+        book.batch_records[0] = [[1u8; 32], [3u8; 32]];
+        book.batch_records[MAX_BATCHES - 1] = [[2u8; 32], [4u8; 32]];
         let bytes = bytemuck::bytes_of(&book);
         let first = BATCH_RECORDS_OFFSET as usize - 8;
         let last = first + (MAX_BATCHES - 1) * BATCH_RECORD_LEN as usize;
-        assert_eq!(&bytes[first..first + 32], &[1u8; 32]);
-        assert_eq!(&bytes[last..last + 32], &[2u8; 32]);
+        assert_eq!(&bytes[first..first + 64], [[1u8; 32], [3u8; 32]].concat());
+        assert_eq!(&bytes[last..last + 64], [[2u8; 32], [4u8; 32]].concat());
     }
 
     // -- token auctions -----------------------------------------------------

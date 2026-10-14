@@ -100,16 +100,16 @@
       ]
     },
     {
-      "name": "award_bid_callback",
+      "name": "award_bid_v2_callback",
       "discriminator": [
-        80,
-        116,
-        237,
-        216,
-        185,
-        142,
-        254,
-        149
+        127,
+        0,
+        162,
+        231,
+        94,
+        184,
+        180,
+        88
       ],
       "accounts": [
         {
@@ -205,7 +205,7 @@
                   "kind": "type",
                   "type": {
                     "defined": {
-                      "name": "AwardBidOutput"
+                      "name": "AwardBidV2Output"
                     }
                   }
                 }
@@ -639,16 +639,16 @@
       ]
     },
     {
-      "name": "check_bids_callback",
+      "name": "check_bids_v2_callback",
       "discriminator": [
+        58,
         242,
-        239,
-        238,
-        46,
-        82,
-        55,
-        5,
-        253
+        246,
+        18,
+        117,
+        108,
+        42,
+        32
       ],
       "accounts": [
         {
@@ -737,7 +737,7 @@
                   "kind": "type",
                   "type": {
                     "defined": {
-                      "name": "CheckBidsOutput"
+                      "name": "CheckBidsV2Output"
                     }
                   }
                 }
@@ -1341,16 +1341,16 @@
       "args": []
     },
     {
-      "name": "clear_price_callback",
+      "name": "clear_price_v2_callback",
       "discriminator": [
-        153,
-        45,
-        224,
+        111,
+        128,
         151,
-        156,
-        243,
-        184,
-        108
+        222,
+        112,
+        136,
+        189,
+        25
       ],
       "accounts": [
         {
@@ -1418,7 +1418,7 @@
                   "kind": "type",
                   "type": {
                     "defined": {
-                      "name": "ClearPriceOutput"
+                      "name": "ClearPriceV2Output"
                     }
                   }
                 }
@@ -1869,7 +1869,8 @@
         "",
         "Prices are lamports per `terms.price_unit` base units, a power of ten",
         "up to `MAX_PRICE_UNIT`; bids below `terms.min_price` do not count, and",
-        "every bid deposits at least `terms.min_deposit`, its budget. `fees` are",
+        "every bid deposits at least `terms.min_deposit` and names a private",
+        "budget of at least that much, which its deposit covers. `fees` are",
         "the most the seller accepts to pay; opening fails if the platform's",
         "are higher."
       ],
@@ -3234,10 +3235,12 @@
         "deposit must exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid",
         "is closed and its owner gets the deposit and rent back.",
         "",
-        "For a token auction the deposit is the bid's budget. For a collection",
-        "auction a bid whose price times quantity exceeds the deposit counts as",
-        "no bid and is fully refunded later; the deposit may exceed that cost",
-        "to hide the bid."
+        "For a token auction the encrypted quantity is the bid's budget in",
+        "lamports: a budget the deposit does not cover, or below",
+        "`min_deposit`, counts as no bid. For a collection auction a bid whose",
+        "price times quantity exceeds the deposit counts as no bid. Either way",
+        "such a bid is fully refunded later, and the deposit may exceed what it",
+        "covers to hide the bid."
       ],
       "discriminator": [
         238,
@@ -4012,7 +4015,7 @@
         107,
         95,
         48,
-        50
+        51
       ]
     },
     {
@@ -5169,7 +5172,7 @@
       }
     },
     {
-      "name": "AwardBidOutput",
+      "name": "AwardBidV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
         "as anchor does not support tuples and tuple structs yet."
@@ -5181,7 +5184,7 @@
             "name": "field_0",
             "type": {
               "defined": {
-                "name": "AwardBidOutputStruct0"
+                "name": "AwardBidV2OutputStruct0"
               }
             }
           }
@@ -5189,7 +5192,7 @@
       }
     },
     {
-      "name": "AwardBidOutputStruct0",
+      "name": "AwardBidV2OutputStruct0",
       "type": {
         "kind": "struct",
         "fields": [
@@ -5199,7 +5202,7 @@
           },
           {
             "name": "field_1",
-            "type": "u16"
+            "type": "u64"
           }
         ]
       }
@@ -5299,8 +5302,8 @@
           {
             "name": "deposit",
             "docs": [
-              "Lamports escrowed in this account on top of its rent; a token bid's",
-              "budget."
+              "Lamports escrowed in this account on top of its rent. It covers a",
+              "token bid's private budget, or a collection bid's price times size."
             ],
             "type": "u64"
           },
@@ -5424,16 +5427,21 @@
             "name": "batch_records",
             "docs": [
               "The MXE-encrypted record of each checked batch: the `(price,",
-              "quantity)` of its bids, packed into one ciphertext. Must stay the",
-              "first field: the MPC cluster reads records in place at",
-              "`BATCH_RECORDS_OFFSET`."
+              "quantity)` of its bids (a token bid's quantity is its budget), packed",
+              "into two ciphertexts. Must stay the first field: the MPC cluster reads",
+              "records in place at `BATCH_RECORDS_OFFSET`."
             ],
             "type": {
               "array": [
                 {
                   "array": [
-                    "u8",
-                    32
+                    {
+                      "array": [
+                        "u8",
+                        32
+                      ]
+                    },
+                    2
                   ]
                 },
                 64
@@ -5460,8 +5468,8 @@
           {
             "name": "deposits",
             "docs": [
-              "Deposit of the bid at each index: the budgets of a token auction, and",
-              "how the smallest deposit is found when the auction is full."
+              "Deposit of the bid at each index: how the smallest deposit is found",
+              "when the auction is full."
             ],
             "type": {
               "array": [
@@ -5693,7 +5701,7 @@
       }
     },
     {
-      "name": "CheckBidsOutput",
+      "name": "CheckBidsV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
         "as anchor does not support tuples and tuple structs yet."
@@ -5709,7 +5717,7 @@
                 "generics": [
                   {
                     "kind": "const",
-                    "value": "1"
+                    "value": "2"
                   }
                 ]
               }
@@ -5757,7 +5765,7 @@
       }
     },
     {
-      "name": "ClearPriceOutput",
+      "name": "ClearPriceV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
         "as anchor does not support tuples and tuple structs yet."
@@ -5769,7 +5777,7 @@
             "name": "field_0",
             "type": {
               "defined": {
-                "name": "ClearPriceOutputStruct0"
+                "name": "ClearPriceV2OutputStruct0"
               }
             }
           }
@@ -5777,7 +5785,7 @@
       }
     },
     {
-      "name": "ClearPriceOutputStruct0",
+      "name": "ClearPriceV2OutputStruct0",
       "type": {
         "kind": "struct",
         "fields": [
@@ -7142,7 +7150,8 @@
           {
             "name": "min_deposit",
             "docs": [
-              "Smallest budget a bid may deposit, in lamports."
+              "Smallest deposit, and smallest private budget, a bid may make, in",
+              "lamports."
             ],
             "type": "u64"
           },

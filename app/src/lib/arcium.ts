@@ -16,7 +16,8 @@ import {
 import { BID_NONCE_DOMAIN, CLUSTER_OFFSET, MXE_X25519_PUBLIC_KEY, PROGRAM_ID } from "../config";
 import { provider } from "./chain";
 
-export type Circuit = "check_bids" | "clear_price" | "award_bid" | "draw_seed";
+/** The circuits this program runs; see `encrypted-ixs`. */
+export type Circuit = "check_bids_v2" | "clear_price_v2" | "award_bid_v2" | "draw_seed";
 
 /** Accounts every instruction that queues an MPC computation needs. */
 export function computationAccounts(circuit: Circuit, computationOffset: BN) {
@@ -135,19 +136,19 @@ export interface EncryptedBid {
 /**
  * Encrypts `{ price, quantity }` in the browser so that only Arcium's MPC
  * cluster, working together, can read it. `price` is in the auction's price
- * ticks; `quantity` is the number of NFTs, or 0 for a token bid, whose size
- * is its budget. A fresh key pair is used for every bid and the secret never
- * leaves this function.
+ * ticks; `quantity` is a token bid's budget in lamports, or a collection
+ * bid's number of NFTs. A fresh key pair is used for every bid and the secret
+ * never leaves this function.
  */
-export async function encryptBid(price: bigint, quantity: number, bid: PublicKey): Promise<EncryptedBid> {
+export async function encryptBid(price: bigint, quantity: bigint, bid: PublicKey): Promise<EncryptedBid> {
   if (price < 1n || price > 0xffff_ffffn) throw new Error("The price is out of range");
-  if (!Number.isInteger(quantity) || quantity < 0 || quantity > 0xffff) throw new Error("The quantity is out of range");
+  if (quantity < 1n || quantity > 0xffff_ffff_ffff_ffffn) throw new Error("The size is out of range");
   const mxePublicKey = await getMxeKey();
   const secret = x25519.utils.randomSecretKey();
   const clientPublicKey = x25519.getPublicKey(secret);
   const cipher = new RescueCipher(x25519.getSharedSecret(secret, mxePublicKey));
   const nonceBytes = bidNonce(bid);
-  const [priceCiphertext, quantityCiphertext] = cipher.encrypt([price, BigInt(quantity)], nonceBytes);
+  const [priceCiphertext, quantityCiphertext] = cipher.encrypt([price, quantity], nonceBytes);
   secret.fill(0);
   return {
     priceCiphertext: Array.from(priceCiphertext),

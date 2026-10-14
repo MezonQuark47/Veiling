@@ -93,7 +93,7 @@ import { expect } from "chai";
 import { SealedAuction } from "../target/types/sealed_auction";
 import { shuffledItems } from "../app/src/lib/shuffle";
 
-const CIRCUITS = ["check_bids", "clear_price", "award_bid", "draw_seed"] as const;
+const CIRCUITS = ["check_bids_v2", "clear_price_v2", "award_bid_v2", "draw_seed"] as const;
 type CircuitName = (typeof CIRCUITS)[number];
 
 const BATCH_SIZE = 4;
@@ -478,7 +478,7 @@ describe("sealed_auction", () => {
     };
   }
 
-  /** A token bid encrypts only its price; the budget is its deposit. */
+  /** Encrypts a bid: a token bid's quantity is its budget in lamports, a collection bid's its NFTs. */
   const encryptBid = (price: number, quantity: number, bid: PublicKey) =>
     encryptValues(BigInt(price), BigInt(quantity), bid);
 
@@ -685,7 +685,7 @@ describe("sealed_auction", () => {
           payer: admin.publicKey,
           auction,
           book: bookPda(auction),
-          ...arciumAccounts("check_bids", offset),
+          ...arciumAccounts("check_bids_v2", offset),
         })
         .remainingAccounts(batch)
         .preInstructions([computeLimit(400_000)])
@@ -703,7 +703,7 @@ describe("sealed_auction", () => {
         payer: admin.publicKey,
         auction,
         book: bookPda(auction),
-        ...arciumAccounts("clear_price", offset),
+        ...arciumAccounts("clear_price_v2", offset),
       })
       .preInstructions([computeLimit(1_000_000)])
       .rpc({ skipPreflight: true, commitment: "confirmed" });
@@ -739,7 +739,7 @@ describe("sealed_auction", () => {
         auction,
         bid: b.bid,
         book: bookPda(auction),
-        ...arciumAccounts("award_bid", offset),
+        ...arciumAccounts("award_bid_v2", offset),
       })
       .preInstructions([computeLimit(400_000)])
       .rpc({ skipPreflight: true, commitment: "confirmed" });
@@ -891,11 +891,11 @@ describe("sealed_auction", () => {
       };
       const url = `${baseUrl}/${circuit}.arcis`;
       const builder =
-        circuit === "check_bids"
+        circuit === "check_bids_v2"
           ? program.methods.initCheckBidsCompDef(url)
-          : circuit === "clear_price"
+          : circuit === "clear_price_v2"
           ? program.methods.initClearPriceCompDef(url)
-          : circuit === "award_bid"
+          : circuit === "award_bid_v2"
           ? program.methods.initAwardBidCompDef(url)
           : program.methods.initDrawSeedCompDef(url);
       await builder.accountsPartial(accounts).rpc({ commitment: "confirmed" });
@@ -998,7 +998,7 @@ describe("sealed_auction", () => {
     const attacker = Keypair.generate();
     await fund(attacker, 0.02);
     const victimBid = bidPda(auction, victim.publicKey, newSeed());
-    const copied = encryptBid(3_000, 0, victimBid);
+    const copied = encryptBid(3_000, 10_000, victimBid);
     const deposit = new BN(50_000);
 
     const attempt = (enc: Encrypted, seed = newSeed(), withTerms = terms, amount = deposit) =>
@@ -1011,7 +1011,7 @@ describe("sealed_auction", () => {
 
     // With the right nonce, a non-canonical field element is refused...
     const seed = newSeed();
-    const good = encryptBid(3_000, 0, bidPda(auction, attacker.publicKey, seed));
+    const good = encryptBid(3_000, 10_000, bidPda(auction, attacker.publicKey, seed));
     const modulus = toBytesLE(FIELD_MODULUS);
     await expectError(attempt({ ...good, priceCt: modulus }, seed), "InvalidCiphertext");
     await expectError(attempt({ ...good, quantityCt: modulus }, seed), "InvalidCiphertext");
@@ -1055,7 +1055,7 @@ describe("sealed_auction", () => {
     const clearingPrice = 3_000;
     const bids: PlacedBid[] = [];
     for (const p of plan) {
-      bids.push(await placeBid(p.name, auction, p.budget, (bid) => encryptBid(p.price, 0, bid)));
+      bids.push(await placeBid(p.name, auction, p.budget, (bid) => encryptBid(p.price, p.budget, bid)));
     }
 
     // Bids are sealed: no price is visible on chain, only each deposit and
@@ -1148,7 +1148,7 @@ describe("sealed_auction", () => {
     await fund(seller, 0.15);
     const { mint, sellerAta, auction, vault, supply } = await openAuction(seller, 1_000);
 
-    const honest = await placeBid("H", auction, 100_000, (bid) => encryptBid(2_000, 0, bid));
+    const honest = await placeBid("H", auction, 100_000, (bid) => encryptBid(2_000, 100_000, bid));
     const malformed = await placeBid("M", auction, 30_000, (bid) =>
       encryptValues((1n << 32n) + 3_000n, 0n, bid)
     );

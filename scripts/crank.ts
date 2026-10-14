@@ -43,9 +43,9 @@ const BID_AUCTION_OFFSET = 8 + 32 * 3 + 16;
 const MPL_CORE_ID = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 /** Compute units each queueing instruction may use. */
 const COMPUTE_UNITS: Record<string, number> = {
-  check_bids: 400_000,
-  clear_price: 1_000_000,
-  award_bid: 400_000,
+  check_bids_v2: 400_000,
+  clear_price_v2: 1_000_000,
+  award_bid_v2: 400_000,
   draw_seed: 400_000,
 };
 
@@ -115,12 +115,12 @@ async function main() {
         .filter((b) => b.account.index >= auction.checkedCount && b.account.index < auction.checkedCount + BATCH_SIZE)
         .map((b) => ({ pubkey: b.publicKey, isWritable: false, isSigner: false }));
       console.log(`Checking bids ${auction.checkedCount}-${auction.checkedCount + batch.length - 1}...`);
-      await compute("check_bids", (o) => program.methods.checkBatch(o), { auction: auctionAddress, book }, batch as any);
+      await compute("check_bids_v2", (o) => program.methods.checkBatch(o), { auction: auctionAddress, book }, batch as any);
       auction = await fetchAuction();
     }
     if (auction.bidCount > 0) {
       console.log("Revealing the clearing price...");
-      await compute("clear_price", (o) => program.methods.findClearing(o), { auction: auctionAddress, book });
+      await compute("clear_price_v2", (o) => program.methods.findClearing(o), { auction: auctionAddress, book });
       auction = await fetchAuction();
       console.log(`Clearing price ${auction.clearingPrice} (ticks), filled: ${auction.filled}`);
     }
@@ -130,7 +130,7 @@ async function main() {
     for (const b of await fetchBids()) {
       if (variant(b.account.status) !== "sealed") continue;
       console.log(`Settling bid ${b.account.index}...`);
-      await compute("award_bid", (o) => program.methods.settleBid(o), {
+      await compute("award_bid_v2", (o) => program.methods.settleBid(o), {
         auction: auctionAddress,
         bid: b.publicKey,
         book,

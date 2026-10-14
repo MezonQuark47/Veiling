@@ -3,7 +3,7 @@ import { LeftoverNotes, NoteUnlock } from "../components/BidNotes";
 import { Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
 import { statusText } from "../components/AuctionTable";
 import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, revealMissed } from "../lib/chain";
-import { readNote } from "../lib/notes";
+import { noteSize, readNote } from "../lib/notes";
 import { formatSol, plural } from "../lib/format";
 import { useWallet } from "../lib/wallet";
 
@@ -23,14 +23,14 @@ function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; no
               <div className="bidlist__main">
                 <strong>Bid {b.index + 1}</strong>
                 <span className="muted">
-                  {auction.kind === "token" ? "Budget" : "Deposit"} {formatSol(b.deposit)} SOL
+                  Deposit {formatSol(b.deposit)} SOL
                 </span>
               </div>
               {note && sealedAt ? (
                 <p className="bidlist__note">
                   {auction.kind === "token"
-                    ? `Sealed at up to ${sealedAt} per ${asset.unit}.`
-                    : `Sealed for ${plural(note.quantity, "NFT")} at up to ${sealedAt} each.`}
+                    ? `Sealed: a budget of ${formatSol(noteSize(note) > 0n ? noteSize(note) : b.deposit)} SOL at up to ${sealedAt} per ${asset.unit}.`
+                    : `Sealed for ${plural(Number(noteSize(note)), "NFT")} at up to ${sealedAt} each.`}
                 </p>
               ) : null}
               <p className="bidlist__state">

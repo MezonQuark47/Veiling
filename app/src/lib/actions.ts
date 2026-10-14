@@ -141,7 +141,7 @@ export interface TokenSaleTerms {
   priceUnit: bigint;
   /** Lowest price that counts, in ticks: lamports per `priceUnit`. */
   minPrice: bigint;
-  /** Smallest budget a bid may deposit, in lamports. */
+  /** Smallest deposit, and smallest private budget, a bid may make, in lamports. */
   minDeposit: bigint;
   durationSecs: number;
   /** When bidding opens (unix seconds); 0 for right away. */
@@ -312,16 +312,22 @@ export async function findEviction(auction: Auction): Promise<Eviction | null> {
 
 /**
  * A sealed bid: `price` is the most the bidder pays, in the auction's price
- * ticks. A token bid's size is its budget, the deposit, so `quantity` is 0;
- * a collection bid asks for `quantity` NFTs and its deposit must cover them.
+ * ticks. `quantity` is sealed too: a token bid's budget in lamports, which
+ * the deposit must cover, or the NFTs a collection bid asks for, which the
+ * deposit must cover at its price. The deposit is public; it may be larger
+ * than it needs to be, to hide the bid.
  */
 export async function buildPlaceBid(
   bidder: PublicKey,
   auction: Auction,
   price: bigint,
-  quantity: number,
+  quantity: bigint,
   deposit: bigint
 ) {
+  if (deposit < auction.minDeposit) throw new Error("The deposit is below this auction's minimum.");
+  if (auction.kind === "token" && (quantity < auction.minDeposit || quantity > deposit)) {
+    throw new Error("The budget must be at least the minimum and covered by the deposit.");
+  }
   const eviction = await findEviction(auction);
   if (eviction && deposit < eviction.minimumDeposit) {
     throw new Error("This auction is full. Raise your deposit to replace the smallest bid.");
@@ -378,7 +384,7 @@ export async function buildCheckBatch(payer: PublicKey, auction: Auction, bids: 
       payer,
       auction: auction.address,
       book: bookAddress(auction.address),
-      ...computationAccounts("check_bids", offset),
+      ...computationAccounts("check_bids_v2", offset),
     })
     .remainingAccounts(batch.map((b) => ({ pubkey: b.address, isSigner: false, isWritable: false })))
     .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.check)])
@@ -394,7 +400,7 @@ export async function buildFindClearing(payer: PublicKey, auction: Auction) {
       payer,
       auction: auction.address,
       book: bookAddress(auction.address),
-      ...computationAccounts("clear_price", offset),
+      ...computationAccounts("clear_price_v2", offset),
     })
     .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.clear)])
     .transaction();
@@ -409,7 +415,7 @@ export async function buildSettleBid(payer: PublicKey, auction: Auction, bid: Bi
       auction: auction.address,
       bid: bid.address,
       book: bookAddress(auction.address),
-      ...computationAccounts("award_bid", offset),
+      ...computationAccounts("award_bid_v2", offset),
     })
     .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.settle)])
     .transaction();
