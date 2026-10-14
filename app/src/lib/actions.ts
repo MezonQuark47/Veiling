@@ -23,7 +23,7 @@ import {
   getMintLen,
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateAuthorityInstruction, pack } from "@solana/spl-token-metadata";
-import { BATCH_SIZE, MAX_BIDS, MAX_NFTS_PER_CLAIM, MPL_CORE_ID, QUEUE_COMPUTE_UNITS } from "../config";
+import { BATCH_SIZE, MAX_NFTS_PER_CLAIM, MAX_PAGES, MPL_CORE_ID, QUEUE_COMPUTE_UNITS } from "../config";
 import { computationAccounts, encryptBid, newComputationOffset } from "./arcium";
 import { closeNoteInstruction, hasChainNote } from "./bidNotes";
 import {
@@ -33,16 +33,22 @@ import {
   assetAddress,
   auctionAddress,
   bidAddress,
+  bidCapacity,
   bookAddress,
   collectionAddress,
   configAddress,
   connection,
   evictionThreshold,
+  extraPageAddresses,
   feeConfigAddress,
   fetchBidsForAuction,
   fetchBookDeposits,
+  fetchClearingFold,
+  foldAddress,
   itemListAddress,
   nftsReady,
+  pageOf,
+  pagesInUse,
   program,
   randomU64,
   revealMissed,
@@ -254,6 +260,29 @@ export async function buildCreateCollectionAuction(
 }
 
 /**
+ * Adds pages to an auction's bid book, from page `from` up to `to` (from 1),
+ * in one transaction: each holds `PAGE_BIDS` more bids. Only the seller,
+ * until bidding ends; the rent comes back when the auction is closed.
+ */
+export async function buildAddBookPages(seller: PublicKey, auction: PublicKey, from: number, to: number) {
+  if (from < 1 || to >= MAX_PAGES || from > to) throw new Error("An auction has at most four pages of bids.");
+  const tx = new Transaction();
+  for (let page = from; page <= to; page++) {
+    tx.add(
+      await program.methods
+        .addBookPage(page)
+        .accountsPartial({ seller, auction, pageBook: bookAddress(auction, page), fold: foldAddress(auction) })
+        .instruction()
+    );
+  }
+  return tx;
+}
+
+/** The auction's pages after the first, as remaining accounts. */
+const pageAccounts = (auction: Auction, isWritable: boolean) =>
+  extraPageAddresses(auction).map((pubkey) => ({ pubkey, isSigner: false, isWritable }));
+
+/**
  * The transactions that write a collection's item list for the auction the
  * seller will open with `seed`: the first starts the list, every one adds a
  * batch of items in order. An unsealed list left by an earlier attempt is
@@ -298,9 +327,9 @@ export interface Eviction {
 
 /** For a full auction, what a new bid has to beat; `null` while slots are free. */
 export async function findEviction(auction: Auction): Promise<Eviction | null> {
-  if (auction.bidCount < MAX_BIDS) return null;
+  if (auction.bidCount < bidCapacity(auction)) return null;
   const [deposits, bids] = await Promise.all([
-    fetchBookDeposits(auction.address),
+    fetchBookDeposits(auction),
     fetchBidsForAuction(auction.address),
   ]);
   let index = 0;
@@ -368,6 +397,9 @@ export async function buildPlaceBid(
       evictedBid: eviction ? eviction.bid.address : null,
       evictedBidder: eviction ? eviction.bid.bidder : null,
     })
+    // Every further page of the book, so the bid lands wherever the next
+    // free place is when it arrives.
+    .remainingAccounts(pageAccounts(auction, true))
     .transaction();
   return { tx, bid, evicted: eviction?.bid ?? null };
 }
@@ -403,7 +435,12 @@ export async function buildIncreaseBid(
       enc.nonce,
       bn(extraDeposit)
     )
-    .accountsPartial({ bidder, auction: auction.address, book: bookAddress(auction.address), bid: bid.address })
+    .accountsPartial({
+      bidder,
+      auction: auction.address,
+      book: bookAddress(auction.address, pageOf(bid.index)),
+      bid: bid.address,
+    })
     .transaction();
 }
 
@@ -418,7 +455,7 @@ export async function buildCheckBatch(payer: PublicKey, auction: Auction, bids: 
     .accountsPartial({
       payer,
       auction: auction.address,
-      book: bookAddress(auction.address),
+      book: bookAddress(auction.address, pageOf(auction.checkedCount)),
       ...computationAccounts("check_bids_v2", offset),
     })
     .remainingAccounts(batch.map((b) => ({ pubkey: b.address, isSigner: false, isWritable: false })))
@@ -427,17 +464,37 @@ export async function buildCheckBatch(payer: PublicKey, auction: Auction, bids: 
   return { tx, count: batch.length };
 }
 
+/**
+ * The next step towards the clearing price: the whole clearing in one step
+ * while the bids fit on one page, else the next step of the clearing across
+ * pages (`foldTotalSteps` in all).
+ */
 export async function buildFindClearing(payer: PublicKey, auction: Auction) {
   const offset = newComputationOffset();
+  if (pagesInUse(auction) === 1) {
+    return program.methods
+      .findClearing(offset)
+      .accountsPartial({
+        payer,
+        auction: auction.address,
+        book: bookAddress(auction.address),
+        ...computationAccounts("clear_price_v2", offset),
+      })
+      .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.clear)])
+      .transaction();
+  }
+  const fold = await fetchClearingFold(auction);
+  if (!fold) throw new Error("This auction's clearing state is missing.");
   return program.methods
-    .findClearing(offset)
+    .foldClearing(offset)
     .accountsPartial({
       payer,
       auction: auction.address,
-      book: bookAddress(auction.address),
-      ...computationAccounts("clear_price_v2", offset),
+      fold: foldAddress(auction.address),
+      book: bookAddress(auction.address, fold.page),
+      ...computationAccounts("fold_batch_v2", offset),
     })
-    .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.clear)])
+    .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.fold)])
     .transaction();
 }
 
@@ -449,7 +506,7 @@ export async function buildSettleBid(payer: PublicKey, auction: Auction, bid: Bi
       payer,
       auction: auction.address,
       bid: bid.address,
-      book: bookAddress(auction.address),
+      book: bookAddress(auction.address, pageOf(bid.index)),
       ...computationAccounts("award_bid_v2", offset),
     })
     .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.settle)])
@@ -477,6 +534,7 @@ function finalizeShareInstruction(auction: Auction, bid: Bid) {
   return program.methods
     .finalizeShare()
     .accountsPartial({ auction: auction.address, book: bookAddress(auction.address), bid: bid.address })
+    .remainingAccounts(pageAccounts(auction, false))
     .instruction();
 }
 
@@ -627,6 +685,9 @@ export function buildClaimProceeds(auction: Auction) {
     .transaction();
 }
 
+/** The clearing state, which closes with an auction that has more than one page. */
+const foldIfPaged = (auction: Auction) => (auction.extraPages > 0 ? foldAddress(auction.address) : null);
+
 async function closeInstruction(auction: Auction) {
   if (auction.kind === "collection") {
     return program.methods
@@ -635,15 +696,18 @@ async function closeInstruction(auction: Auction) {
         seller: auction.seller,
         auction: auction.address,
         book: bookAddress(auction.address),
+        fold: foldIfPaged(auction),
         collection: auction.mint,
         mplCoreProgram: MPL_CORE_ID,
         itemList: auction.namedItems ? itemListAddress(auction.address) : null,
       })
+      .remainingAccounts(pageAccounts(auction, true))
       .instruction();
   }
   return program.methods
     .closeAuction()
-    .accountsPartial({ ...sellerTokenAccounts(auction), book: bookAddress(auction.address) })
+    .accountsPartial({ ...sellerTokenAccounts(auction), book: bookAddress(auction.address), fold: foldIfPaged(auction) })
+    .remainingAccounts(pageAccounts(auction, true))
     .instruction();
 }
 
@@ -663,8 +727,8 @@ export async function buildCancelAuction(auction: Auction) {
 
 /**
  * Closes a finished or cancelled auction once every bid account is closed,
- * returning the rent of the auction and its bid book (and vault) to the
- * seller. A collection's update authority passes to the seller.
+ * returning the rent of the auction and every page of its bid book (and
+ * vault) to the seller. A collection's update authority passes to the seller.
  */
 export async function buildCloseAuction(auction: Auction) {
   return new Transaction().add(await closeInstruction(auction));

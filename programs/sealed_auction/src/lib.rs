@@ -23,8 +23,11 @@
 //!    An auction can be scheduled: bidding then opens at its `start_time`,
 //!    up to `MAX_START_DELAY_SECS` ahead, and runs for its duration from
 //!    there. Until the first bid, the seller can still cancel it.
+//!    The bid book holds `PAGE_BIDS` (256) bids per page; until bidding
+//!    ends the seller can add pages with `add_book_page`, up to `MAX_PAGES`
+//!    (`MAX_BIDS`, 1,024 bids).
 //! 2. `place_bid` stores an encrypted bid and escrows its deposit (no MPC).
-//!    Once `MAX_BIDS` bids are in, a new bid must out-deposit the smallest
+//!    Once every page is full, a new bid must out-deposit the smallest
 //!    one by `EVICTION_PREMIUM_PERCENT`; that bid is refunded and replaced.
 //!    `save_bid_note` can keep the bidder's own note of the bid next to it,
 //!    encrypted by their app under a key made from their wallet's signature,
@@ -36,7 +39,11 @@
 //! 3. After `end_time`, `check_batch` checks bids `BATCH_SIZE` at a time and
 //!    stores each checked batch, encrypted, in the bid book. One computation
 //!    is in flight at a time.
-//! 4. `find_clearing` reads every batch and reveals the clearing price.
+//! 4. `find_clearing` reads every batch and reveals the clearing price. When
+//!    the bids fill more than one page, `fold_clearing` finds the same price
+//!    a page at a time instead: `FOLD_PASSES` passes over the pages, each
+//!    fixing four bits of the price, with the totals in between kept
+//!    encrypted (`ClearingFold`).
 //! 5. `settle_bid` decides one bid against that price. Its callback records
 //!    what the bid won and moves the payment to the auction. A collection bid
 //!    exactly at the clearing price only records its size, and
@@ -61,10 +68,10 @@
 //! after the end of bidding, winners take their payments back
 //! (`refund_unrevealed`).
 //!
-//! Anyone can run the MPC steps (`check_batch`, `find_clearing`,
-//! `settle_bid`, `draw_nft_seed`). Each pays its caller a reward from the
-//! auction's crank pool when its computation succeeds, to cover the fees the
-//! caller paid to queue it.
+//! Anyone can run the MPC steps (`check_batch`, `find_clearing` or
+//! `fold_clearing`, `settle_bid`, `draw_nft_seed`). Each pays its caller a
+//! reward from the auction's crank pool when its computation succeeds, to
+//! cover the fees the caller paid to queue it.
 //!
 //! Prices are whole price ticks (u32). A token auction quotes lamports per
 //! `price_unit` base units, a power of ten chosen when it opens so that its
@@ -115,6 +122,7 @@ const COMP_DEF_OFFSET_CHECK_BIDS: u32 = comp_def_offset("check_bids_v2");
 const COMP_DEF_OFFSET_CLEAR_PRICE: u32 = comp_def_offset("clear_price_v2");
 const COMP_DEF_OFFSET_AWARD_BID: u32 = comp_def_offset("award_bid_v2");
 const COMP_DEF_OFFSET_DRAW_SEED: u32 = comp_def_offset("draw_seed");
+const COMP_DEF_OFFSET_FOLD_BATCH: u32 = comp_def_offset("fold_batch_v2");
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const FEES_SEED: &[u8] = b"fees";
@@ -133,6 +141,8 @@ pub const ITEMS_SEED: &[u8] = b"items";
 pub const NOTE_SEED: &[u8] = b"note";
 /// The rewards paid to whoever runs the MPC steps: `[CRANK_SEED]`.
 pub const CRANK_SEED: &[u8] = b"crank";
+/// The state of an auction's paged clearing: `[FOLD_SEED, auction]`.
+pub const FOLD_SEED: &[u8] = b"fold";
 
 /// Account discriminators of this version's auction state. They differ from
 /// the first release's, whose accounts had other layouts, so an account of
@@ -142,6 +152,7 @@ pub const BOOK_DISCRIMINATOR: &[u8] = b"VBook_03";
 pub const BID_DISCRIMINATOR: &[u8] = b"VBid__02";
 pub const ITEM_LIST_DISCRIMINATOR: &[u8] = b"VItems01";
 pub const BID_NOTE_DISCRIMINATOR: &[u8] = b"VNote_01";
+pub const FOLD_DISCRIMINATOR: &[u8] = b"VFold_01";
 /// Bytes of a bid note. The program stores them as given: the bidder's app
 /// encrypts the bid's price and size under a key only their wallet can make.
 pub const BID_NOTE_LEN: usize = 32;
@@ -191,8 +202,13 @@ const CORE_UPDATE_COLLECTION_V1: u8 = 16;
 /// millionths of a SOL, up to about 4,295 SOL.
 pub const NFT_PRICE_SCALE: u64 = 1_000;
 /// Largest `price_unit` of a token auction. With at most `MAX_BIDS` budgets
-/// below 2^64, demand times the unit stays below 2^128 in the circuits.
+/// below 2^64, demand times the unit stays below 2^128 in the circuits:
+/// 2^10 * 2^64 * 10^16 < 2^127.2. This is what caps `MAX_BIDS` at 1,024; twice
+/// as many bids would need a smaller unit.
 pub const MAX_PRICE_UNIT: u64 = 10_000_000_000_000_000;
+const _: () = assert!(
+    (MAX_BIDS as u128) * (u64::MAX as u128) <= u128::MAX / (MAX_PRICE_UNIT as u128)
+);
 
 /// Bids checked per computation; must match the circuits' batch width.
 pub const BATCH_SIZE: usize = 4;
@@ -206,12 +222,39 @@ pub const BATCH_RECORDS_OFFSET: u32 = 8;
 pub const BATCH_RECORD_CIPHERTEXTS: usize = 2;
 pub const BATCH_RECORD_LEN: u32 = 32 * BATCH_RECORD_CIPHERTEXTS as u32;
 
-pub const MAX_BIDS: u32 = 256;
-const MAX_BIDS_USIZE: usize = MAX_BIDS as usize;
-/// Batch records an auction can have; `clear_price` reads all of them.
-pub const MAX_BATCHES: usize = MAX_BIDS_USIZE / BATCH_SIZE;
-const _: () = assert!(MAX_BATCHES * BATCH_SIZE == MAX_BIDS_USIZE);
-const _: () = assert!(MAX_BATCHES <= u8::MAX as usize);
+/// Bids one page of the bid book holds (`BidBook`). Every auction has its
+/// first page; the seller can add up to `MAX_PAGES - 1` more before bidding
+/// ends (`add_book_page`).
+pub const PAGE_BIDS: u32 = 256;
+const PAGE_BIDS_USIZE: usize = PAGE_BIDS as usize;
+pub const MAX_PAGES: u8 = 4;
+const MAX_EXTRA_PAGES: usize = MAX_PAGES as usize - 1;
+/// Most bids an auction can hold, with every page added.
+pub const MAX_BIDS: u32 = PAGE_BIDS * MAX_PAGES as u32;
+/// Batch records per page. One computation reads at most one page:
+/// `clear_price` reads the only page of a one-page auction and
+/// `fold_batch` reads one page per step.
+pub const PAGE_BATCHES: usize = PAGE_BIDS_USIZE / BATCH_SIZE;
+const _: () = assert!(PAGE_BATCHES * BATCH_SIZE == PAGE_BIDS_USIZE);
+const _: () = assert!(PAGE_BATCHES <= u8::MAX as usize);
+/// Passes of the paged clearing (`fold_clearing`): each fixes four bits of
+/// the u32 clearing price. A pass reads every page in use, forwards and
+/// backwards in turn, and the step that ends a pass also starts the next on
+/// the same page, so `pages` pages take `FOLD_PASSES * (pages - 1) + 1` steps.
+pub const FOLD_PASSES: u8 = 8;
+pub const FOLD_DIGIT_BITS: u8 = 4;
+const _: () = assert!(FOLD_PASSES as u32 * FOLD_DIGIT_BITS as u32 == 32);
+/// Ciphertexts of the state `fold_batch` carries between steps: 17 demand
+/// totals of 80 bits, packed together.
+pub const FOLD_STATE_CIPHERTEXTS: usize = 7;
+/// Byte offset and length of that state inside `ClearingFold`, right after
+/// the discriminator; the MPC cluster reads it in place.
+pub const FOLD_STATE_OFFSET: u32 = 8;
+pub const FOLD_STATE_LEN: u32 = 32 * FOLD_STATE_CIPHERTEXTS as u32;
+/// What one `fold_batch` step pays its caller, as a share of the auction's
+/// clearing reward, in percent: a step reads one page and costs about this
+/// much of a whole `clear_price` run.
+pub const FOLD_REWARD_PERCENT: u64 = 90;
 pub const MIN_DURATION_SECS: i64 = 60;
 pub const MAX_DURATION_SECS: i64 = 14 * 24 * 60 * 60;
 /// How far ahead an auction can schedule the start of bidding.
@@ -445,6 +488,17 @@ pub mod sealed_auction {
         init_computation_def(
             ctx.accounts,
             circuit_source(circuit_url, circuit_hash!("draw_seed"))?,
+        )?;
+        Ok(())
+    }
+
+    pub fn init_fold_batch_comp_def(
+        ctx: Context<InitFoldBatchCompDef>,
+        circuit_url: String,
+    ) -> Result<()> {
+        init_computation_def(
+            ctx.accounts,
+            circuit_source(circuit_url, circuit_hash!("fold_batch_v2"))?,
         )?;
         Ok(())
     }
@@ -692,6 +746,53 @@ pub mod sealed_auction {
         Ok(())
     }
 
+    /// Adds a page to the auction's bid book, room for `PAGE_BIDS` more bids,
+    /// up to `MAX_PAGES` pages (`MAX_BIDS` bids). Only the seller, while
+    /// bidding is still open; `page` is the next page's number (1 to 3).
+    ///
+    /// The seller pays the page's rent, which comes back when the auction is
+    /// closed, and adds to the crank pool what finding the clearing price
+    /// across the pages may cost (`page_crank_fee`); what is not used comes
+    /// back then too. Once more than one page holds bids, the clearing price
+    /// is found a page at a time (`fold_clearing`) instead of in one step.
+    pub fn add_book_page(ctx: Context<AddBookPage>, page: u8) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let auction_key = ctx.accounts.auction.key();
+        let auction = &mut ctx.accounts.auction;
+        require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
+        require!(now < auction.end_time, AuctionError::BiddingClosed);
+        require!(
+            page as usize == auction.extra_pages as usize + 1 && page < MAX_PAGES,
+            AuctionError::TooManyPages
+        );
+        auction.page_bumps[page as usize - 1] = ctx.bumps.page_book;
+        auction.extra_pages = page;
+        let mut book = ctx.accounts.page_book.load_init()?;
+        book.auction = auction_key;
+        drop(book);
+
+        let fold = &mut ctx.accounts.fold;
+        if fold.auction == Pubkey::default() {
+            fold.auction = auction_key;
+            fold.bump = ctx.bumps.fold;
+        }
+
+        let crank_fee = page_crank_fee(&ctx.accounts.auction.crank_rewards, page);
+        add_to_crank_pool(
+            &mut ctx.accounts.auction,
+            &ctx.accounts.seller.to_account_info(),
+            &ctx.accounts.system_program,
+            crank_fee,
+        )?;
+        emit!(BookPageAdded {
+            auction: auction_key,
+            page,
+            max_bids: bid_capacity(&ctx.accounts.auction),
+            crank_fee,
+        });
+        Ok(())
+    }
+
     /// Starts the item list of the collection auction that the seller will
     /// open with `seed`, for a collection named per item: each item has a
     /// name and a number of NFTs, its editions. `add_items` fills the list
@@ -844,10 +945,14 @@ pub mod sealed_auction {
     /// `is_usable_x25519_key`). `terms` are the auction terms the bidder saw;
     /// the bid is refused if the auction does not have exactly those.
     ///
-    /// Once the auction holds `MAX_BIDS` bids, pass the bid with the smallest
-    /// deposit as `evicted_bid` (and its owner as `evicted_bidder`); the new
-    /// deposit must exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid
-    /// is closed and its owner gets the deposit and rent back.
+    /// Once every page of the auction's bid book is full (`bid_capacity`),
+    /// pass the bid with the smallest deposit as `evicted_bid` (and its owner
+    /// as `evicted_bidder`); the new deposit must exceed it by
+    /// `EVICTION_PREMIUM_PERCENT`. The evicted bid is closed and its owner
+    /// gets the deposit and rent back.
+    ///
+    /// `book` is the first page; pass every further page
+    /// (`add_book_page`), in order, as remaining accounts.
     ///
     /// For a token auction the encrypted quantity is the bid's budget in
     /// lamports: a budget the deposit does not cover, or below
@@ -856,8 +961,8 @@ pub mod sealed_auction {
     /// such a bid is fully refunded later, and the deposit may exceed what it
     /// covers to hide the bid.
     #[allow(clippy::too_many_arguments)]
-    pub fn place_bid(
-        ctx: Context<PlaceBid>,
+    pub fn place_bid<'info>(
+        ctx: Context<'info, PlaceBid<'info>>,
         bid_seed: u64,
         terms: ExpectedTerms,
         price_ciphertext: [u8; 32],
@@ -896,8 +1001,8 @@ pub mod sealed_auction {
         // Anything less cannot win, so it is refused before it takes a slot.
         require!(deposit >= auction.min_deposit, AuctionError::DepositTooSmall);
 
-        let mut book = ctx.accounts.book.load_mut()?;
-        let index = if auction.bid_count < MAX_BIDS {
+        let extra = extra_pages(auction, ctx.remaining_accounts)?;
+        let index = if auction.bid_count < bid_capacity(auction) {
             require!(
                 ctx.accounts.evicted_bid.is_none(),
                 AuctionError::WrongBidAccounts
@@ -923,12 +1028,18 @@ pub mod sealed_auction {
                 AuctionError::Unauthorized
             );
             let index = evicted.index;
-            let slot = index as usize;
+            let (page, slot) = page_slot(index);
             require!(
-                slot < MAX_BIDS_USIZE && book.deposits[slot] == evicted.deposit,
+                page <= auction.extra_pages
+                    && page_of(&ctx.accounts.book, &extra, page).load()?.deposits[slot] == evicted.deposit,
                 AuctionError::WrongBidAccounts
             );
-            let smallest = book.deposits.iter().copied().min().unwrap_or(0);
+            // Every page is full, so every deposit counts.
+            let mut smallest = u64::MAX;
+            for page in 0..=auction.extra_pages {
+                let book = page_of(&ctx.accounts.book, &extra, page).load()?;
+                smallest = smallest.min(book.deposits.iter().copied().min().unwrap_or(u64::MAX));
+            }
             require!(evicted.deposit == smallest, AuctionError::NotSmallestBid);
             require!(
                 deposit >= eviction_threshold(smallest)?,
@@ -952,8 +1063,8 @@ pub mod sealed_auction {
             });
             index
         };
-        book.deposits[index as usize] = deposit;
-        drop(book);
+        let (page, slot) = page_slot(index);
+        page_of(&ctx.accounts.book, &extra, page).load_mut()?.deposits[slot] = deposit;
         auction.total_deposited = auction
             .total_deposited
             .checked_add(deposit)
@@ -1018,7 +1129,8 @@ pub mod sealed_auction {
     /// on its deposit. A deposit can only grow, so a bid can never be shrunk
     /// or pulled to fake demand; the app only offers raising the price and
     /// size. Only the latest version is checked when bidding closes, against
-    /// the whole deposit.
+    /// the whole deposit. `book` is the page of the bid book that holds the
+    /// bid (`page_slot`).
     #[allow(clippy::too_many_arguments)]
     pub fn increase_bid(
         ctx: Context<IncreaseBid>,
@@ -1058,11 +1170,13 @@ pub mod sealed_auction {
             .deposit
             .checked_add(extra_deposit)
             .ok_or(AuctionError::MathOverflow)?;
-        let index = ctx.accounts.bid.index as usize;
-        let mut book = ctx.accounts.book.load_mut()?;
-        require!(index < MAX_BIDS_USIZE, AuctionError::WrongBidAccounts);
-        book.deposits[index] = deposit;
-        drop(book);
+        let (page, slot) = page_slot(ctx.accounts.bid.index);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        ctx.accounts.book.load_mut()?.deposits[slot] = deposit;
         auction.total_deposited = auction
             .total_deposited
             .checked_add(extra_deposit)
@@ -1097,7 +1211,7 @@ pub mod sealed_auction {
     /// Checks the next batch of bids and stores it, encrypted, in the bid
     /// book. Anyone can call this once bidding has closed. Pass the bids with
     /// indices `checked_count..checked_count + min(BATCH_SIZE, remaining)` as
-    /// remaining accounts, in order.
+    /// remaining accounts, in order, and as `book` the page that holds them.
     pub fn check_batch<'info>(
         ctx: Context<'info, CheckBatch<'info>>,
         computation_offset: u64,
@@ -1107,6 +1221,12 @@ pub mod sealed_auction {
         let auction = &ctx.accounts.auction;
         let count = check_allowed(auction, now)?;
         let bids = load_batch(auction, ctx.remaining_accounts, count)?;
+        let (page, _) = page_slot(auction.checked_count);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
 
         // Parameter order follows the circuit: the bids, then the public
         // terms.
@@ -1192,9 +1312,14 @@ pub mod sealed_auction {
         pay_cranker(auction, &ctx.accounts.cranker.to_account_info(), reward)?;
 
         // Every batch starts at a multiple of BATCH_SIZE, so this is the
-        // batch's position in the book.
-        let batch = auction.checked_count as usize / BATCH_SIZE;
-        require!(batch < MAX_BATCHES, AuctionError::MathOverflow);
+        // batch's position in its page of the book.
+        let (page, slot) = page_slot(auction.checked_count);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        let batch = slot / BATCH_SIZE;
         let mut book = ctx.accounts.book.load_mut()?;
         book.batch_records[batch] = record.ciphertexts;
         book.batch_nonces[batch] = record.nonce.to_le_bytes();
@@ -1218,7 +1343,9 @@ pub mod sealed_auction {
     }
 
     /// Reveals the clearing price once every bid is checked, from all the
-    /// batch records at once. Anyone can call it.
+    /// batch records at once. Anyone can call it. Only while the bids fit on
+    /// the first page of the book; with more, `fold_clearing` finds the
+    /// price a page at a time.
     pub fn find_clearing(ctx: Context<FindClearing>, computation_offset: u64) -> Result<()> {
         require_pinned_circuit(
             &ctx.accounts.comp_def_account,
@@ -1237,9 +1364,10 @@ pub mod sealed_auction {
             auction.checked_count == auction.bid_count,
             AuctionError::BidsNotChecked
         );
+        require!(pages_in_use(auction) == 1, AuctionError::UsePagedClearing);
         ensure_idle(&auction.pending_computation, auction.pending_since, now)?;
 
-        let active_batches = (auction.bid_count as usize).div_ceil(BATCH_SIZE) as u8;
+        let active_batches = page_active_batches(auction.bid_count, 0);
         let args = {
             let book = ctx.accounts.book.load()?;
             clearing_arguments(
@@ -1316,29 +1444,168 @@ pub mod sealed_auction {
         };
         let reward = auction.crank_rewards.clearing;
         pay_cranker(auction, &ctx.accounts.cranker.to_account_info(), reward)?;
-        let (price, weight_above, weight_at) = (result.field_0, result.field_1, result.field_2);
-        // Sanity checks on what MPC revealed; these always hold for an honest
-        // cluster and make a broken result fail loudly instead of paying out.
-        let filled = clearing_is_consistent(auction, price, weight_above, weight_at)?;
-
-        auction.clearing_price = if filled { price } else { auction.min_price };
-        auction.filled = filled;
-        auction.weight_above = weight_above;
-        auction.weight_at = if filled { weight_at } else { 0 };
-        auction.status = AuctionStatus::Settling;
+        apply_clearing(auction, result.field_0, result.field_1, result.field_2)?;
         clear_auction_pending(auction);
-        emit!(AuctionCleared {
+        Ok(())
+    }
+
+    /// Runs the next step of the paged clearing, for an auction whose bids
+    /// fill more than one page of its book: `fold_batch` reads one page for
+    /// one digit of the clearing price (see `FOLD_PASSES`), and the step that
+    /// ends the last pass reveals the price as `find_clearing` does. Anyone
+    /// can call it once every bid is checked; pass as `book` the page the
+    /// auction's `ClearingFold` names. Each step that succeeds pays its
+    /// caller `fold_reward` from the crank pool.
+    pub fn fold_clearing(ctx: Context<FoldClearing>, computation_offset: u64) -> Result<()> {
+        require_pinned_circuit(&ctx.accounts.comp_def_account, circuit_hash!("fold_batch_v2"))?;
+        let auction = &ctx.accounts.auction;
+        let fold = &ctx.accounts.fold;
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            auction.status == AuctionStatus::Open,
+            AuctionError::WrongStatus
+        );
+        require!(now >= auction.end_time, AuctionError::BiddingOpen);
+        require!(before_emergency(auction, now)?, AuctionError::EmergencyActive);
+        require!(
+            auction.checked_count == auction.bid_count,
+            AuctionError::BidsNotChecked
+        );
+        let pages = pages_in_use(auction);
+        require!(pages > 1, AuctionError::UseSingleClearing);
+        require!(fold.pass < FOLD_PASSES, AuctionError::WrongStatus);
+        ensure_idle(&auction.pending_computation, auction.pending_since, now)?;
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, fold.page)?,
+            AuctionError::WrongBookPage
+        );
+
+        let step = fold_step(fold, pages);
+        let args = {
+            let book = ctx.accounts.book.load()?;
+            fold_arguments(
+                fold,
+                ctx.accounts.fold.key(),
+                &book.batch_nonces,
+                ctx.accounts.book.key(),
+                page_active_batches(auction.bid_count, fold.page),
+                step,
+                auction,
+            )
+        };
+
+        let auction_key = auction.key();
+        let fold_key = ctx.accounts.fold.key();
+        let computation = ctx.accounts.computation_account.key();
+        let auction = &mut ctx.accounts.auction;
+        auction.pending_computation = computation;
+        auction.pending_since = now;
+        auction.pending_batch = 0;
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        // Order must match the custom accounts of `FoldBatchV2Callback`.
+        let callback = FoldBatchV2Callback::callback_ix(
+            computation_offset,
+            &ctx.accounts.mxe_account,
+            &[
+                CallbackAccount {
+                    pubkey: auction_key,
+                    is_writable: true,
+                },
+                CallbackAccount {
+                    pubkey: fold_key,
+                    is_writable: true,
+                },
+                CallbackAccount {
+                    pubkey: ctx.accounts.payer.key(),
+                    is_writable: true,
+                },
+            ],
+        )?;
+        queue_computation_exact(ctx.accounts, computation_offset, args, callback)?;
+        let (slot, counter) = computation_identity(&ctx.accounts.computation_account)?;
+        ctx.accounts.auction.pending_slot = slot;
+        ctx.accounts.auction.pending_slot_counter = counter;
+        Ok(())
+    }
+
+    #[arcium_callback(encrypted_ix = "fold_batch_v2")]
+    pub fn fold_batch_v2_callback(
+        ctx: Context<FoldBatchV2Callback>,
+        output: SignedComputationOutputs<FoldBatchV2Output>,
+    ) -> Result<()> {
+        let auction = &mut ctx.accounts.auction;
+        check_callback_computation(
+            &ctx.accounts.computation_account,
+            &auction.pending_computation,
+            auction.pending_slot,
+            auction.pending_slot_counter,
+        )?;
+        require!(
+            auction.status == AuctionStatus::Open,
+            AuctionError::WrongStatus
+        );
+        let (state, result) = match output {
+            SignedComputationOutputs::Failure(_) => {
+                clear_auction_pending(auction);
+                emit!(ComputationFailed {
+                    auction: auction.key(),
+                    bid: None,
+                });
+                return Ok(());
+            }
+            other => {
+                let FoldBatchV2Output { field_0 } = other.verify_output(
+                    &ctx.accounts.cluster_account,
+                    &ctx.accounts.computation_account,
+                )?;
+                (field_0.field_0, field_0.field_1)
+            }
+        };
+        let reward = fold_reward(&auction.crank_rewards);
+        pay_cranker(auction, &ctx.accounts.cranker.to_account_info(), reward)?;
+
+        let fold = &mut ctx.accounts.fold;
+        let pages = pages_in_use(auction);
+        let step = fold_step(fold, pages);
+        fold.state = state.ciphertexts;
+        fold.state_nonce = state.nonce;
+        fold.steps = fold.steps.checked_add(1).ok_or(AuctionError::MathOverflow)?;
+        let (pass, page) = (fold.pass, fold.page);
+        if step.decide {
+            let digit = result.field_0;
+            require!(digit < 1 << FOLD_DIGIT_BITS, AuctionError::InvalidClearing);
+            fold.prefix = fold
+                .prefix
+                .checked_add((digit as u32) << step.shift)
+                .ok_or(AuctionError::InvalidClearing)?;
+            if step.last_pass {
+                fold.pass = FOLD_PASSES;
+                let price = fold.prefix;
+                apply_clearing(auction, price, result.field_1, result.field_2)?;
+            } else {
+                fold.pass += 1;
+                fold.page = next_fold_page(fold.pass, fold.page);
+            }
+        } else {
+            fold.page = next_fold_page(fold.pass, fold.page);
+        }
+        clear_auction_pending(auction);
+        emit!(ClearingFolded {
             auction: auction.key(),
-            clearing_price: auction.clearing_price,
-            filled,
-            weight_above,
-            weight_at: auction.weight_at,
+            pass,
+            page,
+            steps: fold.steps,
+            total_steps: fold_total_steps(pages),
+            prefix: fold.prefix,
         });
         Ok(())
     }
 
     /// Decides one bid against the public clearing price, from the batch
-    /// record `check_batch` stored for it. Anyone can call it. The callback
+    /// record `check_batch` stored for it in the page of the book that holds
+    /// the bid (`book`). Anyone can call it. The callback
     /// only records what the bid won and moves the payment to the auction; a
     /// collection bid at the clearing price records its size and waits for
     /// `finalize_share`. Tokens and the unused deposit are collected
@@ -1360,9 +1627,14 @@ pub mod sealed_auction {
         ensure_idle(&bid.pending_computation, bid.pending_since, now)?;
 
         // Settling implies every bid was checked, so this record exists.
-        let batch = bid.index as usize / BATCH_SIZE;
-        let slot = (bid.index as usize % BATCH_SIZE) as u8;
-        require!(batch < MAX_BATCHES, AuctionError::WrongBidAccounts);
+        let (page, local) = page_slot(bid.index);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        let batch = local / BATCH_SIZE;
+        let slot = (local % BATCH_SIZE) as u8;
         let record_nonce = u128::from_le_bytes(ctx.accounts.book.load()?.batch_nonces[batch]);
         let record_offset = BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32;
 
@@ -1475,11 +1747,16 @@ pub mod sealed_auction {
         if outcome == OUTCOME_AT {
             // The share depends on every other bid at the clearing price, so
             // only the size is recorded now; `finalize_share` does the rest.
-            let index = ctx.accounts.bid.index as usize;
+            let (page, index) = page_slot(ctx.accounts.bid.index);
             let size = u32::try_from(quantity).map_err(|_| AuctionError::InvalidAllocation)?;
+            require_keys_eq!(
+                ctx.accounts.book.key(),
+                page_address(&ctx.accounts.auction, page)?,
+                AuctionError::WrongBookPage
+            );
             let mut book = ctx.accounts.book.load_mut()?;
             require!(
-                index < MAX_BIDS_USIZE && book.clearing_quantities[index] == 0,
+                book.clearing_quantities[index] == 0,
                 AuctionError::InvalidAllocation
             );
             book.clearing_quantities[index] = size;
@@ -1513,17 +1790,23 @@ pub mod sealed_auction {
     /// their size and rounded down, and the NFTs lost to rounding go one each
     /// to the earliest of them (lowest bid index), so every NFT is sold.
     /// Anyone can call it; the payment moves to the auction as in any
-    /// settlement.
-    pub fn finalize_share(ctx: Context<FinalizeShare>) -> Result<()> {
+    /// settlement. `book` is the first page; pass every further page, in
+    /// order, as remaining accounts.
+    pub fn finalize_share<'info>(ctx: Context<'info, FinalizeShare<'info>>) -> Result<()> {
         let auction = &ctx.accounts.auction;
         let bid = &ctx.accounts.bid;
         require!(bid.status == BidStatus::AtClearing, AuctionError::NotAtClearing);
         require!(shares_are_final(auction), AuctionError::SharesNotReady);
         let remaining = clearing_remainder(auction)?;
         let weight_at = u64::try_from(auction.weight_at).map_err(|_| AuctionError::InvalidAllocation)?;
+        let extra = extra_pages(auction, ctx.remaining_accounts)?;
         let share = {
-            let book = ctx.accounts.book.load()?;
-            clearing_share(&book.clearing_quantities, bid.index, remaining, weight_at)?
+            // Sizes by bid index across every page.
+            let mut sizes = Vec::with_capacity(PAGE_BIDS_USIZE * (1 + extra.len()));
+            for page in 0..=auction.extra_pages {
+                sizes.extend_from_slice(&page_of(&ctx.accounts.book, &extra, page).load()?.clearing_quantities);
+            }
+            clearing_share(&sizes, bid.index, remaining, weight_at)?
         };
         let payment = nft_payment(auction, share)?;
         settle_payment(&mut ctx.accounts.auction, &mut ctx.accounts.bid, OUTCOME_AT, share, payment)
@@ -2026,7 +2309,9 @@ pub mod sealed_auction {
     /// closed, returning the rent of the auction, its bid book and its vault
     /// to the seller. Nothing is owed to anyone at that point, so tokens still
     /// in the vault (sent there by someone after the sale) go to the seller.
-    pub fn close_auction(ctx: Context<CloseAuction>) -> Result<()> {
+    /// An auction with more than one page of bid book passes the further
+    /// pages, in order, as remaining accounts, and its `fold`; they close too.
+    pub fn close_auction<'info>(ctx: Context<'info, CloseAuction<'info>>) -> Result<()> {
         let auction = &ctx.accounts.auction;
         require!(
             matches!(
@@ -2036,6 +2321,12 @@ pub mod sealed_auction {
             AuctionError::WrongStatus
         );
         require!(auction.live_bids == 0, AuctionError::BidsOutstanding);
+        close_extra_pages(
+            auction,
+            ctx.remaining_accounts,
+            ctx.accounts.fold.is_some(),
+            &ctx.accounts.seller.to_account_info(),
+        )?;
 
         let vault = ctx.accounts.vault.to_account_info();
         let mut swept = 0u64;
@@ -2103,8 +2394,11 @@ pub mod sealed_auction {
     /// Closes a finished or cancelled collection auction once every bid
     /// account is closed, which means every NFT sold has been minted. Makes
     /// the seller the collection's update authority and returns the rent of
-    /// the auction, its bid book and its item list to the seller.
-    pub fn close_collection_auction(ctx: Context<CloseCollectionAuction>) -> Result<()> {
+    /// the auction, its bid book and its item list to the seller. Further
+    /// pages of the book and the `fold` close too, as in `close_auction`.
+    pub fn close_collection_auction<'info>(
+        ctx: Context<'info, CloseCollectionAuction<'info>>,
+    ) -> Result<()> {
         let auction = &ctx.accounts.auction;
         require!(
             matches!(
@@ -2114,6 +2408,12 @@ pub mod sealed_auction {
             AuctionError::WrongStatus
         );
         require!(auction.live_bids == 0, AuctionError::BidsOutstanding);
+        close_extra_pages(
+            auction,
+            ctx.remaining_accounts,
+            ctx.accounts.fold.is_some(),
+            &ctx.accounts.seller.to_account_info(),
+        )?;
         // The item list, if any, closes with the auction (`close = seller`).
         require!(
             !auction.named_items || ctx.accounts.item_list.is_some(),
@@ -2644,7 +2944,7 @@ pub fn shares_are_final(auction: &Auction) -> bool {
 /// exceeds its bid. Without this, a small sale (one NFT per bid, say) could
 /// leave most of its NFTs unsold.
 pub fn clearing_share(
-    sizes: &[u32; MAX_BIDS_USIZE],
+    sizes: &[u32],
     index: u32,
     remaining: u64,
     total: u64,
@@ -2894,6 +3194,8 @@ fn new_auction(
         unrevealed: false,
         crank_rewards,
         crank_pool: 0,
+        extra_pages: 0,
+        page_bumps: [0; MAX_EXTRA_PAGES],
     }
 }
 
@@ -3363,6 +3665,188 @@ fn min_budget(auction: &Auction) -> u64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers: pages of the bid book and the paged clearing
+// ---------------------------------------------------------------------------
+
+/// Bids the auction can hold: `PAGE_BIDS` per page of its book.
+pub fn bid_capacity(auction: &Auction) -> u32 {
+    PAGE_BIDS * (1 + auction.extra_pages as u32)
+}
+
+/// The page of the bid book that holds bid `index`, and its slot there.
+pub fn page_slot(index: u32) -> (u8, usize) {
+    (
+        (index / PAGE_BIDS) as u8,
+        (index % PAGE_BIDS) as usize,
+    )
+}
+
+/// Pages of the book that hold bids (at least one).
+pub fn pages_in_use(auction: &Auction) -> u8 {
+    auction.bid_count.div_ceil(PAGE_BIDS).max(1) as u8
+}
+
+/// Batch records in `page` that hold bids, of an auction with `bid_count`
+/// bids.
+pub fn page_active_batches(bid_count: u32, page: u8) -> u8 {
+    let before = page as u32 * PAGE_BIDS;
+    let on_page = bid_count.saturating_sub(before).min(PAGE_BIDS);
+    on_page.div_ceil(BATCH_SIZE as u32) as u8
+}
+
+/// Address of page `page` of the auction's book: `[BOOK_SEED, auction]` for
+/// the first, `[BOOK_SEED, auction, [page]]` for the others.
+fn page_address(auction: &Account<Auction>, page: u8) -> Result<Pubkey> {
+    let key = auction.key();
+    let address = if page == 0 {
+        Pubkey::create_program_address(&[BOOK_SEED, key.as_ref(), &[auction.book_bump]], &crate::ID)
+    } else {
+        require!(page <= auction.extra_pages, AuctionError::WrongBookPage);
+        Pubkey::create_program_address(
+            &[BOOK_SEED, key.as_ref(), &[page], &[auction.page_bumps[page as usize - 1]]],
+            &crate::ID,
+        )
+    };
+    address.map_err(|_| AuctionError::WrongBookPage.into())
+}
+
+/// The auction's pages after the first, which must be passed in order as
+/// `remaining` (and nothing else).
+fn extra_pages<'info>(
+    auction: &Account<'info, Auction>,
+    remaining: &'info [AccountInfo<'info>],
+) -> Result<Vec<AccountLoader<'info, BidBook>>> {
+    require!(
+        remaining.len() == auction.extra_pages as usize,
+        AuctionError::WrongBookPage
+    );
+    remaining
+        .iter()
+        .enumerate()
+        .map(|(k, info)| {
+            require_keys_eq!(
+                info.key(),
+                page_address(auction, k as u8 + 1)?,
+                AuctionError::WrongBookPage
+            );
+            AccountLoader::<BidBook>::try_from(info)
+        })
+        .collect()
+}
+
+fn page_of<'a, 'info>(
+    first: &'a AccountLoader<'info, BidBook>,
+    extra: &'a [AccountLoader<'info, BidBook>],
+    page: u8,
+) -> &'a AccountLoader<'info, BidBook> {
+    if page == 0 {
+        first
+    } else {
+        &extra[page as usize - 1]
+    }
+}
+
+/// Closes the auction's further pages, passed in order as `remaining`, and
+/// requires its `ClearingFold` to be closing too (`has_fold`) when it has
+/// any; the rent goes to the seller.
+fn close_extra_pages<'info>(
+    auction: &Account<'info, Auction>,
+    remaining: &'info [AccountInfo<'info>],
+    has_fold: bool,
+    seller: &AccountInfo<'info>,
+) -> Result<()> {
+    require!(
+        auction.extra_pages == 0 || has_fold,
+        AuctionError::WrongBookPage
+    );
+    for page in extra_pages(auction, remaining)? {
+        page.close(seller.clone())?;
+    }
+    Ok(())
+}
+
+/// What one `fold_batch` step pays its caller.
+pub fn fold_reward(rewards: &CrankRewards) -> u64 {
+    rewards.clearing.saturating_mul(FOLD_REWARD_PERCENT) / 100
+}
+
+/// Steps of the paged clearing over `pages` pages.
+pub fn fold_total_steps(pages: u8) -> u16 {
+    FOLD_PASSES as u16 * (pages.max(1) as u16 - 1) + 1
+}
+
+/// What the seller adds to the crank pool with page `page` (from 1): the
+/// fold steps it adds. Two pages take `FOLD_PASSES + 1` steps (one page needs
+/// none: `clear_price` does it in one, from the seller's opening fee) and
+/// each further page `FOLD_PASSES` more.
+pub fn page_crank_fee(rewards: &CrankRewards, page: u8) -> u64 {
+    let before = if page <= 1 { 0 } else { fold_total_steps(page) };
+    let steps = fold_total_steps(page + 1) - before;
+    fold_reward(rewards).saturating_mul(steps as u64)
+}
+
+/// The flags of the next `fold_batch` step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldStep {
+    /// The very first step: there is no state yet.
+    pub fresh: bool,
+    /// This page ends its pass: the step fixes the pass's digit.
+    pub decide: bool,
+    pub last_pass: bool,
+    /// Place of the pass's digit: the lowest of its four bits.
+    pub shift: u8,
+}
+
+/// Even passes visit the pages forwards and odd passes backwards, so the
+/// page that ends one pass starts the next.
+pub fn fold_step(fold: &ClearingFold, pages: u8) -> FoldStep {
+    let end = if fold.pass % 2 == 0 { pages - 1 } else { 0 };
+    FoldStep {
+        fresh: fold.steps == 0,
+        decide: fold.page == end,
+        last_pass: fold.pass + 1 == FOLD_PASSES,
+        shift: (FOLD_PASSES - 1 - fold.pass.min(FOLD_PASSES - 1)) * FOLD_DIGIT_BITS,
+    }
+}
+
+/// The page after `page` in pass `pass`. A step that ends a pass has also
+/// done the next pass's first page, the same page, so this applies after
+/// moving to the next pass too.
+pub fn next_fold_page(pass: u8, page: u8) -> u8 {
+    if pass % 2 == 0 {
+        page + 1
+    } else {
+        page - 1
+    }
+}
+
+/// Records a revealed clearing: checks it, sets the price, and moves the
+/// auction on to settling.
+fn apply_clearing(
+    auction: &mut Account<Auction>,
+    price: u32,
+    weight_above: u128,
+    weight_at: u128,
+) -> Result<()> {
+    // Sanity checks on what MPC revealed; these always hold for an honest
+    // cluster and make a broken result fail loudly instead of paying out.
+    let filled = clearing_is_consistent(auction, price, weight_above, weight_at)?;
+    auction.clearing_price = if filled { price } else { auction.min_price };
+    auction.filled = filled;
+    auction.weight_above = weight_above;
+    auction.weight_at = if filled { weight_at } else { 0 };
+    auction.status = AuctionStatus::Settling;
+    emit!(AuctionCleared {
+        auction: auction.key(),
+        clearing_price: auction.clearing_price,
+        filled,
+        weight_above,
+        weight_at: auction.weight_at,
+    });
+    Ok(())
+}
+
 fn push_bid_batch(mut builder: ArgBuilder, bids: &[Account<Bid>], count: usize) -> ArgBuilder {
     for k in 0..BATCH_SIZE {
         let (bid, deposit) = if k < count {
@@ -3379,47 +3863,118 @@ fn push_bid_batch(mut builder: ArgBuilder, bids: &[Account<Bid>], count: usize) 
     builder
 }
 
-/// The arguments of `clear_price`: every batch record, read in place from the
-/// bid book, every deposit, two to a u128 (bid `2j` in the low half), then the
-/// public terms. Records and deposits past the last bid are empty; the
-/// circuit ignores them.
+/// The arguments of `clear_price`: every batch record of the first page,
+/// read in place from the bid book, then the public terms. Records past the
+/// last bid are empty; the circuit ignores them.
 ///
 /// Built directly rather than with `ArgBuilder`, whose vectors grow by
 /// doubling: on Solana's bump allocator every outgrown buffer stays
 /// allocated, and these arguments are large enough for that to matter.
 fn clearing_arguments(
-    batch_nonces: &[[u8; 16]; MAX_BATCHES],
+    batch_nonces: &[[u8; 16]; PAGE_BATCHES],
     book_key: Pubkey,
     active_batches: u8,
     is_token: bool,
     price_unit: u64,
     supply: u64,
 ) -> ArgumentList {
-    // An argument reference holds a u8 index into its collection.
-    const _: () = assert!(MAX_BATCHES <= 256);
-    let mut args = Vec::with_capacity(2 * MAX_BATCHES + 4);
-    let mut values = Vec::with_capacity(MAX_BATCHES);
-    let mut accounts = Vec::with_capacity(MAX_BATCHES);
-    for batch in 0..MAX_BATCHES {
-        args.push(ArgumentRef::PlaintextU128(values.len() as u8));
-        values.push(u128::from_le_bytes(batch_nonces[batch]));
-        args.push(ArgumentRef::Account(accounts.len() as u8));
-        accounts.push(AccountArgument {
-            pubkey: book_key,
-            offset: BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32,
-            length: BATCH_RECORD_LEN,
+    let mut list = PageArguments::new(0, 4, 2);
+    list.push_records(batch_nonces, book_key);
+    list.args.push(ArgumentRef::PlaintextU8(active_batches));
+    list.args.push(ArgumentRef::PlaintextBool(is_token));
+    list.push_u64(price_unit);
+    list.push_u64(supply);
+    list.finish()
+}
+
+/// The arguments of one `fold_batch` step: the carried state, read in place
+/// from the `ClearingFold`, the page's batch records, read in place from the
+/// book, then the step and the public terms, in the circuit's order.
+fn fold_arguments(
+    fold: &ClearingFold,
+    fold_key: Pubkey,
+    batch_nonces: &[[u8; 16]; PAGE_BATCHES],
+    book_key: Pubkey,
+    active_batches: u8,
+    step: FoldStep,
+    auction: &Auction,
+) -> ArgumentList {
+    let mut list = PageArguments::new(1, 10, 4);
+    list.push_mxe(fold.state_nonce, fold_key, FOLD_STATE_OFFSET, FOLD_STATE_LEN);
+    list.push_records(batch_nonces, book_key);
+    list.args.push(ArgumentRef::PlaintextU8(active_batches));
+    list.args.push(ArgumentRef::PlaintextBool(step.fresh));
+    list.args.push(ArgumentRef::PlaintextBool(step.decide));
+    list.args.push(ArgumentRef::PlaintextBool(step.last_pass));
+    list.push_u64(fold.prefix as u64);
+    list.args.push(ArgumentRef::PlaintextU8(step.shift));
+    list.push_u64(1u64 << step.shift);
+    list.args.push(ArgumentRef::PlaintextBool(auction.kind == AuctionKind::Token));
+    list.push_u64(auction.price_unit);
+    list.push_u64(auction.supply);
+    list.finish()
+}
+
+/// An `ArgumentList` sized up front for a page's records plus `extra_mxe`
+/// more MXE-encrypted values and the plaintext arguments.
+struct PageArguments {
+    args: Vec<ArgumentRef>,
+    values: Vec<u128>,
+    numbers: Vec<u64>,
+    accounts: Vec<AccountArgument>,
+}
+
+impl PageArguments {
+    /// Room for `plain` plaintext arguments, `numbers` of them u64s.
+    fn new(extra_mxe: usize, plain: usize, numbers: usize) -> Self {
+        // An argument reference holds a u8 index into its collection.
+        const _: () = assert!(PAGE_BATCHES + 1 <= 256);
+        let encrypted = PAGE_BATCHES + extra_mxe;
+        PageArguments {
+            args: Vec::with_capacity(2 * encrypted + plain),
+            values: Vec::with_capacity(encrypted),
+            numbers: Vec::with_capacity(numbers),
+            accounts: Vec::with_capacity(encrypted),
+        }
+    }
+
+    /// An `Enc<Mxe, _>` argument: its nonce, then its ciphertexts read in
+    /// place.
+    fn push_mxe(&mut self, nonce: u128, pubkey: Pubkey, offset: u32, length: u32) {
+        self.args.push(ArgumentRef::PlaintextU128(self.values.len() as u8));
+        self.values.push(nonce);
+        self.args.push(ArgumentRef::Account(self.accounts.len() as u8));
+        self.accounts.push(AccountArgument {
+            pubkey,
+            offset,
+            length,
         });
     }
-    args.push(ArgumentRef::PlaintextU8(active_batches));
-    args.push(ArgumentRef::PlaintextBool(is_token));
-    args.push(ArgumentRef::PlaintextU64(0));
-    args.push(ArgumentRef::PlaintextU64(1));
-    ArgumentList {
-        args,
-        byte_arrays: Vec::new(),
-        plaintext_numbers: vec![price_unit, supply],
-        values_128_bit: values,
-        accounts,
+
+    fn push_records(&mut self, batch_nonces: &[[u8; 16]; PAGE_BATCHES], book_key: Pubkey) {
+        for (batch, nonce) in batch_nonces.iter().enumerate() {
+            self.push_mxe(
+                u128::from_le_bytes(*nonce),
+                book_key,
+                BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32,
+                BATCH_RECORD_LEN,
+            );
+        }
+    }
+
+    fn push_u64(&mut self, value: u64) {
+        self.args.push(ArgumentRef::PlaintextU64(self.numbers.len() as u8));
+        self.numbers.push(value);
+    }
+
+    fn finish(self) -> ArgumentList {
+        ArgumentList {
+            args: self.args,
+            byte_arrays: Vec::new(),
+            plaintext_numbers: self.numbers,
+            values_128_bit: self.values,
+            accounts: self.accounts,
+        }
     }
 }
 
@@ -3724,6 +4279,11 @@ pub struct Auction {
     /// bid's crank fee, less the rewards paid. What is left goes to the
     /// seller when the auction is closed.
     pub crank_pool: u64,
+    /// Pages of the bid book beyond the first (`add_book_page`), each room
+    /// for `PAGE_BIDS` more bids, and the bumps of their addresses. Auctions
+    /// opened before pages existed read these as zero: one page.
+    pub extra_pages: u8,
+    pub page_bumps: [u8; MAX_EXTRA_PAGES],
 }
 
 /// The items of a collection auction named per item. Item `k` covers NFT
@@ -3754,6 +4314,11 @@ pub struct NewItem {
 
 /// Per-auction storage too large to keep in `Auction`, which nearly every
 /// instruction loads. Zero-copy, so only the parts used are touched.
+///
+/// One page of the book: room for `PAGE_BIDS` bids. Every auction has the
+/// first page, `[BOOK_SEED, auction]`; `add_book_page` adds pages
+/// `[BOOK_SEED, auction, [page]]`. Bid `index` lives on page
+/// `index / PAGE_BIDS` at slot `index % PAGE_BIDS` (`page_slot`).
 #[account(zero_copy, discriminator = BOOK_DISCRIMINATOR)]
 #[repr(C)]
 pub struct BidBook {
@@ -3761,17 +4326,38 @@ pub struct BidBook {
     /// quantity)` of its bids (a token bid's quantity is its budget), packed
     /// into two ciphertexts. Must stay the first field: the MPC cluster reads
     /// records in place at `BATCH_RECORDS_OFFSET`.
-    pub batch_records: [[[u8; 32]; BATCH_RECORD_CIPHERTEXTS]; MAX_BATCHES],
+    pub batch_records: [[[u8; 32]; BATCH_RECORD_CIPHERTEXTS]; PAGE_BATCHES],
     /// Little-endian nonce of each batch record.
-    pub batch_nonces: [[u8; 16]; MAX_BATCHES],
-    /// Deposit of the bid at each index: how the smallest deposit is found
+    pub batch_nonces: [[u8; 16]; PAGE_BATCHES],
+    /// Deposit of the bid at each slot: how the smallest deposit is found
     /// when the auction is full.
-    pub deposits: [u64; MAX_BIDS_USIZE],
+    pub deposits: [u64; PAGE_BIDS_USIZE],
     pub auction: Pubkey,
     /// NFTs asked for by the bid at each index if it was revealed at the
     /// clearing price, else 0. `finalize_share` splits what is left there by
     /// these.
-    pub clearing_quantities: [u32; MAX_BIDS_USIZE],
+    pub clearing_quantities: [u32; PAGE_BIDS_USIZE],
+}
+
+/// The paged clearing of an auction with more than one page of bid book
+/// (`[FOLD_SEED, auction]`, made with its second page): what `fold_batch`
+/// carries from step to step, and where it is.
+#[account(discriminator = FOLD_DISCRIMINATOR)]
+#[derive(InitSpace)]
+pub struct ClearingFold {
+    /// The MXE-encrypted state of the last step. Must stay the first field:
+    /// the MPC cluster reads it in place at `FOLD_STATE_OFFSET`.
+    pub state: [[u8; 32]; FOLD_STATE_CIPHERTEXTS],
+    pub state_nonce: u128,
+    pub auction: Pubkey,
+    /// Pass and page of the next step; `pass` is `FOLD_PASSES` once done.
+    pub pass: u8,
+    pub page: u8,
+    /// Steps done so far.
+    pub steps: u16,
+    /// The digits of the clearing price fixed so far.
+    pub prefix: u32,
+    pub bump: u8,
 }
 
 /// The auction terms a bidder saw when signing. `place_bid` refuses the bid
@@ -4106,6 +4692,38 @@ pub struct CreateCollectionAuction<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(page: u8)]
+pub struct AddBookPage<'info> {
+    #[account(mut)]
+    pub seller: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+        has_one = seller @ AuctionError::Unauthorized,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(
+        init,
+        payer = seller,
+        space = 8 + std::mem::size_of::<BidBook>(),
+        seeds = [BOOK_SEED, auction.key().as_ref(), &[page]],
+        bump,
+    )]
+    pub page_book: AccountLoader<'info, BidBook>,
+    /// Made with the second page.
+    #[account(
+        init_if_needed,
+        payer = seller,
+        space = 8 + ClearingFold::INIT_SPACE,
+        seeds = [FOLD_SEED, auction.key().as_ref()],
+        bump,
+    )]
+    pub fold: Box<Account<'info, ClearingFold>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 #[instruction(seed: u64)]
 pub struct InitItemList<'info> {
     #[account(mut)]
@@ -4257,6 +4875,14 @@ pub struct CloseCollectionAuction<'info> {
         bump = auction.book_bump,
     )]
     pub book: AccountLoader<'info, BidBook>,
+    /// Only for an auction with more than one page: its paged clearing.
+    #[account(
+        mut,
+        close = seller,
+        seeds = [FOLD_SEED, auction.key().as_ref()],
+        bump = fold.bump,
+    )]
+    pub fold: Option<Box<Account<'info, ClearingFold>>>,
     /// CHECK: the auction's collection, created with it.
     #[account(mut, address = auction.mint @ AuctionError::WrongAssetAccounts)]
     pub collection: UncheckedAccount<'info>,
@@ -4369,11 +4995,8 @@ pub struct IncreaseBid<'info> {
         bump = auction.bump,
     )]
     pub auction: Box<Account<'info, Auction>>,
-    #[account(
-        mut,
-        seeds = [BOOK_SEED, auction.key().as_ref()],
-        bump = auction.book_bump,
-    )]
+    /// The page of the book that holds the bid; checked in the handler.
+    #[account(mut)]
     pub book: AccountLoader<'info, BidBook>,
     #[account(
         mut,
@@ -4484,6 +5107,14 @@ pub struct CloseAuction<'info> {
         bump = auction.book_bump,
     )]
     pub book: AccountLoader<'info, BidBook>,
+    /// Only for an auction with more than one page: its paged clearing.
+    #[account(
+        mut,
+        close = seller,
+        seeds = [FOLD_SEED, auction.key().as_ref()],
+        bump = fold.bump,
+    )]
+    pub fold: Option<Box<Account<'info, ClearingFold>>>,
     pub mint: Box<InterfaceAccount<'info, Mint>>,
     /// CHECK: the auction's vault, which may already be closed; inspected in
     /// the handler.
@@ -4569,11 +5200,8 @@ pub struct CheckBatch<'info> {
         bump = auction.bump,
     )]
     pub auction: Box<Account<'info, Auction>>,
-    /// Receives the batch record in the callback.
-    #[account(
-        seeds = [BOOK_SEED, auction.key().as_ref()],
-        bump = auction.book_bump,
-    )]
+    /// The page of the book that receives the batch record in the callback;
+    /// checked in the handler.
     pub book: AccountLoader<'info, BidBook>,
     #[account(
         init_if_needed,
@@ -4627,7 +5255,8 @@ pub struct CheckBidsV2Callback<'info> {
     pub instructions_sysvar: UncheckedAccount<'info>,
     #[account(mut, seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()], bump = auction.bump)]
     pub auction: Box<Account<'info, Auction>>,
-    #[account(mut, seeds = [BOOK_SEED, auction.key().as_ref()], bump = auction.book_bump)]
+    /// The page named by `check_batch`; checked in the handler.
+    #[account(mut)]
     pub book: AccountLoader<'info, BidBook>,
     /// CHECK: whoever queued the check; named by `check_batch`, paid its
     /// reward.
@@ -4647,8 +5276,8 @@ pub struct FindClearing<'info> {
         bump = auction.bump,
     )]
     pub auction: Box<Account<'info, Auction>>,
-    /// Holds every batch record, which the cluster reads in place, and the
-    /// deposits.
+    /// The first page, which then holds every batch record; the cluster
+    /// reads them in place.
     #[account(
         seeds = [BOOK_SEED, auction.key().as_ref()],
         bump = auction.book_bump,
@@ -4724,11 +5353,8 @@ pub struct SettleBid<'info> {
     pub auction: Box<Account<'info, Auction>>,
     #[account(mut, has_one = auction @ AuctionError::WrongBidAccounts)]
     pub bid: Box<Account<'info, Bid>>,
-    /// Holds the bid's batch record, which the cluster reads in place.
-    #[account(
-        seeds = [BOOK_SEED, auction.key().as_ref()],
-        bump = auction.book_bump,
-    )]
+    /// The page of the book that holds the bid's batch record, which the
+    /// cluster reads in place; checked in the handler.
     pub book: AccountLoader<'info, BidBook>,
     #[account(
         init_if_needed,
@@ -4788,9 +5414,97 @@ pub struct AwardBidV2Callback<'info> {
     pub auction: Box<Account<'info, Auction>>,
     #[account(mut, has_one = auction @ AuctionError::WrongBidAccounts)]
     pub bid: Box<Account<'info, Bid>>,
-    #[account(mut, seeds = [BOOK_SEED, auction.key().as_ref()], bump = auction.book_bump)]
+    /// The bid's page, named by `settle_bid`; checked in the handler.
+    #[account(mut)]
     pub book: AccountLoader<'info, BidBook>,
     /// CHECK: whoever queued the settlement; named by `settle_bid`, paid its
+    /// reward.
+    #[account(mut)]
+    pub cranker: UncheckedAccount<'info>,
+}
+
+#[queue_computation_accounts("fold_batch_v2", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct FoldClearing<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    /// Holds the state the cluster reads in place.
+    #[account(
+        seeds = [FOLD_SEED, auction.key().as_ref()],
+        bump = fold.bump,
+        has_one = auction @ AuctionError::WrongBookPage,
+    )]
+    pub fold: Box<Account<'info, ClearingFold>>,
+    /// The page this step reads (`ClearingFold::page`), whose batch records
+    /// the cluster reads in place; checked in the handler.
+    pub book: AccountLoader<'info, BidBook>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_FOLD_BATCH))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Box<Account<'info, FeePool>>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Box<Account<'info, ClockAccount>>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+/// Custom accounts after `instructions_sysvar` must match the order of the
+/// `CallbackAccount` list built in `fold_clearing`.
+#[callback_accounts("fold_batch_v2")]
+#[derive(Accounts)]
+pub struct FoldBatchV2Callback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_FOLD_BATCH))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: computation_account, checked by the arcium program and matched
+    /// against the auction's pending computation.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint.
+    pub instructions_sysvar: UncheckedAccount<'info>,
+    #[account(mut, seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()], bump = auction.bump)]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(
+        mut,
+        seeds = [FOLD_SEED, auction.key().as_ref()],
+        bump = fold.bump,
+        has_one = auction @ AuctionError::WrongBookPage,
+    )]
+    pub fold: Box<Account<'info, ClearingFold>>,
+    /// CHECK: whoever queued the step; named by `fold_clearing`, paid its
     /// reward.
     #[account(mut)]
     pub cranker: UncheckedAccount<'info>,
@@ -4957,6 +5671,28 @@ pub struct InitDrawSeedCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[init_computation_definition_accounts("fold_batch_v2", payer)]
+#[derive(Accounts)]
+pub struct InitFoldBatchCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, constraint = config.admin == payer.key() @ AuctionError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by the arcium program.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by the arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -5051,6 +5787,28 @@ pub struct BatchChecked {
 pub struct ComputationFailed {
     pub auction: Pubkey,
     pub bid: Option<Pubkey>,
+}
+
+#[event]
+pub struct BookPageAdded {
+    pub auction: Pubkey,
+    pub page: u8,
+    /// Bids the auction can now hold.
+    pub max_bids: u32,
+    /// Added to the crank pool for the paged clearing.
+    pub crank_fee: u64,
+}
+
+/// A step of the paged clearing succeeded.
+#[event]
+pub struct ClearingFolded {
+    pub auction: Pubkey,
+    pub pass: u8,
+    pub page: u8,
+    pub steps: u16,
+    pub total_steps: u16,
+    /// The digits of the clearing price fixed so far.
+    pub prefix: u32,
 }
 
 #[event]
@@ -5298,6 +6056,14 @@ pub enum AuctionError {
     BiddingNotStarted,
     #[msg("Only the bidder can close the note of a bid that is still open")]
     BidStillOpen,
+    #[msg("A page of the bid book is missing, out of order or not this auction's")]
+    WrongBookPage,
+    #[msg("An auction's bid book has at most four pages, added in order")]
+    TooManyPages,
+    #[msg("The bids fill more than one page; find the clearing price with fold_clearing")]
+    UsePagedClearing,
+    #[msg("The bids fit on one page; find the clearing price with find_clearing")]
+    UseSingleClearing,
 }
 
 // ---------------------------------------------------------------------------
@@ -5315,6 +6081,147 @@ mod tests {
         EdwardsPoint,
     };
 
+    /// `fold_arguments` must list exactly what `ArgBuilder` would, in the
+    /// order of `fold_batch_v2`'s parameters.
+    #[test]
+    fn fold_arguments_match_the_arg_builder() {
+        let mut book: BidBook = bytemuck::Zeroable::zeroed();
+        for (i, nonce) in book.batch_nonces.iter_mut().enumerate() {
+            *nonce = (77u128 * (i as u128 + 3)).to_le_bytes();
+        }
+        let fold = ClearingFold {
+            state: [[5; 32]; FOLD_STATE_CIPHERTEXTS],
+            state_nonce: 0xfeed_beef,
+            auction: Pubkey::default(),
+            pass: 3,
+            page: 1,
+            steps: 26,
+            prefix: 0xabc0_0000,
+            bump: 255,
+        };
+        let (fold_key, book_key) = (Pubkey::new_from_array([4; 32]), Pubkey::new_from_array([9; 32]));
+        let mut expected = ArgBuilder::new()
+            .plaintext_u128(0xfeed_beef)
+            .account(fold_key, FOLD_STATE_OFFSET, FOLD_STATE_LEN);
+        for batch in 0..PAGE_BATCHES {
+            expected = expected
+                .plaintext_u128(u128::from_le_bytes(book.batch_nonces[batch]))
+                .account(book_key, BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32, BATCH_RECORD_LEN);
+        }
+        let step = FoldStep {
+            fresh: false,
+            decide: true,
+            last_pass: false,
+            shift: 16,
+        };
+        let expected = expected
+            .plaintext_u8(64)
+            .plaintext_bool(false)
+            .plaintext_bool(true)
+            .plaintext_bool(false)
+            .plaintext_u64(0xabc0_0000)
+            .plaintext_u8(16)
+            .plaintext_u64(1 << 16)
+            .plaintext_bool(true)
+            .plaintext_u64(1_000)
+            .plaintext_u64(5_000_000)
+            .build();
+        let auction = Auction {
+            supply: 5_000_000,
+            price_unit: 1_000,
+            ..blank_auction()
+        };
+        let actual = fold_arguments(&fold, fold_key, &book.batch_nonces, book_key, 64, step, &auction);
+        assert_eq!(borsh::to_vec(&actual).unwrap(), borsh::to_vec(&expected).unwrap());
+        assert_eq!(actual.args.capacity(), actual.args.len());
+        assert_eq!(actual.values_128_bit.capacity(), actual.values_128_bit.len());
+        assert_eq!(actual.plaintext_numbers.capacity(), actual.plaintext_numbers.len());
+        // The state sits right after the discriminator.
+        let bytes = borsh::to_vec(&fold).unwrap();
+        assert_eq!(&bytes[..FOLD_STATE_LEN as usize], &[5u8; FOLD_STATE_LEN as usize][..]);
+        assert_eq!(bytes.len(), ClearingFold::INIT_SPACE);
+    }
+
+    /// Runs the fold schedule the way the callbacks advance it.
+    fn fold_schedule(pages: u8) -> Vec<(u8, u8, FoldStep)> {
+        let mut fold = ClearingFold {
+            state: [[0; 32]; FOLD_STATE_CIPHERTEXTS],
+            state_nonce: 0,
+            auction: Pubkey::default(),
+            pass: 0,
+            page: 0,
+            steps: 0,
+            prefix: 0,
+            bump: 0,
+        };
+        let mut seen = Vec::new();
+        while fold.pass < FOLD_PASSES {
+            let step = fold_step(&fold, pages);
+            seen.push((fold.pass, fold.page, step));
+            fold.steps += 1;
+            if step.decide {
+                if step.last_pass {
+                    fold.pass = FOLD_PASSES;
+                } else {
+                    fold.pass += 1;
+                    fold.page = next_fold_page(fold.pass, fold.page);
+                }
+            } else {
+                fold.page = next_fold_page(fold.pass, fold.page);
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn the_fold_reads_every_page_in_every_pass() {
+        for pages in 2..=MAX_PAGES {
+            let steps = fold_schedule(pages);
+            assert_eq!(steps.len(), fold_total_steps(pages) as usize);
+            assert!(steps[0].2.fresh && steps[1..].iter().all(|s| !s.2.fresh));
+            for pass in 0..FOLD_PASSES {
+                // The pages of this pass: its own steps plus, after the first
+                // pass, the page that ended the previous one.
+                let mut pages_read: Vec<u8> =
+                    steps.iter().filter(|s| s.0 == pass).map(|s| s.1).collect();
+                if pass > 0 {
+                    let previous = steps.iter().filter(|s| s.0 == pass - 1).last().unwrap();
+                    assert!(previous.2.decide);
+                    pages_read.insert(0, previous.1);
+                }
+                pages_read.sort();
+                assert_eq!(pages_read, (0..pages).collect::<Vec<_>>(), "pass {pass}");
+                // Exactly one step ends the pass, fixing the four bits at its shift.
+                let ends: Vec<_> = steps.iter().filter(|s| s.0 == pass && s.2.decide).collect();
+                assert_eq!(ends.len(), 1);
+                assert_eq!(ends[0].2.shift, 28 - 4 * pass);
+                assert_eq!(ends[0].2.last_pass, pass + 1 == FOLD_PASSES);
+            }
+        }
+        assert_eq!(fold_total_steps(2), 9);
+        assert_eq!(fold_total_steps(4), 25);
+    }
+
+    #[test]
+    fn bids_map_to_pages() {
+        assert_eq!(page_slot(0), (0, 0));
+        assert_eq!(page_slot(255), (0, 255));
+        assert_eq!(page_slot(256), (1, 0));
+        assert_eq!(page_slot(MAX_BIDS - 1), (3, 255));
+        assert_eq!(page_active_batches(1, 0), 1);
+        assert_eq!(page_active_batches(256, 0), 64);
+        assert_eq!(page_active_batches(256, 1), 0);
+        assert_eq!(page_active_batches(258, 1), 1);
+        assert_eq!(page_active_batches(1_000, 3), 58);
+        let mut auction = blank_auction();
+        assert_eq!(bid_capacity(&auction), 256);
+        assert_eq!(pages_in_use(&auction), 1);
+        auction.extra_pages = 3;
+        auction.bid_count = 257;
+        assert_eq!(bid_capacity(&auction), MAX_BIDS);
+        assert_eq!(pages_in_use(&auction), 2);
+    }
+
     /// `clearing_arguments` must list exactly what `ArgBuilder` would, in the
     /// order of the circuit's parameters.
     #[test]
@@ -5325,7 +6232,7 @@ mod tests {
         }
         let key = Pubkey::new_from_array([9; 32]);
         let mut expected = ArgBuilder::new();
-        for batch in 0..MAX_BATCHES {
+        for batch in 0..PAGE_BATCHES {
             expected = expected
                 .plaintext_u128(u128::from_le_bytes(book.batch_nonces[batch]))
                 .account(key, BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32, BATCH_RECORD_LEN);
@@ -5523,23 +6430,25 @@ mod tests {
         assert_eq!(std::mem::offset_of!(BidBook, batch_records), 0);
         assert_eq!(
             std::mem::size_of::<BidBook>(),
-            64 * MAX_BATCHES + 16 * MAX_BATCHES + 8 * MAX_BIDS_USIZE + 32 + 4 * MAX_BIDS_USIZE
+            64 * PAGE_BATCHES + 16 * PAGE_BATCHES + 8 * PAGE_BIDS_USIZE + 32 + 4 * PAGE_BIDS_USIZE
         );
+        // A page is small enough to create from a program (10 KiB at most).
+        assert!(8 + std::mem::size_of::<BidBook>() <= 10_240);
         // The app reads deposits and clearing sizes at these offsets.
-        assert_eq!(std::mem::offset_of!(BidBook, deposits), 80 * MAX_BATCHES);
+        assert_eq!(std::mem::offset_of!(BidBook, deposits), 80 * PAGE_BATCHES);
         assert_eq!(
             std::mem::offset_of!(BidBook, clearing_quantities),
-            80 * MAX_BATCHES + 8 * MAX_BIDS_USIZE + 32
+            80 * PAGE_BATCHES + 8 * PAGE_BIDS_USIZE + 32
         );
         assert!(std::mem::align_of::<BidBook>() <= 8);
         // A batch's two ciphertexts sit side by side, as the circuits read
         // them in place.
         let mut book: BidBook = bytemuck::Zeroable::zeroed();
         book.batch_records[0] = [[1u8; 32], [3u8; 32]];
-        book.batch_records[MAX_BATCHES - 1] = [[2u8; 32], [4u8; 32]];
+        book.batch_records[PAGE_BATCHES - 1] = [[2u8; 32], [4u8; 32]];
         let bytes = bytemuck::bytes_of(&book);
         let first = BATCH_RECORDS_OFFSET as usize - 8;
-        let last = first + (MAX_BATCHES - 1) * BATCH_RECORD_LEN as usize;
+        let last = first + (PAGE_BATCHES - 1) * BATCH_RECORD_LEN as usize;
         assert_eq!(&bytes[first..first + 64], [[1u8; 32], [3u8; 32]].concat());
         assert_eq!(&bytes[last..last + 64], [[2u8; 32], [4u8; 32]].concat());
     }
@@ -5699,8 +6608,10 @@ mod tests {
         assert_eq!(nft_payment(&priced, 3).unwrap(), 3 * 1_500 * NFT_PRICE_SCALE);
     }
 
-    fn clearing_book(sizes: &[(usize, u32)]) -> [u32; MAX_BIDS_USIZE] {
-        let mut quantities = [0u32; MAX_BIDS_USIZE];
+    /// Sizes by bid index across every page, as `finalize_share` gathers
+    /// them.
+    fn clearing_book(sizes: &[(usize, u32)]) -> Vec<u32> {
+        let mut quantities = vec![0u32; MAX_BIDS as usize];
         for &(index, size) in sizes {
             quantities[index] = size;
         }
@@ -5708,7 +6619,7 @@ mod tests {
     }
 
     /// (bid index, share) of every bid at the clearing price.
-    fn all_shares(sizes: &[u32; MAX_BIDS_USIZE], remaining: u64, total: u64) -> Vec<(usize, u64)> {
+    fn all_shares(sizes: &[u32], remaining: u64, total: u64) -> Vec<(usize, u64)> {
         sizes
             .iter()
             .enumerate()
@@ -5735,9 +6646,13 @@ mod tests {
         assert_eq!(all_shares(&sizes, 10, 10), vec![(1, 4), (4, 6)]);
         // The largest sizes stay inside u64.
         let big = MAX_COLLECTION_SIZE as u32;
-        let sizes = clearing_book(&[(0, big), (255, big)]);
+        let sizes = clearing_book(&[(0, big), (1_023, big)]);
         let shares = all_shares(&sizes, MAX_COLLECTION_SIZE, 2 * MAX_COLLECTION_SIZE);
-        assert_eq!(shares, vec![(0, MAX_COLLECTION_SIZE / 2), (255, MAX_COLLECTION_SIZE / 2)]);
+        assert_eq!(shares, vec![(0, MAX_COLLECTION_SIZE / 2), (1_023, MAX_COLLECTION_SIZE / 2)]);
+        // Bids on later pages come later: one NFT left for bids on pages 0
+        // and 2 goes to the one on page 0.
+        let sizes = clearing_book(&[(600, 1), (17, 1)]);
+        assert_eq!(all_shares(&sizes, 1, 2), vec![(17, 1), (600, 0)]);
     }
 
     #[test]
@@ -5750,7 +6665,7 @@ mod tests {
             state
         };
         for _ in 0..500 {
-            let mut sizes = [0u32; MAX_BIDS_USIZE];
+            let mut sizes = vec![0u32; MAX_BIDS as usize];
             let mut total = 0u64;
             for _ in 0..(next() % 40 + 1) {
                 let index = (next() % MAX_BIDS as u64) as usize;
@@ -5894,16 +6809,28 @@ mod tests {
         assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001);
         auction.kind = AuctionKind::Collection;
         assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001 + 3_000_000);
-        // With n bids the pool covers ceil(n / 4) checks, n settlements, the
-        // clearing and the draw.
+        // With n bids on the pages they need, the pool covers ceil(n / 4)
+        // checks, n settlements, the clearing (one step, or the paged steps)
+        // and the draw.
         for n in 1..=MAX_BIDS as u64 {
-            let pool = seller_crank_fee(&auction) + n * bid_crank_fee(&rewards);
+            let pages = n.div_ceil(PAGE_BIDS as u64) as u8;
+            let page_fees: u64 = (1..pages).map(|page| page_crank_fee(&rewards, page)).sum();
+            let pool = seller_crank_fee(&auction) + page_fees + n * bid_crank_fee(&rewards);
+            let clearing = if pages == 1 {
+                rewards.clearing
+            } else {
+                fold_total_steps(pages) as u64 * fold_reward(&rewards)
+            };
             let needed = n.div_ceil(BATCH_SIZE as u64) * rewards.check_batch
                 + n * rewards.settlement
-                + rewards.clearing
+                + clearing
                 + rewards.seed_draw;
             assert!(pool >= needed, "{n} bids");
         }
+        // Two pages take nine steps and every further page eight.
+        assert_eq!(page_crank_fee(&rewards, 1), 9 * fold_reward(&rewards));
+        assert_eq!(page_crank_fee(&rewards, 2), 8 * fold_reward(&rewards));
+        assert_eq!(page_crank_fee(&rewards, 3), 8 * fold_reward(&rewards));
         assert_eq!(bid_crank_fee(&CrankRewards::default()), 0);
     }
 

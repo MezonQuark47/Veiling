@@ -27,8 +27,10 @@ price, and unused deposits are refunded.
    `price_unit` base units, a power of ten the app picks so that the minimum
    price is about 10,000 ticks: fine enough for any typed price, with room for
    bids tens of thousands of times higher. For a collection a tick is 1,000
-   lamports per NFT. Opening also creates the auction's bid book; its rent
-   comes back when the auction is closed.
+   lamports per NFT. Opening also creates the auction's bid book, one page of
+   room for 256 bids. Until bidding ends the seller can add up to three more
+   pages (`add_book_page`), up to 1,024 bids; each page's rent comes back when
+   the auction is closed.
 
    Bidding runs for 1 minute to 14 days. It opens right away, or at a
    `start_time` the seller schedules up to 30 days ahead (a time already past
@@ -46,9 +48,10 @@ price, and unused deposits are refunded.
      counts only if the deposit covers `price × quantity`; deposits may be
      larger to hide the bid.
 
-   An auction holds up to 256 bids. Once it is full, a new bid must deposit at
-   least 10% more than the smallest deposit; that bid is refunded in full and
-   replaced. The auction keeps the total of all deposits.
+   An auction holds 256 bids per page of its bid book, up to 1,024. Once every
+   page is full, a new bid must deposit at least 10% more than the smallest
+   deposit on any page; that bid is refunded in full and replaced. The
+   auction keeps the total of all deposits.
 
    Until bidding closes, `increase_bid` lets a bidder re-seal their bid (a
    fresh encryption, bound to the same address nonce) and add to its
@@ -69,6 +72,17 @@ price, and unused deposits are refunded.
    supply. Only `p` and the demand above and at it are revealed. If demand
    never covers the supply at the minimum price, every valid bid wins at the
    minimum price.
+
+   When the bids fill more than one page, `fold_clearing` finds the same
+   price a page at a time instead: 8 passes, each fixing four bits of `p`.
+   In every pass each page adds up, by the value of the next four bits, the
+   demand of its bids that match the bits fixed so far; the step that ends a
+   pass picks the highest value whose demand covers the supply and reveals
+   those four bits, which are `p`'s own and public at the end anyway. The
+   totals in between stay encrypted for the MXE. Pages are visited forwards
+   and backwards in turn, so the page that ends one pass starts the next in
+   the same step: `8 × (pages − 1) + 1` steps in all, 9 for two pages and 25
+   for four.
 5. **Bids are settled.** `settle_bid` asks MPC for one bid's outcome (above,
    at or below the clearing price) from its stored record, and the program
    works out the rest in the open:
@@ -102,7 +116,24 @@ price, and unused deposits are refunded.
 `scripts/crank.ts` takes an ended auction through every step anyone may take
 (steps 3 to 6 and the deliveries), paying only transaction fees and the
 accounts created for winners, and earning the auction's crank rewards. `find_clearing` needs about 370,000 compute
-units, so it is sent with a higher compute limit.
+units, so it is sent with a higher compute limit; so is each `fold_clearing`
+step.
+
+### Why 1,024 bids
+
+One MPC computation reads one page of the bid book: 64 batch records, about
+6 KB of arguments, which have to fit in a 10 KB cross-program call, and the
+page itself (about 8 KB) has to stay under the 10 KB a program can create in
+one go. Four pages are the most the circuits' arithmetic allows as it is:
+1,024 budgets of up to 2^64 lamports, times the largest price unit (10^16),
+still fit in 128 bits; twice as many would need a smaller price unit. Each
+page also adds checks, settlements and 8 clearing steps, so 1,024 bids
+already take about 256 checks, 25 clearing steps and 1,024 settlements.
+For comparison, Gnosis Auction has no fixed cap but asks sellers to set a
+minimum order size so that its on-chain price calculation stays affordable,
+and Zama's sealed-bid token auction capped each wallet at 10 active bids
+without a stated per-auction cap; neither hides both the price and the size
+of every bid as this does.
 
 ### Safety net
 
@@ -181,7 +212,10 @@ seed). So that anyone can settle a sale without paying for it, every auction
 keeps a crank pool in its own account:
 
 - the seller pays a clearing, one batch check and, for a collection, a seed
-  draw into it when the auction opens;
+  draw into it when the auction opens, and the clearing steps each added
+  page may need (`page_crank_fee`: 9 steps with the second page, 8 more with
+  each further one; a step pays 90% of the clearing reward, about what it
+  costs);
 - each bid pays its share of a batch check plus one settlement
   (`check_batch / 4 + settlement`), not refunded, on top of its deposit;
 - each step's callback, once its computation succeeds, pays whoever queued it
@@ -325,8 +359,9 @@ first. This release's accounts carry their own discriminators (`VAuctn03`,
 for them.
 
 Then call `initialize` once (signed by the upgrade authority), register the
-four circuits (`check_bids_v2`, `clear_price_v2`, `award_bid_v2` and
-`draw_seed`) with `init_check_bids_comp_def`, `init_clear_price_comp_def`,
+five circuits (`check_bids_v2`, `clear_price_v2`, `fold_batch_v2`,
+`award_bid_v2` and `draw_seed`) with `init_check_bids_comp_def`,
+`init_clear_price_comp_def`, `init_fold_batch_comp_def`,
 `init_award_bid_comp_def` and `init_draw_seed_comp_def`, passing the URL of
 each `.arcis` file, set the fees with `set_fees` (`scripts/set-fees.ts`) and
 the crank rewards with `set_crank_rewards` (`scripts/set-crank-rewards.ts`);
@@ -335,8 +370,9 @@ three if they are missing.
 
 ### Circuit hosting
 
-The compiled circuits (`build/check_bids_v2.arcis`, `build/clear_price_v2.arcis`,
-several MB, `build/award_bid_v2.arcis` and `build/draw_seed.arcis`) are too large
+The compiled circuits (`build/check_bids_v2.arcis`, `build/clear_price_v2.arcis`
+and `build/fold_batch_v2.arcis`, several MB each, `build/award_bid_v2.arcis` and
+`build/draw_seed.arcis`) are too large
 to store on chain cheaply, so they are served from a public URL. Upload exactly the files
 produced by the build that compiled the program, and register them with a URL
 that names a commit rather than a branch, such as
@@ -500,9 +536,9 @@ these services.
 ## Known limitations
 
 - Devnet only and unaudited.
-- Up to 256 bids per auction and 10,000 NFTs per collection. In a full
-  auction, the bid with the smallest deposit can be replaced (and refunded)
-  until bidding ends.
+- Up to 1,024 bids per auction (256 unless the seller adds pages) and 10,000
+  NFTs per collection. In a full auction, the bid with the smallest deposit
+  can be replaced (and refunded) until bidding ends.
 - Prices are u32 ticks: a token auction usually takes bids up to at least
   40,000 times its minimum price, and a collection auction up to about
   4,295 SOL per NFT.

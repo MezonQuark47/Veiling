@@ -280,6 +280,188 @@ fn clearing_matches_brute_force() {
 }
 
 // ---------------------------------------------------------------------------
+// fold_batch (paged clearing)
+// ---------------------------------------------------------------------------
+
+/// Laid out like the circuit's `FoldState`: 17 totals of `Wide { lo: u64, hi: u16 }`.
+type FoldState = Pack<[(u64, u16); 17]>;
+/// `(digit, weight_above, weight_at)`, as the circuit's `FoldResult`.
+type FoldResult = (u8, u128, u128);
+const FOLD_PASSES: u32 = 8;
+
+/// The records of one page holding `bids`; the empty slots past them are
+/// junk, as the program passes the book's empty slots.
+fn page_records(bids: &[(u32, u64)]) -> ([Enc<Mxe, Record>; MAX_BATCHES], u8) {
+    assert!(bids.len() <= MAX_BIDS);
+    let active = bids.len().div_ceil(4);
+    let records = std::array::from_fn(|b| {
+        if b < active {
+            record_enc(std::array::from_fn(|k| bids.get(4 * b + k).copied().unwrap_or((0, 0))))
+        } else {
+            record_enc([(777, u64::MAX); 4])
+        }
+    });
+    (records, active as u8)
+}
+
+/// Runs the paged clearing the way the program drives it: 8 passes, the
+/// first over the pages forwards, the next backwards and so on, so the page
+/// that ends a pass starts the next one in the same step. The encrypted state
+/// goes from step to step and each pass's revealed digit joins the public
+/// prefix. Returns the clearing and the number of steps.
+fn fold_clear_steps(
+    ix: &ArcisInstructionWithInfo,
+    pages: &[Vec<(u32, u64)>],
+    is_token: bool,
+    price_unit: u64,
+    supply: u64,
+) -> (Clearing, usize) {
+    assert!(pages.len() >= 2);
+    let pages: Vec<_> = pages.iter().map(|bids| page_records(bids)).collect();
+    let last_page = pages.len() - 1;
+    // The first step ignores the state it is given; give it junk.
+    let mut state: Enc<Mxe, FoldState> = Mxe::get().from_arcis(Pack::new([(55_555u64, 77u16); 17]));
+    let (mut pass, mut page, mut prefix, mut steps) = (0u32, 0usize, 0u64, 0usize);
+    loop {
+        let shift = 28 - 4 * pass;
+        let decide = page == if pass % 2 == 0 { last_page } else { 0 };
+        let last_pass = pass + 1 == FOLD_PASSES;
+        let (records, active) = &pages[page];
+        let (next, result): (Enc<Mxe, FoldState>, FoldResult) = ix.eval((
+            (state, records, *active, steps == 0, decide, last_pass),
+            (prefix, shift as u8, 1u64 << shift, is_token, price_unit, supply),
+        ));
+        steps += 1;
+        state = next;
+        if !decide {
+            // Nothing is revealed before the end of a pass.
+            assert_eq!(result, (0, 0, 0));
+            page = if pass % 2 == 0 { page + 1 } else { page - 1 };
+            continue;
+        }
+        assert!(result.0 < 16, "digit {result:?}");
+        prefix += (result.0 as u64) << shift;
+        if last_pass {
+            return ((u32::try_from(prefix).unwrap(), result.1, result.2), steps);
+        }
+        assert_eq!((result.1, result.2), (0, 0));
+        pass += 1;
+        page = if pass % 2 == 0 { page + 1 } else { page - 1 };
+    }
+}
+
+fn fold_clear(
+    ix: &ArcisInstructionWithInfo,
+    pages: &[Vec<(u32, u64)>],
+    is_token: bool,
+    price_unit: u64,
+    supply: u64,
+) -> Clearing {
+    let (clearing, steps) = fold_clear_steps(ix, pages, is_token, price_unit, supply);
+    assert_eq!(steps, 8 * (pages.len() - 1) + 1);
+    clearing
+}
+
+/// Splits bids into pages of the given sizes.
+fn paged(bids: &[(u32, u64)], sizes: &[usize]) -> Vec<Vec<(u32, u64)>> {
+    let mut rest = bids;
+    let pages = sizes
+        .iter()
+        .map(|&n| {
+            let (page, tail) = rest.split_at(n);
+            rest = tail;
+            page.to_vec()
+        })
+        .collect();
+    assert!(rest.is_empty());
+    pages
+}
+
+#[test]
+fn folding_pages_finds_the_nft_clearing() {
+    let ix = get_instruction("fold_batch_v2");
+    // Demand: 2 at 500, 4 at 300, 7 at 200, spread over three pages.
+    let pages = vec![vec![(300, 2)], vec![(500, 2), (0, 9)], vec![(200, 3)]];
+    assert_eq!(fold_clear(&ix, &pages, false, 1, 5), (200, 4, 3));
+    assert_eq!(fold_clear(&ix, &pages, false, 1, 4), (300, 2, 2));
+    assert_eq!(fold_clear(&ix, &pages, false, 1, 1), (500, 0, 2));
+    // Never covered: all valid demand is above price 0. (What sits "at" 0
+    // is the weight of price-0 entries; checked records never have any, and
+    // the program ignores the weight at the price without a fill.)
+    assert_eq!(fold_clear(&ix, &pages, false, 1, 8), (0, 7, 9));
+}
+
+#[test]
+fn folding_pages_finds_the_token_clearing() {
+    let ix = get_instruction("fold_batch_v2");
+    let pages = vec![vec![(10, 500)], vec![(8, 300), (5, 400)]];
+    assert_eq!(fold_clear(&ix, &pages, true, 10, 1_000), (8, 500, 300));
+    // The price can fall between bid prices: one budget buying everything.
+    assert_eq!(fold_clear(&ix, &[vec![], vec![(20, 500)]], true, 10, 1_000), (5, 500, 0));
+}
+
+#[test]
+fn folding_reaches_the_top_of_the_price_range() {
+    let ix = get_instruction("fold_batch_v2");
+    // Prices at the very top and right at digit boundaries.
+    let top = vec![vec![(u32::MAX, 1)], vec![(u32::MAX - 1, 1), (1 << 28, 1)]];
+    assert_eq!(fold_clear(&ix, &top, false, 1, 1), (u32::MAX, 0, 1));
+    assert_eq!(fold_clear(&ix, &top, false, 1, 2), (u32::MAX - 1, 1, 1));
+    assert_eq!(fold_clear(&ix, &top, false, 1, 3), (1 << 28, 2, 1));
+    let edges = vec![vec![((1 << 28) - 1, 1), (15 << 28, 1)], vec![(15, 1), (16, 1)], vec![(17, 2)]];
+    assert_eq!(fold_clear(&ix, &edges, false, 1, 2), ((1 << 28) - 1, 1, 1));
+    assert_eq!(fold_clear(&ix, &edges, false, 1, 3), (17, 2, 2));
+    assert_eq!(fold_clear(&ix, &edges, false, 1, 5), (16, 4, 1));
+    assert_eq!(fold_clear(&ix, &edges, false, 1, 6), (15, 5, 1));
+}
+
+#[test]
+fn folding_matches_one_page_clearing_and_brute_force() {
+    let fold = get_instruction("fold_batch_v2");
+    let clear_ix = get_instruction("clear_price_v2");
+    let mut rng = thread_rng();
+    for round in 0..4 {
+        let sizes: &[usize] = [&[3usize, 9][..], &[40, 1, 22], &[64, 64, 64, 64], &[200, 56]][round];
+        let n: usize = sizes.iter().sum();
+        let bids: Vec<(u32, u64)> = (0..n)
+            .map(|_| {
+                let valid = rng.gen_range(0..10) > 0;
+                // Prices from all over the range, with ties.
+                let price = if !valid {
+                    0
+                } else if rng.gen_bool(0.3) {
+                    rng.gen_range(1..=u32::MAX)
+                } else {
+                    rng.gen_range(1..60u32) * 997
+                };
+                (price, if price == 0 { 0 } else { rng.gen_range(1..=MAX_PER_BID) })
+            })
+            .collect();
+        let pages = paged(&bids, sizes);
+        let supply = rng.gen_range(1..(n as u64 * 6));
+        let expected = reference(&bids, false, 1, supply);
+        assert_eq!(fold_clear(&fold, &pages, false, 1, supply), expected, "collection round {round}");
+        if n <= MAX_BIDS {
+            assert_eq!(clear(&clear_ix, &bids, false, 1, supply), expected, "one page, round {round}");
+        }
+        let token_bids: Vec<(u32, u64)> = bids
+            .iter()
+            .map(|b| {
+                let top = u64::MAX >> rng.gen_range(0..40);
+                (b.0, if b.0 == 0 { 0 } else { rng.gen_range(1..=top) })
+            })
+            .collect();
+        let supply = rng.gen_range(1..1_000_000_000_000u64);
+        let unit = 10u64.pow(rng.gen_range(0..17));
+        assert_eq!(
+            fold_clear(&fold, &paged(&token_bids, sizes), true, unit, supply),
+            reference(&token_bids, true, unit, supply),
+            "token round {round}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // award_bid
 // ---------------------------------------------------------------------------
 

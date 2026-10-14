@@ -1,5 +1,4 @@
-import { MAX_BIDS } from "../config";
-import { type Auction, type Bid, formatPrice, phaseOf } from "../lib/chain";
+import { type Auction, type Bid, bidCapacity, formatPrice, phaseOf } from "../lib/chain";
 import { formatCount, formatDateTime, formatDuration } from "../lib/format";
 import { statusText } from "./AuctionTable";
 import { type AssetInfo, goodsAmount } from "./ui";
@@ -9,7 +8,7 @@ type Place = "empty" | "sealed" | "won" | "at" | "lost" | "closed";
 /** The state of each of the auction's bid places, by bid index. */
 function places(a: Auction, bids: Bid[]): Place[] {
   const byIndex = new Map(bids.map((b) => [b.index, b]));
-  return Array.from({ length: MAX_BIDS }, (_, i) => {
+  return Array.from({ length: bidCapacity(a) }, (_, i) => {
     if (i >= a.bidCount) return "empty";
     const b = byIndex.get(i);
     // While bidding is open a bid account can only be replaced, never closed,
@@ -30,16 +29,18 @@ const PLACE_LABELS: Record<Exclude<Place, "empty">, string> = {
 };
 
 /**
- * Every bid place of the auction, sealed or decided. Shows how full the
- * auction is (a full one only takes bids that out-deposit the smallest) and,
- * after the price is found, which bids won. Prices are never shown.
+ * Every bid place of the auction, sealed or decided: 256 per page of its bid
+ * book, up to 1,024. Shows how full the auction is (a full one only takes bids
+ * that out-deposit the smallest) and, after the price is found, which bids
+ * won. Prices are never shown.
  */
 function BidBook({ auction, bids }: { auction: Auction; bids: Bid[] }) {
   const all = places(auction, bids);
+  const capacity = all.length;
   const columns = 32;
   const cell = 10;
   const gap = 3;
-  const rows = MAX_BIDS / columns;
+  const rows = capacity / columns;
   const present = (Object.keys(PLACE_LABELS) as (keyof typeof PLACE_LABELS)[]).filter((p) => all.includes(p));
   return (
     <figure className="book">
@@ -47,7 +48,7 @@ function BidBook({ auction, bids }: { auction: Auction; bids: Bid[] }) {
         className="book__grid"
         viewBox={`-1 -1 ${columns * (cell + gap) - gap + 2} ${rows * (cell + gap) - gap + 2}`}
         role="img"
-        aria-label={`${auction.bidCount} of ${MAX_BIDS} bid places taken`}
+        aria-label={`${auction.bidCount} of ${capacity} bid places taken`}
       >
         {all.map((place, i) => (
           <rect
@@ -63,8 +64,8 @@ function BidBook({ auction, bids }: { auction: Auction; bids: Bid[] }) {
       </svg>
       <figcaption className="book__caption">
         <span>
-          {formatCount(auction.bidCount)} of {MAX_BIDS} bid places taken
-          {auction.bidCount >= MAX_BIDS ? ". New bids must out-deposit the smallest." : "."}
+          {formatCount(auction.bidCount)} of {formatCount(capacity)} bid places taken
+          {auction.bidCount >= capacity ? ". New bids must out-deposit the smallest." : "."}
         </span>
         {present.length > 1 || (present.length === 1 && present[0] !== "sealed") ? (
           <span className="book__legend">

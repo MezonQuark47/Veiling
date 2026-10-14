@@ -56,6 +56,108 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "addBookPage",
+      "docs": [
+        "Adds a page to the auction's bid book, room for `PAGE_BIDS` more bids,",
+        "up to `MAX_PAGES` pages (`MAX_BIDS` bids). Only the seller, while",
+        "bidding is still open; `page` is the next page's number (1 to 3).",
+        "",
+        "The seller pays the page's rent, which comes back when the auction is",
+        "closed, and adds to the crank pool what finding the clearing price",
+        "across the pages may cost (`page_crank_fee`); what is not used comes",
+        "back then too. Once more than one page holds bids, the clearing price",
+        "is found a page at a time (`fold_clearing`) instead of in one step."
+      ],
+      "discriminator": [
+        148,
+        24,
+        158,
+        198,
+        92,
+        198,
+        44,
+        226
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pageBook",
+          "writable": true
+        },
+        {
+          "name": "fold",
+          "docs": [
+            "Made with the second page."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "page",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "addItems",
       "docs": [
         "Appends items to an item list that is not sealed yet. Each item needs",
@@ -180,24 +282,10 @@ export type SealedAuction = {
         },
         {
           "name": "book",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  111,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "auction"
-              }
-            ]
-          }
+          "docs": [
+            "The bid's page, named by `settle_bid`; checked in the handler."
+          ],
+          "writable": true
         },
         {
           "name": "cranker",
@@ -500,7 +588,7 @@ export type SealedAuction = {
         "Checks the next batch of bids and stores it, encrypted, in the bid",
         "book. Anyone can call this once bidding has closed. Pass the bids with",
         "indices `checked_count..checked_count + min(BATCH_SIZE, remaining)` as",
-        "remaining accounts, in order."
+        "remaining accounts, in order, and as `book` the page that holds them."
       ],
       "discriminator": [
         44,
@@ -551,25 +639,9 @@ export type SealedAuction = {
         {
           "name": "book",
           "docs": [
-            "Receives the batch record in the callback."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  111,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "auction"
-              }
-            ]
-          }
+            "The page of the book that receives the batch record in the callback;",
+            "checked in the handler."
+          ]
         },
         {
           "name": "signPdaAccount",
@@ -719,24 +791,10 @@ export type SealedAuction = {
         },
         {
           "name": "book",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  111,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "auction"
-              }
-            ]
-          }
+          "docs": [
+            "The page named by `check_batch`; checked in the handler."
+          ],
+          "writable": true
         },
         {
           "name": "cranker",
@@ -1461,7 +1519,9 @@ export type SealedAuction = {
         "Closes a finished or cancelled auction once every bid account is",
         "closed, returning the rent of the auction, its bid book and its vault",
         "to the seller. Nothing is owed to anyone at that point, so tokens still",
-        "in the vault (sent there by someone after the sale) go to the seller."
+        "in the vault (sent there by someone after the sale) go to the seller.",
+        "An auction with more than one page of bid book passes the further",
+        "pages, in order, as remaining accounts, and its `fold`; they close too."
       ],
       "discriminator": [
         225,
@@ -1524,6 +1584,31 @@ export type SealedAuction = {
                   111,
                   111,
                   107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fold",
+          "docs": [
+            "Only for an auction with more than one page: its paged clearing."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
                 ]
               },
               {
@@ -1741,7 +1826,8 @@ export type SealedAuction = {
         "Closes a finished or cancelled collection auction once every bid",
         "account is closed, which means every NFT sold has been minted. Makes",
         "the seller the collection's update authority and returns the rent of",
-        "the auction, its bid book and its item list to the seller."
+        "the auction, its bid book and its item list to the seller. Further",
+        "pages of the book and the `fold` close too, as in `close_auction`."
       ],
       "discriminator": [
         83,
@@ -1804,6 +1890,31 @@ export type SealedAuction = {
                   111,
                   111,
                   107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fold",
+          "docs": [
+            "Only for an auction with more than one page: its paged clearing."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
                 ]
               },
               {
@@ -2631,7 +2742,8 @@ export type SealedAuction = {
         "their size and rounded down, and the NFTs lost to rounding go one each",
         "to the earliest of them (lowest bid index), so every NFT is sold.",
         "Anyone can call it; the payment moves to the auction as in any",
-        "settlement."
+        "settlement. `book` is the first page; pass every further page, in",
+        "order, as remaining accounts."
       ],
       "discriminator": [
         60,
@@ -2708,7 +2820,9 @@ export type SealedAuction = {
       "name": "findClearing",
       "docs": [
         "Reveals the clearing price once every bid is checked, from all the",
-        "batch records at once. Anyone can call it."
+        "batch records at once. Anyone can call it. Only while the bids fit on",
+        "the first page of the book; with more, `fold_clearing` finds the",
+        "price a page at a time."
       ],
       "discriminator": [
         20,
@@ -2759,8 +2873,8 @@ export type SealedAuction = {
         {
           "name": "book",
           "docs": [
-            "Holds every batch record, which the cluster reads in place, and the",
-            "deposits."
+            "The first page, which then holds every batch record; the cluster",
+            "reads them in place."
           ],
           "pda": {
             "seeds": [
@@ -2861,6 +2975,295 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "foldBatchV2Callback",
+      "discriminator": [
+        24,
+        139,
+        224,
+        215,
+        88,
+        47,
+        161,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "arciumProgram",
+          "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
+        },
+        {
+          "name": "compDefAccount"
+        },
+        {
+          "name": "mxeAccount"
+        },
+        {
+          "name": "computationAccount",
+          "docs": [
+            "against the auction's pending computation."
+          ]
+        },
+        {
+          "name": "clusterAccount"
+        },
+        {
+          "name": "instructionsSysvar",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          },
+          "relations": [
+            "fold"
+          ]
+        },
+        {
+          "name": "fold",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "reward."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "output",
+          "type": {
+            "defined": {
+              "name": "signedComputationOutputs",
+              "generics": [
+                {
+                  "kind": "type",
+                  "type": {
+                    "defined": {
+                      "name": "foldBatchV2Output"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "foldClearing",
+      "docs": [
+        "Runs the next step of the paged clearing, for an auction whose bids",
+        "fill more than one page of its book: `fold_batch` reads one page for",
+        "one digit of the clearing price (see `FOLD_PASSES`), and the step that",
+        "ends the last pass reveals the price as `find_clearing` does. Anyone",
+        "can call it once every bid is checked; pass as `book` the page the",
+        "auction's `ClearingFold` names. Each step that succeeds pays its",
+        "caller `fold_reward` from the crank pool."
+      ],
+      "discriminator": [
+        243,
+        2,
+        253,
+        134,
+        245,
+        1,
+        167,
+        244
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          },
+          "relations": [
+            "fold"
+          ]
+        },
+        {
+          "name": "fold",
+          "docs": [
+            "Holds the state the cluster reads in place."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "docs": [
+            "The page this step reads (`ClearingFold::page`), whose batch records",
+            "the cluster reads in place; checked in the handler."
+          ]
+        },
+        {
+          "name": "signPdaAccount",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  65,
+                  114,
+                  99,
+                  105,
+                  117,
+                  109,
+                  83,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114,
+                  65,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mxeAccount"
+        },
+        {
+          "name": "mempoolAccount",
+          "writable": true
+        },
+        {
+          "name": "executingPool",
+          "writable": true
+        },
+        {
+          "name": "computationAccount",
+          "writable": true
+        },
+        {
+          "name": "compDefAccount"
+        },
+        {
+          "name": "clusterAccount",
+          "writable": true
+        },
+        {
+          "name": "poolAccount",
+          "writable": true,
+          "address": "G2sRWJvi3xoyh5k2gY49eG9L8YhAEWQPtNb1zb1GXTtC"
+        },
+        {
+          "name": "clockAccount",
+          "writable": true,
+          "address": "7EbMUTLo5DjdzbN7s8BXeZwXzEwNQb1hScfRvWg8a6ot"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "arciumProgram",
+          "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
+        }
+      ],
+      "args": [
+        {
+          "name": "computationOffset",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "increaseBid",
       "docs": [
         "Replaces a sealed bid while bidding is open: a new encryption of",
@@ -2869,7 +3272,8 @@ export type SealedAuction = {
         "on its deposit. A deposit can only grow, so a bid can never be shrunk",
         "or pulled to fake demand; the app only offers raising the price and",
         "size. Only the latest version is checked when bidding closes, against",
-        "the whole deposit."
+        "the whole deposit. `book` is the page of the bid book that holds the",
+        "bid (`page_slot`)."
       ],
       "discriminator": [
         244,
@@ -2925,24 +3329,10 @@ export type SealedAuction = {
         },
         {
           "name": "book",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  111,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "auction"
-              }
-            ]
-          }
+          "docs": [
+            "The page of the book that holds the bid; checked in the handler."
+          ],
+          "writable": true
         },
         {
           "name": "bid",
@@ -3278,6 +3668,74 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "initFoldBatchCompDef",
+      "discriminator": [
+        225,
+        66,
+        199,
+        38,
+        252,
+        230,
+        30,
+        141
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mxeAccount",
+          "writable": true
+        },
+        {
+          "name": "compDefAccount",
+          "writable": true
+        },
+        {
+          "name": "addressLookupTable",
+          "writable": true
+        },
+        {
+          "name": "lutProgram",
+          "address": "AddressLookupTab1e1111111111111111111111111"
+        },
+        {
+          "name": "arciumProgram",
+          "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "circuitUrl",
+          "type": "string"
+        }
+      ]
+    },
+    {
       "name": "initItemList",
       "docs": [
         "Starts the item list of the collection auction that the seller will",
@@ -3438,10 +3896,14 @@ export type SealedAuction = {
         "`is_usable_x25519_key`). `terms` are the auction terms the bidder saw;",
         "the bid is refused if the auction does not have exactly those.",
         "",
-        "Once the auction holds `MAX_BIDS` bids, pass the bid with the smallest",
-        "deposit as `evicted_bid` (and its owner as `evicted_bidder`); the new",
-        "deposit must exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid",
-        "is closed and its owner gets the deposit and rent back.",
+        "Once every page of the auction's bid book is full (`bid_capacity`),",
+        "pass the bid with the smallest deposit as `evicted_bid` (and its owner",
+        "as `evicted_bidder`); the new deposit must exceed it by",
+        "`EVICTION_PREMIUM_PERCENT`. The evicted bid is closed and its owner",
+        "gets the deposit and rent back.",
+        "",
+        "`book` is the first page; pass every further page",
+        "(`add_book_page`), in order, as remaining accounts.",
         "",
         "For a token auction the encrypted quantity is the bid's budget in",
         "lamports: a budget the deposit does not cover, or below",
@@ -4087,7 +4549,8 @@ export type SealedAuction = {
       "name": "settleBid",
       "docs": [
         "Decides one bid against the public clearing price, from the batch",
-        "record `check_batch` stored for it. Anyone can call it. The callback",
+        "record `check_batch` stored for it in the page of the book that holds",
+        "the bid (`book`). Anyone can call it. The callback",
         "only records what the bid won and moves the payment to the auction; a",
         "collection bid at the clearing price records its size and waits for",
         "`finalize_share`. Tokens and the unused deposit are collected",
@@ -4150,25 +4613,9 @@ export type SealedAuction = {
         {
           "name": "book",
           "docs": [
-            "Holds the bid's batch record, which the cluster reads in place."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  111,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "auction"
-              }
-            ]
-          }
+            "The page of the book that holds the bid's batch record, which the",
+            "cluster reads in place; checked in the handler."
+          ]
         },
         {
           "name": "signPdaAccount",
@@ -4312,6 +4759,19 @@ export type SealedAuction = {
         111,
         116,
         101,
+        95,
+        48,
+        49
+      ]
+    },
+    {
+      "name": "clearingFold",
+      "discriminator": [
+        86,
+        70,
+        111,
+        108,
+        100,
         95,
         48,
         49
@@ -4525,6 +4985,32 @@ export type SealedAuction = {
         102,
         0,
         139
+      ]
+    },
+    {
+      "name": "bookPageAdded",
+      "discriminator": [
+        122,
+        138,
+        205,
+        103,
+        121,
+        236,
+        113,
+        247
+      ]
+    },
+    {
+      "name": "clearingFolded",
+      "discriminator": [
+        155,
+        19,
+        63,
+        63,
+        53,
+        189,
+        118,
+        211
       ]
     },
     {
@@ -4983,6 +5469,26 @@ export type SealedAuction = {
       "code": 6064,
       "name": "bidStillOpen",
       "msg": "Only the bidder can close the note of a bid that is still open"
+    },
+    {
+      "code": 6065,
+      "name": "wrongBookPage",
+      "msg": "A page of the bid book is missing, out of order or not this auction's"
+    },
+    {
+      "code": 6066,
+      "name": "tooManyPages",
+      "msg": "An auction's bid book has at most four pages, added in order"
+    },
+    {
+      "code": 6067,
+      "name": "usePagedClearing",
+      "msg": "The bids fill more than one page; find the clearing price with fold_clearing"
+    },
+    {
+      "code": 6068,
+      "name": "useSingleClearing",
+      "msg": "The bids fit on one page; find the clearing price with find_clearing"
     }
   ],
   "types": [
@@ -5344,6 +5850,24 @@ export type SealedAuction = {
               "seller when the auction is closed."
             ],
             "type": "u64"
+          },
+          {
+            "name": "extraPages",
+            "docs": [
+              "Pages of the bid book beyond the first (`add_book_page`), each room",
+              "for `PAGE_BIDS` more bids, and the bumps of their addresses. Auctions",
+              "opened before pages existed read these as zero: one page."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "pageBumps",
+            "type": {
+              "array": [
+                "u8",
+                3
+              ]
+            }
           }
         ]
       }
@@ -5783,7 +6307,12 @@ export type SealedAuction = {
       "name": "bidBook",
       "docs": [
         "Per-auction storage too large to keep in `Auction`, which nearly every",
-        "instruction loads. Zero-copy, so only the parts used are touched."
+        "instruction loads. Zero-copy, so only the parts used are touched.",
+        "",
+        "One page of the book: room for `PAGE_BIDS` bids. Every auction has the",
+        "first page, `[BOOK_SEED, auction]`; `add_book_page` adds pages",
+        "`[BOOK_SEED, auction, [page]]`. Bid `index` lives on page",
+        "`index / PAGE_BIDS` at slot `index % PAGE_BIDS` (`page_slot`)."
       ],
       "serialization": "bytemuck",
       "repr": {
@@ -5837,7 +6366,7 @@ export type SealedAuction = {
           {
             "name": "deposits",
             "docs": [
-              "Deposit of the bid at each index: how the smallest deposit is found",
+              "Deposit of the bid at each slot: how the smallest deposit is found",
               "when the auction is full."
             ],
             "type": {
@@ -6104,6 +6633,36 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "bookPageAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "page",
+            "type": "u8"
+          },
+          {
+            "name": "maxBids",
+            "docs": [
+              "Bids the auction can now hold."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "crankFee",
+            "docs": [
+              "Added to the crank pool for the paged clearing."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "checkBidsV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
@@ -6203,6 +6762,112 @@ export type SealedAuction = {
           {
             "name": "field2",
             "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "clearingFold",
+      "docs": [
+        "The paged clearing of an auction with more than one page of bid book",
+        "(`[FOLD_SEED, auction]`, made with its second page): what `fold_batch`",
+        "carries from step to step, and where it is."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "state",
+            "docs": [
+              "The MXE-encrypted state of the last step. Must stay the first field:",
+              "the MPC cluster reads it in place at `FOLD_STATE_OFFSET`."
+            ],
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                7
+              ]
+            }
+          },
+          {
+            "name": "stateNonce",
+            "type": "u128"
+          },
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "pass",
+            "docs": [
+              "Pass and page of the next step; `pass` is `FOLD_PASSES` once done."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "page",
+            "type": "u8"
+          },
+          {
+            "name": "steps",
+            "docs": [
+              "Steps done so far."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "prefix",
+            "docs": [
+              "The digits of the clearing price fixed so far."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "clearingFolded",
+      "docs": [
+        "A step of the paged clearing succeeded."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "pass",
+            "type": "u8"
+          },
+          {
+            "name": "page",
+            "type": "u8"
+          },
+          {
+            "name": "steps",
+            "type": "u16"
+          },
+          {
+            "name": "totalSteps",
+            "type": "u16"
+          },
+          {
+            "name": "prefix",
+            "docs": [
+              "The digits of the clearing price fixed so far."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -6872,6 +7537,76 @@ export type SealedAuction = {
           {
             "name": "treasury",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "foldBatchV2Output",
+      "docs": [
+        "The output of the callback instruction. Provided as a struct with ordered fields",
+        "as anchor does not support tuples and tuple structs yet."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "field0",
+            "type": {
+              "defined": {
+                "name": "foldBatchV2OutputStruct0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "foldBatchV2OutputStruct0",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "field0",
+            "type": {
+              "defined": {
+                "name": "mxeEncryptedStruct",
+                "generics": [
+                  {
+                    "kind": "const",
+                    "value": "7"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "name": "field1",
+            "type": {
+              "defined": {
+                "name": "foldBatchV2OutputStruct01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "foldBatchV2OutputStruct01",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "field0",
+            "type": "u8"
+          },
+          {
+            "name": "field1",
+            "type": "u128"
+          },
+          {
+            "name": "field2",
+            "type": "u128"
           }
         ]
       }

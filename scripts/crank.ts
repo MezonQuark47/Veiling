@@ -10,9 +10,14 @@
  * succeeds, which covers the network fee of queueing it. The seller's own steps, revealing hidden art, claiming the
  * proceeds and closing the auction, are left to the seller.
  *
+ * An auction whose bids fill more than one page of its bid book finds its
+ * price a page at a time (`fold_clearing`): `8 * (pages - 1) + 1` steps.
+ * Bids are settled `SETTLE_AT_ONCE` at a time (default 4); each is its own
+ * computation.
+ *
  *   ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
  *   ANCHOR_WALLET=~/.config/solana/devnet-test.json ARCIUM_CLUSTER_OFFSET=456 \
- *   [IDL=target/idl/sealed_auction.json] \
+ *   [IDL=target/idl/sealed_auction.json] [SETTLE_AT_ONCE=4] \
  *   yarn run ts-node scripts/crank.ts <auction address>
  */
 import * as anchor from "@anchor-lang/core";
@@ -34,6 +39,8 @@ import { randomBytes } from "crypto";
 import { readFileSync } from "fs";
 
 const BATCH_SIZE = 4;
+/** Bids per page of the bid book. */
+const PAGE_BIDS = 256;
 const MAX_NFTS_PER_CLAIM = 5;
 /** After this long past the end of bidding, the safety net opens and no seed is drawn. */
 const EMERGENCY_DELAY_SECS = 3 * 24 * 60 * 60;
@@ -46,6 +53,7 @@ const MPL_CORE_ID = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
 const COMPUTE_UNITS: Record<string, number> = {
   check_bids_v2: 400_000,
   clear_price_v2: 1_000_000,
+  fold_batch_v2: 1_000_000,
   award_bid_v2: 400_000,
   draw_seed: 400_000,
 };
@@ -64,10 +72,16 @@ async function main() {
   const program = new Program(idl, provider) as Program<any>;
   const payer = provider.wallet.publicKey;
   const clusterOffset = getArciumEnv().arciumClusterOffset;
-  const book = PublicKey.findProgramAddressSync(
-    [Buffer.from("book"), auctionAddress.toBuffer()],
-    program.programId
-  )[0];
+  /** Page `page` of the auction's bid book. */
+  const book = (page = 0) =>
+    PublicKey.findProgramAddressSync(
+      page === 0
+        ? [Buffer.from("book"), auctionAddress.toBuffer()]
+        : [Buffer.from("book"), auctionAddress.toBuffer(), Buffer.from([page])],
+      program.programId
+    )[0];
+  const pageOf = (index: number) => Math.floor(index / PAGE_BIDS);
+  const fold = PublicKey.findProgramAddressSync([Buffer.from("fold"), auctionAddress.toBuffer()], program.programId)[0];
 
   // The IDL is chosen at run time, so its accounts are untyped here.
   const accounts = program.account as any;
@@ -120,35 +134,70 @@ async function main() {
         .filter((b) => b.account.index >= auction.checkedCount && b.account.index < auction.checkedCount + BATCH_SIZE)
         .map((b) => ({ pubkey: b.publicKey, isWritable: false, isSigner: false }));
       console.log(`Checking bids ${auction.checkedCount}-${auction.checkedCount + batch.length - 1}...`);
-      await compute("check_bids_v2", (o) => program.methods.checkBatch(o), { auction: auctionAddress, book }, batch as any);
+      await compute(
+        "check_bids_v2",
+        (o) => program.methods.checkBatch(o),
+        { auction: auctionAddress, book: book(pageOf(auction.checkedCount)) },
+        batch as any
+      );
       auction = await fetchAuction();
     }
-    if (auction.bidCount > 0) {
+    const pages = Math.ceil(auction.bidCount / PAGE_BIDS);
+    if (pages === 1) {
       console.log("Revealing the clearing price...");
-      await compute("clear_price_v2", (o) => program.methods.findClearing(o), { auction: auctionAddress, book });
+      await compute("clear_price_v2", (o) => program.methods.findClearing(o), { auction: auctionAddress, book: book() });
       auction = await fetchAuction();
+    } else if (pages > 1) {
+      // A page at a time; a step that fails leaves the state where it was.
+      const total = 8 * (pages - 1) + 1;
+      for (let tries = 0, last = -1; variant(auction.status) === "open"; ) {
+        const state = await accounts.clearingFold.fetch(fold);
+        tries = state.steps === last ? tries + 1 : 0;
+        if (tries >= 3) throw new Error(`The paged clearing keeps failing at step ${state.steps + 1}`);
+        last = state.steps;
+        console.log(`Finding the price: step ${state.steps + 1} of ${total} (pass ${state.pass + 1}, page ${state.page})...`);
+        await compute("fold_batch_v2", (o) => program.methods.foldClearing(o), {
+          auction: auctionAddress,
+          fold,
+          book: book(state.page),
+        });
+        auction = await fetchAuction();
+      }
+    }
+    if (variant(auction.status) === "settling") {
       console.log(`Clearing price ${auction.clearingPrice} (ticks), filled: ${auction.filled}`);
     }
   }
 
   if (variant(auction.status) === "settling") {
-    for (const b of await fetchBids()) {
-      if (variant(b.account.status) !== "sealed") continue;
-      console.log(`Settling bid ${b.account.index}...`);
-      await compute("award_bid_v2", (o) => program.methods.settleBid(o), {
-        auction: auctionAddress,
-        bid: b.publicKey,
-        book,
-      });
+    const sealed = (await fetchBids()).filter((b) => variant(b.account.status) === "sealed");
+    const atOnce = Math.max(1, Number(process.env.SETTLE_AT_ONCE ?? 4));
+    for (let i = 0; i < sealed.length; i += atOnce) {
+      await Promise.all(
+        sealed.slice(i, i + atOnce).map((b) => {
+          console.log(`Settling bid ${b.account.index}...`);
+          return compute("award_bid_v2", (o) => program.methods.settleBid(o), {
+            auction: auctionAddress,
+            bid: b.publicKey,
+            book: book(pageOf(b.account.index)),
+          }).catch((e) => console.log(`Bid ${b.account.index} did not settle this time: ${e.message ?? e}`));
+        })
+      );
     }
   }
+  const extraPages = Array.from({ length: auction.extraPages ?? 0 }, (_, k) => ({
+    pubkey: book(k + 1),
+    isWritable: false,
+    isSigner: false,
+  }));
 
   for (const b of await fetchBids()) {
     if (variant(b.account.status) !== "atClearing") continue;
     console.log(`Finalizing the share of bid ${b.account.index}...`);
     await program.methods
       .finalizeShare()
-      .accountsPartial({ auction: auctionAddress, book, bid: b.publicKey })
+      .accountsPartial({ auction: auctionAddress, book: book(), bid: b.publicKey })
+      .remainingAccounts(extraPages)
       .rpc();
   }
 

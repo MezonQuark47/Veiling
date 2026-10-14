@@ -93,7 +93,7 @@ import { expect } from "chai";
 import { SealedAuction } from "../target/types/sealed_auction";
 import { shuffledItems } from "../app/src/lib/shuffle";
 
-const CIRCUITS = ["check_bids_v2", "clear_price_v2", "award_bid_v2", "draw_seed"] as const;
+const CIRCUITS = ["check_bids_v2", "clear_price_v2", "fold_batch_v2", "award_bid_v2", "draw_seed"] as const;
 type CircuitName = (typeof CIRCUITS)[number];
 
 const BATCH_SIZE = 4;
@@ -798,6 +798,7 @@ describe("sealed_auction", () => {
         seller: seller.publicKey,
         auction,
         book,
+        fold: null,
         mint,
         vault,
         sellerTokenAccount: getAssociatedTokenAddressSync(
@@ -895,6 +896,8 @@ describe("sealed_auction", () => {
           ? program.methods.initCheckBidsCompDef(url)
           : circuit === "clear_price_v2"
           ? program.methods.initClearPriceCompDef(url)
+          : circuit === "fold_batch_v2"
+          ? program.methods.initFoldBatchCompDef(url)
           : circuit === "award_bid_v2"
           ? program.methods.initAwardBidCompDef(url)
           : program.methods.initDrawSeedCompDef(url);
@@ -1429,7 +1432,7 @@ describe("sealed_auction", () => {
     expect(after - before).to.equal(proceeds - saleFee(proceeds));
     await program.methods
       .closeCollectionAuction()
-      .accountsPartial({ seller: seller.publicKey, auction, book, collection, mplCoreProgram: MPL_CORE_ID, itemList: null })
+      .accountsPartial({ seller: seller.publicKey, auction, book, fold: null, collection, mplCoreProgram: MPL_CORE_ID, itemList: null })
       .signers([seller])
       .rpc({ commitment: "confirmed" });
     const handedOver = (await connection.getAccountInfo(collection, "confirmed"))!;
@@ -1599,7 +1602,7 @@ describe("sealed_auction", () => {
     expect(after - before).to.equal(proceeds - saleFee(proceeds));
     await program.methods
       .closeCollectionAuction()
-      .accountsPartial({ seller: seller.publicKey, auction, book, collection, mplCoreProgram: MPL_CORE_ID, itemList })
+      .accountsPartial({ seller: seller.publicKey, auction, book, fold: null, collection, mplCoreProgram: MPL_CORE_ID, itemList })
       .signers([seller])
       .rpc({ commitment: "confirmed" });
     expect(await connection.getAccountInfo(itemList, "confirmed")).to.equal(null);

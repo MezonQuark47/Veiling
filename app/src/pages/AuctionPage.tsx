@@ -3,7 +3,6 @@ import { PublicKey, type Transaction } from "@solana/web3.js";
 import {
   BATCH_SIZE,
   EVICTION_PREMIUM_PERCENT,
-  MAX_BIDS,
   MAX_PRICE_TICKS,
   NFT_MINT_COST_LAMPORTS,
   NFT_PRICE_SCALE,
@@ -54,6 +53,11 @@ import {
   sharesAreFinal,
   ticksOf,
   bidCrankFee,
+  bidCapacity,
+  fetchClearingFold,
+  foldReward,
+  foldTotalSteps,
+  pagesInUse,
   priceOf,
 } from "../lib/chain";
 import { type ItemEntry, itemStart } from "../lib/items";
@@ -110,17 +114,19 @@ async function collectBid(signer: WalletSigner, auction: Auction, bid: Bid): Pro
 
 /** A full auction only takes a bid that out-deposits the smallest one. */
 function useEviction(auction: Auction) {
-  const full = auction.bidCount >= MAX_BIDS;
+  const capacity = bidCapacity(auction);
+  const full = auction.bidCount >= capacity;
   const eviction = useLoader(
     () => (full ? findEviction(auction) : Promise.resolve(null)),
     [auction.address.toBase58(), full],
     full ? 15_000 : undefined
   );
-  return { full, eviction, minimumDeposit: eviction.data?.minimumDeposit ?? 0n };
+  return { full, capacity, eviction, minimumDeposit: eviction.data?.minimumDeposit ?? 0n };
 }
 
 function EvictionHint({
   full,
+  capacity,
   eviction,
   minimumDeposit,
   enough,
@@ -130,17 +136,17 @@ function EvictionHint({
     return (
       <p className={`hint${enough ? "" : " hint--error"}`}>
         {eviction.data
-          ? `This auction is full with ${MAX_BIDS} bids. To get in, deposit at least ${formatSol(minimumDeposit)} SOL, ${EVICTION_PREMIUM_PERCENT}% more than the smallest deposit. That bid is then refunded in full and drops out.`
+          ? `This auction is full with ${formatCount(capacity)} bids. To get in, deposit at least ${formatSol(minimumDeposit)} SOL, ${EVICTION_PREMIUM_PERCENT}% more than the smallest deposit. That bid is then refunded in full and drops out.`
           : eviction.error
             ? `This auction is full and the smallest deposit could not be loaded: ${eviction.error}`
             : "This auction is full. Checking the smallest deposit…"}
       </p>
     );
   }
-  if (bidCount >= (MAX_BIDS * 3) / 4) {
+  if (bidCount >= (capacity * 3) / 4) {
     return (
       <p className="hint">
-        Once {MAX_BIDS} bids are in, a new bid can replace the one with the smallest deposit by depositing{" "}
+        Once {formatCount(capacity)} bids are in, a new bid can replace the one with the smallest deposit by depositing{" "}
         {EVICTION_PREMIUM_PERCENT}% more; the replaced bid gets its whole deposit back. A larger deposit keeps your
         place.
       </p>
@@ -346,7 +352,9 @@ function CrankNote({ auction }: { auction: Auction }) {
   if (!active || auction.bidCount === 0 || r.checkBatch + r.clearing + r.settlement + r.seedDraw === 0n) return null;
   const parts = [
     `${formatSol(r.checkBatch)} SOL per check of ${BATCH_SIZE} bids`,
-    `${formatSol(r.clearing)} SOL for the price`,
+    pagesInUse(auction) > 1
+      ? `${formatSol(foldReward(r))} SOL per step of finding the price`
+      : `${formatSol(r.clearing)} SOL for the price`,
     `${formatSol(r.settlement)} SOL per bid settled`,
     ...(auction.kind === "collection" ? [`${formatSol(r.seedDraw)} SOL for the shuffle`] : []),
   ];
@@ -685,6 +693,15 @@ function Progress({
   );
   const atClearing = bids.filter((b) => b.status === "atClearing");
   const sharesReady = sharesAreFinal(auction);
+  // With bids on more than one page, the price is found a page at a time.
+  const pages = pagesInUse(auction);
+  const paged = pages > 1 && auction.status === "open";
+  const fold = useLoader(
+    () => (paged && phase === "ready-to-clear" ? fetchClearingFold(auction) : Promise.resolve(null)),
+    [auction.address.toBase58(), paged, phase, auction.pendingComputation.toBase58()]
+  );
+  const foldSteps = foldTotalSteps(pages);
+  const foldDone = fold.data?.steps ?? 0;
   // Settled bids that still hold tokens or NFTs to deliver or a deposit to return.
   const uncollected = bids.filter((b) => b.status === "settled");
   const collection = auction.kind === "collection";
@@ -728,15 +745,22 @@ function Progress({
   const clear = () =>
     action.run("clear", async () => {
       const s = needSigner();
+      const before = paged ? await fetchClearingFold(auction) : null;
       await sendTransaction(await buildFindClearing(s.publicKey, auction), s);
       const after = await waitUntil(
         () => fetchAuction(auction.address),
         (a) => !a || a.status !== "open" || a.pendingComputation.equals(PublicKey.default)
       );
+      const folded = paged ? await fetchClearingFold(auction) : null;
       refresh();
-      return after && after.status === "settling"
-        ? `The price is ${formatPrice(after, after.clearingPrice, asset.decimals)} per ${unit}.`
-        : "Arcium could not finish this time. Try again.";
+      fold.reload();
+      if (after && after.status === "settling") {
+        return `The price is ${formatPrice(after, after.clearingPrice, asset.decimals)} per ${unit}.`;
+      }
+      if (before && folded && folded.steps > before.steps) {
+        return `Step ${folded.steps} of ${foldSteps} done. Run the next one.`;
+      }
+      return "Arcium could not finish this time. Try again.";
     });
 
   const settle = (bid: Bid) =>
@@ -964,12 +988,19 @@ function Progress({
                   : `Demand did not cover the supply, so every valid bid wins at the minimum price of ${clearing}.`}
               </p>
             )}
+            {paged && phase === "ready-to-clear" ? (
+              <p className="muted">
+                The bids fill {pages} pages of 256, so Arcium reads one page at a time, four bits of the price per
+                pass: {formatCount(foldDone)} of {formatCount(foldSteps)} steps done. The totals in between stay
+                encrypted.
+              </p>
+            ) : null}
             {phase === "ready-to-clear" ? (
               auctionPending ? (
                 <p className="working">Finding the price on Arcium…</p>
               ) : (
                 <Button variant="primary" onClick={clear} busy={action.busy === "clear"} disabled={!signer}>
-                  Reveal the price
+                  {paged ? `Run step ${formatCount(foldDone + 1)} of ${formatCount(foldSteps)}` : "Reveal the price"}
                 </Button>
               )
             ) : null}

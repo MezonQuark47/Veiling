@@ -13,6 +13,7 @@ import {
   MAX_ROYALTY_BPS,
   MAX_UPLOADED_ITEMS,
   NFT_MINT_COST_LAMPORTS,
+  PAGE_BIDS,
   REVEAL_DELAY_SECS,
 } from "../config";
 import { useLoader } from "../components/ui";
@@ -188,9 +189,10 @@ export function Docs({ section }: { section: string }) {
             <p>
               Until bidding closes you can raise a bid: a higher price or a larger size, sealed again, with more
               deposit if it needs it. A bid can never be lowered or withdrawn, and a deposit never shrinks, so
-              nobody can show demand and then pull it. An auction holds up to {MAX_BIDS} bids; after that, a new bid
-              can replace the one with the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more,
-              and the replaced bid gets its whole deposit back.
+              nobody can show demand and then pull it. An auction holds {formatCount(PAGE_BIDS)} bids, or up to{" "}
+              {formatCount(MAX_BIDS)} if the seller made room for more; after that, a new bid can replace the one with
+              the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more, and the replaced bid gets
+              its whole deposit back.
             </p>
           </Section>
 
@@ -220,6 +222,12 @@ export function Docs({ section }: { section: string }) {
             <p>
               A bid below the minimum price counts as no bid, and so does a collection bid that asks for too many
               NFTs or whose deposit does not cover them. It is refunded in full.
+            </p>
+            <p>
+              With more than {formatCount(PAGE_BIDS)} bids, Arcium finds the same price a page of{" "}
+              {formatCount(PAGE_BIDS)} bids at a time, four bits of the price per pass over the pages: 9 steps for 2
+              pages, 25 for 4. Each pass reveals only the next four bits of the clearing price, which becomes public
+              anyway; the demand added up in between stays encrypted.
             </p>
           </Section>
 

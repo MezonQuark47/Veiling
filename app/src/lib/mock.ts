@@ -58,6 +58,7 @@ const base = (seed: number, overrides: Partial<Auction>): Auction => ({
   unrevealed: false,
   crankRewards: { checkBatch: 6_000_000n, clearing: 25_000_000n, settlement: 4_000_000n, seedDraw: 3_000_000n },
   crankPool: 31_000_000n,
+  extraPages: 0,
   ...overrides,
 });
 
@@ -130,9 +131,11 @@ export function mockAuctions(): Auction[] {
       minPrice: 1_500n,
       minDeposit: 1_000_000n,
       endTime: now() + 300,
-      bidCount: 256,
-      liveBids: 256,
-      totalDeposited: 1_900_000_000n,
+      // Two pages of bids, every place taken.
+      extraPages: 1,
+      bidCount: 512,
+      liveBids: 512,
+      totalDeposited: 3_900_000_000n,
     }),
     // Scheduled: bidding opens tomorrow.
     base(9, {
@@ -143,6 +146,16 @@ export function mockAuctions(): Auction[] {
       endTime: now() + 93_600 + 259_200,
     }),
     base(3, { endTime: now() - 600, bidCount: 23, checkedCount: 12, liveBids: 23, totalDeposited: 18_000_000_000n }),
+    // Every bid checked across three pages: the price is found a page at a time.
+    base(10, {
+      mint: key(204),
+      endTime: now() - 1_800,
+      extraPages: 2,
+      bidCount: 700,
+      checkedCount: 700,
+      liveBids: 700,
+      totalDeposited: 912_000_000_000n,
+    }),
     base(4, {
       status: "settling",
       endTime: now() - 7200,

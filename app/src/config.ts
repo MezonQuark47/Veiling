@@ -24,7 +24,16 @@ export const EXPLORER_CLUSTER = MAINNET ? "" : "?cluster=devnet";
 
 // Must match the on-chain program and circuits.
 export const BATCH_SIZE = 4;
-export const MAX_BIDS = 256;
+/** Bids one page of an auction's bid book holds. */
+export const PAGE_BIDS = 256;
+/** Pages a bid book can have; the seller adds them up to the end of bidding. */
+export const MAX_PAGES = 4;
+/** Most bids an auction can hold, with every page added. */
+export const MAX_BIDS = PAGE_BIDS * MAX_PAGES;
+/** Passes of the clearing across pages, each fixing four bits of the price. */
+export const FOLD_PASSES = 8;
+/** What one step of that clearing pays its caller, as a share of the clearing reward. */
+export const FOLD_REWARD_PERCENT = 90n;
 /** A bid into a full auction must out-deposit the smallest bid by this much. */
 export const EVICTION_PREMIUM_PERCENT = 10n;
 export const PENDING_TIMEOUT_SECS = 30 * 60;
@@ -115,7 +124,7 @@ export const MAX_PAID_ITEM_BYTES = MAX_ORIGINAL_BYTES + 64 * 1024;
 export const STORAGE_PRICE_MARGIN_PERCENT = 1n;
 
 /** Compute units for the instructions that queue an MPC computation. */
-export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, settle: 400_000, draw: 400_000 } as const;
+export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, fold: 1_000_000, settle: 400_000, draw: 400_000 } as const;
 
 /** Where sellers ask to have an auction featured. */
 export const FEATURE_CONTACT = { label: "@velaryon69", href: "https://x.com/velaryon69" };

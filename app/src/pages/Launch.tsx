@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { PublicKey, type Transaction } from "@solana/web3.js";
 import type { BN } from "@anchor-lang/core";
 import { TOKEN_2022_PROGRAM_ID, getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -6,18 +6,19 @@ import {
   FEATURE_CONTACT,
   FREE_UPLOAD_ITEM_BYTES,
   FREE_UPLOAD_TOTAL_BYTES,
-  MAX_BIDS,
   MAX_COLLECTION_NAME_LEN,
   MAX_COLLECTION_SIZE,
   MAX_IMAGE_BYTES,
   MAX_ITEM_NAME_LEN,
   MAX_ITEMS,
+  MAX_PAGES,
   MAX_PRICE_TICKS,
   MAX_ROYALTY_BPS,
   MAX_UPLOADED_ITEMS,
   MAX_URI_LEN,
   NFT_MINT_COST_LAMPORTS,
   NFT_PRICE_SCALE,
+  PAGE_BIDS,
   REVEAL_DELAY_SECS,
   MAX_START_DELAY_SECS,
 } from "../config";
@@ -41,6 +42,7 @@ import {
 import { type StorageOption, StorageChoice } from "../components/StorageChoice";
 import { Button, Notice, useAction, useLoader, useMetadataImage, useNow } from "../components/ui";
 import {
+  buildAddBookPages,
   buildCreateAuction,
   buildCreateCollectionAuction,
   buildCreateToken,
@@ -58,6 +60,7 @@ import {
   fetchItemList,
   fetchTokenInfo,
   formatPercent,
+  pageCrankFee,
   randomU64,
   sellerCrankFee,
 } from "../lib/chain";
@@ -146,11 +149,13 @@ function BiddingWindow({
   onStartAt,
   duration,
   onDuration,
+  children,
 }: {
   startAt: string | null;
   onStartAt: (value: string | null) => void;
   duration: number;
   onDuration: (secs: number) => void;
+  children?: ReactNode;
 }) {
   const now = useNow(15_000);
   const start = startAt === null ? null : fromLocalInput(startAt);
@@ -207,7 +212,27 @@ function BiddingWindow({
               start! + duration
             )}. The auction is listed as upcoming until then, and you can cancel it until the first bid.`}
       </p>
+      {children}
     </fieldset>
+  );
+}
+
+/**
+ * How many bids the auction makes room for: 256 per page of its bid book, up
+ * to 1,024. Once they are all taken, a new bid must out-deposit the smallest.
+ */
+function BidRoom({ pages, onPages }: { pages: number; onPages: (pages: number) => void }) {
+  const options = Array.from({ length: MAX_PAGES }, (_, k) => [String(k + 1), formatCount((k + 1) * PAGE_BIDS)] as [string, string]);
+  return (
+    <div className="field">
+      <span className="field__label">Room for bids</span>
+      <Segmented label="Room for bids" value={String(pages)} options={options} onChange={(v) => onPages(Number(v))} />
+      <p className="hint">
+        {pages === 1
+          ? "Room for 256 bids, enough for most sales. Once they are all in, a new bid has to out-deposit the smallest one, which is refunded."
+          : `Room for ${formatCount(pages * PAGE_BIDS)} bids on ${pages} pages of 256. Each extra page holds ${formatSol(PAGE_RENT)} SOL of rent until you close the auction. With more than 256 bids, Arcium finds the price a page at a time, which the settlement fund below covers; what is not used comes back.`}
+      </p>
+    </div>
   );
 }
 
@@ -218,6 +243,11 @@ const MIN_SUGGESTED_DEPOSIT = 1_000_000n;
 const RENT_PER_BYTE = 6_960n;
 /** An item list's size: its header, then one entry per item (see `ItemList`). */
 const itemListRent = (items: number) => (128n + 82n + 29n * BigInt(items)) * RENT_PER_BYTE;
+/** Rent of a page of the bid book (`BidBook`), and of the clearing state made with the second page. */
+const PAGE_RENT = (128n + 8_232n) * RENT_PER_BYTE;
+const FOLD_RENT = (128n + 289n) * RENT_PER_BYTE;
+/** Rent of every page beyond the first, held until the auction is closed. */
+const extraPagesRent = (pages: number) => (pages > 1 ? BigInt(pages - 1) * PAGE_RENT + FOLD_RENT : 0n);
 
 type TokenSource = "new" | "existing";
 /** Whether the app uploads the art and metadata, or the seller links to files they host. */
@@ -369,6 +399,8 @@ export function Launch() {
   const [nftMinPriceInput, setNftMinPrice] = useState("0.1");
   const [minDepositInput, setMinDeposit] = useState<string | null>(null);
   const [duration, setDuration] = useState(DURATIONS[1].secs);
+  /** Pages of the bid book: 256 bids each. */
+  const [pages, setPages] = useState(1);
   /** When bidding opens, as a `datetime-local` value; null for right away. */
   const [startAt, setStartAt] = useState<string | null>(null);
   const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "token" | "auction">("form");
@@ -717,7 +749,8 @@ export function Launch() {
     // The smallest token bid: its deposit and its sealed budget. By default it is
     // the sale's worth at the minimum price split across every bid place,
     // so nobody can take every place for less than the whole sale.
-    let suggested = saleValue > 0n ? (saleValue + BigInt(MAX_BIDS) - 1n) / BigInt(MAX_BIDS) : MIN_SUGGESTED_DEPOSIT;
+    const places = BigInt(pages * PAGE_BIDS);
+    let suggested = saleValue > 0n ? (saleValue + places - 1n) / places : MIN_SUGGESTED_DEPOSIT;
     suggested = suggested < MIN_SUGGESTED_DEPOSIT ? MIN_SUGGESTED_DEPOSIT : roundUpSignificant(suggested, 2);
     const minDepositText = minDepositInput ?? formatSol(suggested, 9).replace(/,/g, "");
     const minDeposit = collection ? minTicks * NFT_PRICE_SCALE : parseSol(minDepositText);
@@ -758,6 +791,7 @@ export function Launch() {
     existing,
     existingBalance,
     fees.data,
+    pages,
   ]);
 
   const onUploadProgress = (done: number, total: number) => setUploadProgress([done, total]);
@@ -842,6 +876,7 @@ export function Launch() {
       Boolean(listed)
     );
     txs.push(built.tx);
+    if (pages > 1) txs.push(await buildAddBookPages(signer.publicKey, built.auction, 1, pages - 1));
     setTxProgress([0, txs.length]);
     await sendTransactions(txs, signer, (done, total) => setTxProgress([done, total]));
     seedRef.current = null;
@@ -905,7 +940,12 @@ export function Launch() {
           },
           fees.data
         );
-        await sendTransaction(built.tx, signer);
+        if (pages > 1) {
+          const room = await buildAddBookPages(signer.publicKey, built.auction, 1, pages - 1);
+          await sendTransactions([built.tx, room], signer);
+        } else {
+          await sendTransaction(built.tx, signer);
+        }
         auction = built.auction;
       }
       window.location.hash = `#/auction/${auction.toBase58()}`;
@@ -1355,15 +1395,18 @@ export function Launch() {
                   />
                 </div>
                 <p id="mindeposit-hint" className="hint">
-                  The least a bidder can deposit, and the smallest sealed budget a bid can name. An auction takes up to{" "}
-                  {MAX_BIDS} bids; after that, larger deposits replace the smallest. The suggestion splits the sale's
-                  worth at your minimum price across every place, so nobody can take them all for less.
+                  The least a bidder can deposit, and the smallest sealed budget a bid can name. The auction takes up
+                  to {formatCount(pages * PAGE_BIDS)} bids (see Room for bids); after that, larger deposits replace the
+                  smallest. The suggestion splits the sale's worth at your minimum price across every place, so nobody
+                  can take them all for less.
                 </p>
               </>
             )}
           </fieldset>
 
-          <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration} />
+          <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration}>
+            <BidRoom pages={pages} onPages={setPages} />
+          </BiddingWindow>
 
           {collection ? (
             <fieldset className="group">
@@ -1409,7 +1452,16 @@ export function Launch() {
                   <div>
                     <dt>Settlement fund</dt>
                     <dd>
-                      <span className="fees__amount">{formatSol(sellerCrankFee(crank.data, collection ? "collection" : "token"))} SOL</span>
+                      <span className="fees__amount">
+                        {formatSol(
+                          sellerCrankFee(crank.data, collection ? "collection" : "token") +
+                            Array.from({ length: pages - 1 }, (_, k) => pageCrankFee(crank.data!, k + 1)).reduce(
+                              (sum, fee) => sum + fee,
+                              0n
+                            )
+                        )}{" "}
+                        SOL
+                      </span>
                       <span className="fees__note">
                         Pays whoever runs the private steps that find the price{collection ? " and shuffle the NFTs" : ""}, so
                         your sale settles without you. Each bid adds {formatSol(bidCrankFee(crank.data))} SOL for its
@@ -1428,6 +1480,12 @@ export function Launch() {
               <p className="hint">
                 The item list holds {formatSol(itemListRent(nftPlan.listed.length))} SOL of rent while the sale runs; it
                 comes back when you close the auction.
+              </p>
+            ) : null}
+            {pages > 1 ? (
+              <p className="hint">
+                The {pages - 1} extra {pages === 2 ? "page" : "pages"} of bids hold {formatSol(extraPagesRent(pages))} SOL
+                of rent while the sale runs; it comes back when you close the auction.
               </p>
             ) : null}
             <p className="hint">

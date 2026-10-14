@@ -14,14 +14,16 @@ import type { SealedAuction } from "../idl/sealed_auction";
 import {
   EMERGENCY_DELAY_SECS,
   EVICTION_PREMIUM_PERCENT,
+  FOLD_PASSES,
+  FOLD_REWARD_PERCENT,
   FRESH_ARWEAVE_GATEWAY,
-  MAX_BIDS,
   MAX_PRICE_TICKS,
   MPL_CORE_ID,
   PROGRAM_ID,
   REVEAL_DELAY_SECS,
   RPC_URL,
   BATCH_SIZE,
+  PAGE_BIDS,
 } from "../config";
 import { type Decimal, formatDecimal, nftPrice, nftPriceToTicks, tokenPrice, tokenPriceToTicks } from "./price";
 
@@ -72,9 +74,23 @@ export function auctionAddress(seller: PublicKey, auctionSeed: BN): PublicKey {
   return PublicKey.findProgramAddressSync([seed("auction"), seller.toBytes(), u64le(auctionSeed)], PROGRAM_ID)[0];
 }
 
-/** Per-auction bid book: batch records and the deposit of every bid. */
-export function bookAddress(auction: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync([seed("book"), auction.toBytes()], PROGRAM_ID)[0];
+/**
+ * A page of an auction's bid book: batch records and the deposit of each of
+ * its `PAGE_BIDS` bids. Every auction has page 0; the seller can add pages
+ * 1 to 3.
+ */
+export function bookAddress(auction: PublicKey, page = 0): PublicKey {
+  const seeds = [seed("book"), auction.toBytes()];
+  if (page > 0) seeds.push(Uint8Array.of(page));
+  return PublicKey.findProgramAddressSync(seeds, PROGRAM_ID)[0];
+}
+
+/** The page of the bid book that holds bid `index`. */
+export const pageOf = (index: number) => Math.floor(index / PAGE_BIDS);
+
+/** The state of an auction's clearing across pages. */
+export function foldAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("fold"), auction.toBytes()], PROGRAM_ID)[0];
 }
 
 export function bidAddress(auction: PublicKey, bidder: PublicKey, bidSeed: BN): PublicKey {
@@ -180,6 +196,8 @@ export interface Auction {
   crankRewards: CrankRewards;
   /** Lamports left to pay them; what is left goes back to the seller at close. */
   crankPool: bigint;
+  /** Pages of the bid book beyond the first, each room for `PAGE_BIDS` more bids. */
+  extraPages: number;
 }
 
 /** Lamports paid to whoever runs each private step, when its computation succeeds. */
@@ -270,7 +288,49 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     unrevealed: a.unrevealed,
     crankRewards: decodeCrankRewards(a.crankRewards),
     crankPool: big(a.crankPool),
+    // Auctions opened before pages existed read as one page.
+    extraPages: a.extraPages ?? 0,
   };
+}
+
+/** Bids the auction can hold before new bids must replace the smallest. */
+export const bidCapacity = (a: Auction) => PAGE_BIDS * (1 + a.extraPages);
+
+/** Pages of the book that hold bids (at least one). */
+export const pagesInUse = (a: Auction) => Math.max(1, Math.ceil(a.bidCount / PAGE_BIDS));
+
+/** Every page of the auction's book after the first, in order. */
+export const extraPageAddresses = (a: Auction) =>
+  Array.from({ length: a.extraPages }, (_, k) => bookAddress(a.address, k + 1));
+
+/** What one step of the clearing across pages pays its caller. */
+export const foldReward = (r: CrankRewards) => (r.clearing * FOLD_REWARD_PERCENT) / 100n;
+
+/** Steps of the clearing across `pages` pages: one pass per four bits of the price, the page ending a pass starting the next. */
+export const foldTotalSteps = (pages: number) => FOLD_PASSES * (Math.max(1, pages) - 1) + 1;
+
+/**
+ * What the seller adds to the crank pool with page `page` (from 1): the
+ * clearing steps it adds. One page needs none (its clearing is one step, paid
+ * when the auction opens), two take nine, each further page eight more.
+ */
+export const pageCrankFee = (r: CrankRewards, page: number) =>
+  foldReward(r) * BigInt(foldTotalSteps(page + 1) - (page <= 1 ? 0 : foldTotalSteps(page)));
+
+/** Where the clearing across pages stands. */
+export interface ClearingFold {
+  /** Pass and page of the next step; `pass` is `FOLD_PASSES` once done. */
+  pass: number;
+  page: number;
+  steps: number;
+}
+
+/** The auction's clearing across pages, or null if it has only one page. */
+export async function fetchClearingFold(auction: Auction): Promise<ClearingFold | null> {
+  if (auction.extraPages === 0) return null;
+  if (MOCK) return { pass: 2, page: 1, steps: 9 };
+  const fold = await program.account.clearingFold.fetchNullable(foldAddress(auction.address));
+  return fold ? { pass: fold.pass, page: fold.page, steps: fold.steps } : null;
 }
 
 function decodeCrankRewards(r: { checkBatch: BN; clearing: BN; settlement: BN; seedDraw: BN }): CrankRewards {
@@ -495,31 +555,40 @@ export async function fetchItemList(auction: PublicKey): Promise<ItemList | null
 }
 
 // Deposits sit after the 8-byte discriminator, 64 batch records of 64 bytes
-// and 64 nonces of 16 bytes (see `BidBook` in the program).
+// and 64 nonces of 16 bytes (see `BidBook` in the program); clearing sizes
+// after the deposits and the auction key.
 const BOOK_DEPOSITS_OFFSET = 8 + 64 * 64 + 64 * 16;
+const BOOK_CLEARING_QUANTITIES_OFFSET = BOOK_DEPOSITS_OFFSET + 8 * PAGE_BIDS + 32;
 
-/** The deposit of the bid at each index, as the program sees it. */
-export async function fetchBookDeposits(auction: PublicKey): Promise<bigint[]> {
-  if (MOCK) {
-    const bids = (await import("./mock")).mockBids(auction, null);
-    return Array.from({ length: MAX_BIDS }, (_, i) => bids[i]?.deposit ?? 3_000_000_000n);
-  }
-  const account = await connection.getAccountInfo(bookAddress(auction));
-  if (!account) throw new Error("This auction's bid book is missing");
-  const view = new DataView(account.data.buffer, account.data.byteOffset, account.data.byteLength);
-  return Array.from({ length: MAX_BIDS }, (_, i) => view.getBigUint64(BOOK_DEPOSITS_OFFSET + 8 * i, true));
+/** Every page of the auction's book, in order: `PAGE_BIDS` slots each. */
+async function fetchBookPages(a: Auction): Promise<DataView[]> {
+  const pages = [bookAddress(a.address), ...extraPageAddresses(a)];
+  const accounts = await connection.getMultipleAccountsInfo(pages);
+  return accounts.map((account) => {
+    if (!account) throw new Error("A page of this auction's bid book is missing");
+    return new DataView(account.data.buffer, account.data.byteOffset, account.data.byteLength);
+  });
 }
 
-// Clearing sizes follow the deposits (256 x 8 bytes) and the auction key.
-const BOOK_CLEARING_QUANTITIES_OFFSET = BOOK_DEPOSITS_OFFSET + 8 * MAX_BIDS + 32;
+/** The deposit of the bid at each index, as the program sees it, across every page. */
+export async function fetchBookDeposits(a: Auction): Promise<bigint[]> {
+  if (MOCK) {
+    const bids = (await import("./mock")).mockBids(a.address, null);
+    return Array.from({ length: bidCapacity(a) }, (_, i) => bids[i]?.deposit ?? 3_000_000_000n);
+  }
+  const pages = await fetchBookPages(a);
+  return pages.flatMap((view) =>
+    Array.from({ length: PAGE_BIDS }, (_, i) => view.getBigUint64(BOOK_DEPOSITS_OFFSET + 8 * i, true))
+  );
+}
 
 /** NFTs asked for by each bid revealed at the clearing price, by bid index (0 for the rest). */
-export async function fetchClearingQuantities(auction: PublicKey): Promise<number[]> {
-  if (MOCK) return Array.from({ length: MAX_BIDS }, (_, i) => (i === 2 ? 3 : 0));
-  const account = await connection.getAccountInfo(bookAddress(auction));
-  if (!account) throw new Error("This auction's bid book is missing");
-  const view = new DataView(account.data.buffer, account.data.byteOffset, account.data.byteLength);
-  return Array.from({ length: MAX_BIDS }, (_, i) => view.getUint32(BOOK_CLEARING_QUANTITIES_OFFSET + 4 * i, true));
+export async function fetchClearingQuantities(a: Auction): Promise<number[]> {
+  if (MOCK) return Array.from({ length: bidCapacity(a) }, (_, i) => (i === 2 ? 3 : 0));
+  const pages = await fetchBookPages(a);
+  return pages.flatMap((view) =>
+    Array.from({ length: PAGE_BIDS }, (_, i) => view.getUint32(BOOK_CLEARING_QUANTITIES_OFFSET + 4 * i, true))
+  );
 }
 
 /**
