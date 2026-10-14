@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, type Transaction } from "@solana/web3.js";
 import {
   BATCH_SIZE,
   EVICTION_PREMIUM_PERCENT,
@@ -72,7 +72,9 @@ import {
   buildSettleBid,
   findEviction,
 } from "../lib/actions";
+import { closeNoteInstruction, hasChainNote, noteForNewBid } from "../lib/bidNotes";
 import { forgetClosedBids, forgetNote, readNote, saveNote } from "../lib/notes";
+import { NoteUnlock } from "../components/BidNotes";
 import { formatCount, formatDateTime, formatDuration, formatSol, parseSol, plural } from "../lib/format";
 import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/price";
 import { errorMessage, sendTransaction, waitUntil, type WalletSigner } from "../lib/tx";
@@ -156,14 +158,31 @@ function usePriceInput(auction: Auction, asset: AssetInfo, input: string) {
   return { ticks: valid ? ticks : null, tooLow, tooHigh, rounded: Boolean(shown && typedText && shown !== typedText), shown };
 }
 
-function placedMessage(sig: string, evicted: Bid | null) {
+function placedMessage(sig: string, evicted: Bid | null, noted: boolean) {
   return (
     <>
       Bid sealed.
-      {evicted ? ` It replaced bid ${evicted.index + 1}, whose deposit went back to its owner.` : ""}{" "}
+      {evicted ? ` It replaced bid ${evicted.index + 1}, whose deposit went back to its owner.` : ""}
+      {noted
+        ? " Its price and size are saved on chain, encrypted for your wallet, so you can see them on any device."
+        : " Its price and size are kept in this browser only."}{" "}
       <TxLink signature={sig} />
     </>
   );
+}
+
+/**
+ * Adds the bid's encrypted note to its transaction (unless the wallet does not
+ * sign for the key) and, when it replaces a bid, closes that bid's note so its
+ * rent goes back to its owner. Returns whether the note was added.
+ */
+async function addNotes(tx: Transaction, signer: WalletSigner, bid: PublicKey, price: bigint, quantity: number, evicted: Bid | null) {
+  const save = await noteForNewBid(signer, bid, price, quantity);
+  if (save) tx.add(save);
+  if (evicted && (await hasChainNote(evicted.address))) {
+    tx.add(await closeNoteInstruction(signer.publicKey, evicted.bidder, evicted.address));
+  }
+  return save !== null;
 }
 
 /** A token bid: a SOL budget, which is the deposit, and the most it pays per token. */
@@ -188,11 +207,12 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
       if (!signer) throw new Error("Connect a wallet first");
       if (!price.ticks) throw new Error("Enter a valid price");
       const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, 0, budget);
+      const noted = await addNotes(tx, signer, bid, price.ticks, 0, evicted);
       const sig = await sendTransaction(tx, signer);
       saveNote(bid, auction.address, price.ticks, 0);
       onPlaced();
       evict.eviction.reload();
-      return placedMessage(sig, evicted);
+      return placedMessage(sig, evicted, noted);
     });
 
   return (
@@ -299,11 +319,12 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
       if (!signer) throw new Error("Connect a wallet first");
       if (!price.ticks) throw new Error("Enter a valid price");
       const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, quantity, deposit);
+      const noted = await addNotes(tx, signer, bid, price.ticks, quantity, evicted);
       const sig = await sendTransaction(tx, signer);
       saveNote(bid, auction.address, price.ticks, quantity);
       onPlaced();
       evict.eviction.reload();
-      return placedMessage(sig, evicted);
+      return placedMessage(sig, evicted, noted);
     });
 
   return (
@@ -629,7 +650,7 @@ function Progress({
   const refund = (bid: Bid) =>
     action.run(`refund-${bid.address.toBase58()}`, async () => {
       const s = needSigner();
-      const sig = await sendTransaction(await buildEmergencyRefund(bid), s);
+      const sig = await sendTransaction(await buildEmergencyRefund(s.publicKey, bid), s);
       forgetNote(bid.address);
       refresh();
       const own = publicKey && bid.bidder.equals(publicKey);
@@ -1011,6 +1032,8 @@ function YourBids({
 }) {
   const { publicKey, signer } = useWallet();
   const action = useAction();
+  // Bumped when notes from chain arrive, to show them.
+  const [, setNotesOpened] = useState(0);
   if (!publicKey) return null;
   const mine = bids.filter((b) => b.bidder.equals(publicKey));
   if (mine.length === 0) return null;
@@ -1062,7 +1085,7 @@ function YourBids({
                   {auction.kind === "token"
                     ? `Sealed at up to ${sealedAt} per ${asset.unit}.`
                     : `Sealed for ${plural(note.quantity, "NFT")} at up to ${sealedAt} each.`}{" "}
-                  Only this browser keeps this note, and it is deleted once the bid is collected.
+                  Only your wallet can read this note, and it is deleted once the bid is collected.
                 </p>
               ) : null}
               <p className="bidlist__state">
@@ -1098,6 +1121,7 @@ function YourBids({
           );
         })}
       </ul>
+      <NoteUnlock bids={mine} onOpened={() => setNotesOpened((n) => n + 1)} />
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
       {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>

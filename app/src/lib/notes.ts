@@ -1,9 +1,11 @@
 import type { PublicKey } from "@solana/web3.js";
 
 /**
- * A bidder's own price and size, kept only in this browser so the page can
- * remind them what they sealed. Notes are deleted once the bid is closed and
- * expire after `NOTE_TTL_DAYS`, so plaintext bids do not pile up in storage.
+ * A bidder's own price and size, kept in this browser so the page can remind
+ * them what they sealed. Notes are deleted once the bid is closed and expire
+ * after `NOTE_TTL_DAYS`, so plaintext bids do not pile up in storage. The
+ * same note is also stored encrypted on chain (`bidNotes.ts`), which is how
+ * another device gets it back.
  */
 export interface BidNote {
   /** The most the bid pays, in the auction's price ticks (a decimal string). */
@@ -18,6 +20,8 @@ export interface BidNote {
 const PREFIX = "veiling.bid2.";
 const OLD_PREFIX = "veiling.bid.";
 const NOTE_TTL_DAYS = 30;
+/** This page's notes, for browsers that keep no storage. */
+const memory = new Map<string, BidNote>();
 
 function storage(): Storage | null {
   try {
@@ -29,6 +33,7 @@ function storage(): Storage | null {
 
 export function saveNote(bid: PublicKey, auction: PublicKey, price: bigint, quantity: number) {
   const note: BidNote = { price: price.toString(), quantity, auction: auction.toBase58(), savedAt: Date.now() };
+  memory.set(bid.toBase58(), note);
   try {
     storage()?.setItem(PREFIX + bid.toBase58(), JSON.stringify(note));
   } catch {
@@ -50,6 +55,8 @@ function isNote(value: unknown): value is BidNote {
 }
 
 export function readNote(bid: PublicKey): BidNote | null {
+  const kept = memory.get(bid.toBase58());
+  if (kept) return kept;
   try {
     const raw = storage()?.getItem(PREFIX + bid.toBase58());
     const note: unknown = raw ? JSON.parse(raw) : null;
@@ -60,6 +67,7 @@ export function readNote(bid: PublicKey): BidNote | null {
 }
 
 export function forgetNote(bid: PublicKey) {
+  memory.delete(bid.toBase58());
   try {
     storage()?.removeItem(PREFIX + bid.toBase58());
   } catch {
@@ -117,6 +125,7 @@ export function forgetClosedBids(auction: PublicKey, liveBids: PublicKey[]): num
   let removed = 0;
   for (const [key, note] of allNotes()) {
     if (note?.auction === id && note.savedAt < settledBefore && !live.has(key.slice(PREFIX.length))) {
+      memory.delete(key.slice(PREFIX.length));
       try {
         storage()?.removeItem(key);
         removed++;

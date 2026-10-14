@@ -1659,6 +1659,62 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "closeBidNote",
+      "docs": [
+        "Closes a bid note and returns its rent to the bidder: at any time by",
+        "the bidder, and by anyone once the bid itself is closed."
+      ],
+      "discriminator": [
+        130,
+        94,
+        252,
+        163,
+        26,
+        72,
+        186,
+        112
+      ],
+      "accounts": [
+        {
+          "name": "closer",
+          "signer": true
+        },
+        {
+          "name": "bidder",
+          "writable": true
+        },
+        {
+          "name": "bid",
+          "docs": [
+            "in the handler."
+          ]
+        },
+        {
+          "name": "note",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "note.bid",
+                "account": "bidNote"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "closeCollectionAuction",
       "docs": [
         "Closes a finished or cancelled collection auction once every bid",
@@ -3538,6 +3594,74 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "saveBidNote",
+      "docs": [
+        "Stores the bidder's note on their bid, so they can see what they",
+        "sealed on any device. The note is opaque here: the bidder's app",
+        "encrypts it under a key made from their wallet's signature, so only",
+        "they can read it. Its rent comes back with `close_bid_note`."
+      ],
+      "discriminator": [
+        112,
+        68,
+        163,
+        11,
+        129,
+        212,
+        177,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "bidder",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "bid"
+          ]
+        },
+        {
+          "name": "bid"
+        },
+        {
+          "name": "note",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bid"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "note",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "setFees",
       "docs": [
         "Sets the platform fees and the wallet that receives them. They apply",
@@ -3895,6 +4019,19 @@ export type SealedAuction = {
         95,
         48,
         50
+      ]
+    },
+    {
+      "name": "bidNote",
+      "discriminator": [
+        86,
+        78,
+        111,
+        116,
+        101,
+        95,
+        48,
+        49
       ]
     },
     {
@@ -4506,6 +4643,11 @@ export type SealedAuction = {
       "code": 6063,
       "name": "biddingNotStarted",
       "msg": "Bidding has not started yet"
+    },
+    {
+      "code": 6064,
+      "name": "bidStillOpen",
+      "msg": "Only the bidder can close the note of a bid that is still open"
     }
   ],
   "types": [
@@ -5409,6 +5551,41 @@ export type SealedAuction = {
               "Deposit returned, not counting the account's rent."
             ],
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "bidNote",
+      "docs": [
+        "A bidder's note on their bid (see `save_bid_note`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bid",
+            "type": "pubkey"
+          },
+          {
+            "name": "bidder",
+            "type": "pubkey"
+          },
+          {
+            "name": "note",
+            "docs": [
+              "Encrypted by the bidder's app; opaque to the program."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }

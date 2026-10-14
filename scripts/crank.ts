@@ -253,6 +253,14 @@ async function main() {
       .closeBid()
       .accountsPartial({ bidder: bid.bidder, auction: auctionAddress, bid: b.publicKey })
       .rpc();
+    // The bidder's encrypted note, if any: its rent goes back to the bidder too.
+    const note = PublicKey.findProgramAddressSync([Buffer.from("note"), b.publicKey.toBuffer()], program.programId)[0];
+    if (await provider.connection.getAccountInfo(note)) {
+      await program.methods
+        .closeBidNote()
+        .accountsPartial({ closer: payer, bidder: bid.bidder, bid: b.publicKey, note })
+        .rpc();
+    }
   }
 
   auction = await fetchAuction();

@@ -26,6 +26,9 @@
 //! 2. `place_bid` stores an encrypted bid and escrows its deposit (no MPC).
 //!    Once `MAX_BIDS` bids are in, a new bid must out-deposit the smallest
 //!    one by `EVICTION_PREMIUM_PERCENT`; that bid is refunded and replaced.
+//!    `save_bid_note` can keep the bidder's own note of the bid next to it,
+//!    encrypted by their app under a key made from their wallet's signature,
+//!    so they can see what they sealed on any device.
 //! 3. After `end_time`, `check_batch` checks bids `BATCH_SIZE` at a time and
 //!    stores each checked batch, encrypted, in the bid book. One computation
 //!    is in flight at a time.
@@ -117,6 +120,8 @@ pub const ASSET_SEED: &[u8] = b"asset";
 /// The item list of a collection auction named per item:
 /// `[ITEMS_SEED, auction]`.
 pub const ITEMS_SEED: &[u8] = b"items";
+/// A bidder's encrypted note on their bid: `[NOTE_SEED, bid]`.
+pub const NOTE_SEED: &[u8] = b"note";
 
 /// Account discriminators of this version's auction state. They differ from
 /// the first release's, whose accounts had other layouts, so an account of
@@ -125,6 +130,10 @@ pub const AUCTION_DISCRIMINATOR: &[u8] = b"VAuctn02";
 pub const BOOK_DISCRIMINATOR: &[u8] = b"VBook_02";
 pub const BID_DISCRIMINATOR: &[u8] = b"VBid__02";
 pub const ITEM_LIST_DISCRIMINATOR: &[u8] = b"VItems01";
+pub const BID_NOTE_DISCRIMINATOR: &[u8] = b"VNote_01";
+/// Bytes of a bid note. The program stores them as given: the bidder's app
+/// encrypts the bid's price and size under a key only their wallet can make.
+pub const BID_NOTE_LEN: usize = 32;
 
 /// Hard caps on the platform fees, so no admin can ever charge more: 0.5 SOL
 /// to open an auction and 5% of a sale's proceeds.
@@ -1791,6 +1800,31 @@ pub mod sealed_auction {
             bidder: ctx.accounts.bid.bidder,
             amount: deposit,
         });
+        Ok(())
+    }
+
+    /// Stores the bidder's note on their bid, so they can see what they
+    /// sealed on any device. The note is opaque here: the bidder's app
+    /// encrypts it under a key made from their wallet's signature, so only
+    /// they can read it. Its rent comes back with `close_bid_note`.
+    pub fn save_bid_note(ctx: Context<SaveBidNote>, note: [u8; BID_NOTE_LEN]) -> Result<()> {
+        let account = &mut ctx.accounts.note;
+        account.bid = ctx.accounts.bid.key();
+        account.bidder = ctx.accounts.bidder.key();
+        account.note = note;
+        account.bump = ctx.bumps.note;
+        Ok(())
+    }
+
+    /// Closes a bid note and returns its rent to the bidder: at any time by
+    /// the bidder, and by anyone once the bid itself is closed.
+    pub fn close_bid_note(ctx: Context<CloseBidNote>) -> Result<()> {
+        let bid = &ctx.accounts.bid;
+        let bid_closed = bid.owner != &crate::ID || bid.data_is_empty();
+        require!(
+            bid_closed || ctx.accounts.closer.key() == ctx.accounts.note.bidder,
+            AuctionError::BidStillOpen
+        );
         Ok(())
     }
 
@@ -3584,6 +3618,17 @@ pub struct Bid {
     pub first_position: u32,
 }
 
+/// A bidder's note on their bid (see `save_bid_note`).
+#[account(discriminator = BID_NOTE_DISCRIMINATOR)]
+#[derive(InitSpace)]
+pub struct BidNote {
+    pub bid: Pubkey,
+    pub bidder: Pubkey,
+    /// Encrypted by the bidder's app; opaque to the program.
+    pub note: [u8; BID_NOTE_LEN],
+    pub bump: u8,
+}
+
 // ---------------------------------------------------------------------------
 // Accounts: administration
 // ---------------------------------------------------------------------------
@@ -3997,6 +4042,43 @@ pub struct PlaceBid<'info> {
     #[account(mut)]
     pub evicted_bidder: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SaveBidNote<'info> {
+    #[account(mut)]
+    pub bidder: Signer<'info>,
+    #[account(has_one = bidder @ AuctionError::Unauthorized)]
+    pub bid: Box<Account<'info, Bid>>,
+    #[account(
+        init,
+        payer = bidder,
+        space = 8 + BidNote::INIT_SPACE,
+        seeds = [NOTE_SEED, bid.key().as_ref()],
+        bump,
+    )]
+    pub note: Account<'info, BidNote>,
+    pub system_program: Program<'info, System>,
+}
+
+/// The rent can only go to the note's bidder.
+#[derive(Accounts)]
+pub struct CloseBidNote<'info> {
+    pub closer: Signer<'info>,
+    /// CHECK: the note's bidder; receives its rent.
+    #[account(mut, address = note.bidder @ AuctionError::Unauthorized)]
+    pub bidder: UncheckedAccount<'info>,
+    /// CHECK: the bid the note belongs to; whether it is closed is checked
+    /// in the handler.
+    #[account(address = note.bid @ AuctionError::WrongBidAccounts)]
+    pub bid: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        close = bidder,
+        seeds = [NOTE_SEED, note.bid.as_ref()],
+        bump = note.bump,
+    )]
+    pub note: Account<'info, BidNote>,
 }
 
 /// Permissionless: the lamports can only go to the bid's owner.
@@ -4832,6 +4914,8 @@ pub enum AuctionError {
     InvalidStartTime,
     #[msg("Bidding has not started yet")]
     BiddingNotStarted,
+    #[msg("Only the bidder can close the note of a bid that is still open")]
+    BidStillOpen,
 }
 
 // ---------------------------------------------------------------------------
@@ -4912,6 +4996,7 @@ mod tests {
         assert_eq!(Auction::DISCRIMINATOR, AUCTION_DISCRIMINATOR);
         assert_eq!(BidBook::DISCRIMINATOR, BOOK_DISCRIMINATOR);
         assert_eq!(Bid::DISCRIMINATOR, BID_DISCRIMINATOR);
+        assert_eq!(BidNote::DISCRIMINATOR, BID_NOTE_DISCRIMINATOR);
         // The first release used Anchor's default, sha256("account:<Name>").
         for (name, disc) in [
             ("Auction", AUCTION_DISCRIMINATOR),

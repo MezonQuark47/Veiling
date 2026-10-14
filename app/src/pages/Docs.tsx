@@ -424,6 +424,12 @@ export function Docs({ section }: { section: string }) {
               made it can be read from the chain by anyone who looks. Bids exactly at the clearing price are known to
               be at it once settled.
             </p>
+            <p>
+              Your own bids' prices and sizes are saved on chain next to each bid, encrypted under a key that only
+              your wallet can make by signing a message. That is how you see them on another device: sign once and
+              they show. Nobody else, including us, can read them. The small rent each note holds comes back when you
+              collect the bid.
+            </p>
           </Section>
 
           <Section id="safety" title="If settlement stalls">

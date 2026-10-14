@@ -2916,3 +2916,22 @@ p {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   }
 }
+
+.notes-unlock {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+}
+
+.notes-unlock p {
+  margin: 0;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.notes-unlock .btn {
+  justify-self: start;
+}

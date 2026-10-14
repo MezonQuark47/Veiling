@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { LeftoverNotes, NoteUnlock } from "../components/BidNotes";
 import { Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
 import { statusText } from "../components/AuctionTable";
 import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, revealMissed } from "../lib/chain";
@@ -75,6 +76,9 @@ export function MyBids() {
     15_000
   );
   const groups = useMemo(() => (loaded.data ?? []).sort((x, y) => y.auction.endTime - x.auction.endTime), [loaded.data]);
+  const allBids = useMemo(() => groups.flatMap((g) => g.bids), [groups]);
+  // Bumped when notes from chain arrive, to show them.
+  const [, setNotesOpened] = useState(0);
 
   return (
     <main className="page">
@@ -93,12 +97,16 @@ export function MyBids() {
           </a>
         </div>
       ) : (
-        <ul className="mybids">
-          {groups.map((g) => (
-            <AuctionBids key={g.auction.address.toBase58()} auction={g.auction} bids={g.bids} now={now} />
-          ))}
-        </ul>
+        <>
+          <NoteUnlock bids={allBids} onOpened={() => setNotesOpened((n) => n + 1)} />
+          <ul className="mybids">
+            {groups.map((g) => (
+              <AuctionBids key={g.auction.address.toBase58()} auction={g.auction} bids={g.bids} now={now} />
+            ))}
+          </ul>
+        </>
       )}
+      {publicKey ? <LeftoverNotes /> : null}
     </main>
   );
 }

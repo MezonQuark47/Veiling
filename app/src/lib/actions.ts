@@ -5,6 +5,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  type TransactionInstruction,
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -24,6 +25,7 @@ import {
 import { createInitializeInstruction, createUpdateAuthorityInstruction, pack } from "@solana/spl-token-metadata";
 import { BATCH_SIZE, MAX_BIDS, MAX_NFTS_PER_CLAIM, MPL_CORE_ID, QUEUE_COMPUTE_UNITS } from "../config";
 import { computationAccounts, encryptBid, newComputationOffset } from "./arcium";
+import { closeNoteInstruction, hasChainNote } from "./bidNotes";
 import {
   type Auction,
   type Bid,
@@ -474,6 +476,16 @@ function closeBidInstruction(bid: Bid) {
     .instruction();
 }
 
+/** Closes the bid's note right after the bid, if it has one; its rent goes to the bidder. */
+async function noteCloseAfter(payer: PublicKey, bid: Bid): Promise<TransactionInstruction[]> {
+  return (await hasChainNote(bid.address)) ? [await closeNoteInstruction(payer, bid.bidder, bid.address)] : [];
+}
+
+/** `close_bid`, then the note's close when there is a note. */
+async function closeBidInstructions(payer: PublicKey, bid: Bid): Promise<TransactionInstruction[]> {
+  return [await closeBidInstruction(bid), ...(await noteCloseAfter(payer, bid))];
+}
+
 /** Mints up to `MAX_NFTS_PER_CLAIM` of a winner's NFTs: the ones for its places from `firstPosition` on. */
 function claimNftsInstruction(payer: PublicKey, auction: Auction, bid: Bid, firstPosition: number, count: number) {
   return program.methods
@@ -517,7 +529,7 @@ export async function buildCollect(payer: PublicKey, auction: Auction, bid: Bid,
   if (auction.kind === "token") {
     const tx = new Transaction();
     if (bid.won > 0n && !bid.delivered) tx.add(await claimTokensInstruction(payer, auction, bid));
-    tx.add(await closeBidInstruction(bid));
+    tx.add(...(await closeBidInstructions(payer, bid)));
     return [tx];
   }
   let owed = bid.delivered ? 0 : Number(bid.won) - bid.nftsClaimed;
@@ -525,7 +537,7 @@ export async function buildCollect(payer: PublicKey, auction: Auction, bid: Bid,
     // A hidden collection not revealed in time gives the payment back
     // instead; until then its NFTs wait for the reveal.
     if (!revealMissed(auction, now)) throw new Error("The NFTs are minted once the seller reveals the art.");
-    return [new Transaction().add(await refundUnrevealedInstruction(auction, bid), await closeBidInstruction(bid))];
+    return [new Transaction().add(await refundUnrevealedInstruction(auction, bid), ...(await closeBidInstructions(payer, bid)))];
   }
   if (owed > 0 && !nftsReady(auction, now)) {
     throw new Error("The NFTs are handed out once every bid is settled and Arcium has shuffled them.");
@@ -542,7 +554,7 @@ export async function buildCollect(payer: PublicKey, auction: Auction, bid: Bid,
     }
     next += count;
     owed -= count;
-    if (owed === 0) tx.add(await closeBidInstruction(bid));
+    if (owed === 0) tx.add(...(await closeBidInstructions(payer, bid)));
     txs.push(tx);
   } while (owed > 0);
   return txs;
@@ -617,12 +629,16 @@ export async function buildCloseAuction(auction: Auction) {
   return new Transaction().add(await closeInstruction(auction));
 }
 
-/** Safety net: returns an unsettled bid's whole deposit to its owner. Anyone can send it. */
-export function buildEmergencyRefund(bid: Bid) {
-  return program.methods
+/**
+ * Safety net: returns an unsettled bid's whole deposit to its owner, and the
+ * rent of its note. Anyone can send it.
+ */
+export async function buildEmergencyRefund(payer: PublicKey, bid: Bid) {
+  const refund = await program.methods
     .emergencyRefund()
     .accountsPartial({ bidder: bid.bidder, auction: bid.auction, bid: bid.address })
-    .transaction();
+    .instruction();
+  return new Transaction().add(refund, ...(await noteCloseAfter(payer, bid)));
 }
 
 /** Second step of an admin handover, signed by the wallet the role was offered to. */

@@ -321,9 +321,16 @@ carries a badge (`NETWORK_LABEL`), and explorer links follow
 
 People type prices in SOL per token or per NFT; the app converts them to
 price ticks exactly, rounding a bid's price down so it never pays more than
-typed. The app remembers the price and size of your own bids in this browser
-only, so it can show them back to you. The note is deleted once the bid is
-collected and expires after 30 days. A collection's metadata file and image
+typed. The app shows you the price and size of your own bids. With each bid
+it stores a note of them on chain (`save_bid_note`, a 32-byte `BidNote`
+account next to the bid), encrypted with AES-256-GCM under a key made from the
+wallet's signature of a fixed message. Ed25519 signatures are deterministic,
+so the same wallet opens its notes on any device after one signature, and
+nobody else can. The note's rent (about 0.0012 SOL) comes back when the bid is
+collected; notes of bids replaced in a full auction can be closed from My
+bids. A wallet that cannot sign messages bids without a note on chain. The
+browser keeps a copy so it need not ask again, deleted once the bid is
+collected and after 30 days. A collection's metadata file and image
 are fetched without cookies or referrer, and only https images are shown. The
 Docs page (`#/docs`) explains auctions, fees and privacy for users.
 

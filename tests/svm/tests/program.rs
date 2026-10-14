@@ -1205,6 +1205,29 @@ impl Env {
             vec![w(a.auction), w(bid)],
         )
     }
+
+    /// `save_bid_note` on `bid`, signed by `bidder`.
+    fn save_note_ix(&self, bidder: &Address, bid: Address, note: [u8; 32]) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("save_bid_note", &note),
+            vec![signer(*bidder), r(bid), w(note_address(&bid)), r(SYSTEM_PROGRAM)],
+        )
+    }
+
+    /// `close_bid_note` of `bid`'s note, signed by `closer`.
+    fn close_note_ix(&self, closer: &Address, bidder: Address, bid: Address) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("close_bid_note", &[]),
+            vec![signer(*closer), w(bidder), r(bid), w(note_address(&bid))],
+        )
+    }
+}
+
+/// The note on `bid`.
+fn note_address(bid: &Address) -> Address {
+    pda(&[b"note", bid.as_ref()])
 }
 
 /// The item list of the collection auction at `auction`.
@@ -2210,6 +2233,73 @@ fn scheduled_auctions_take_bids_only_from_their_start() {
     assert_eq!(late.end_time, opened_at + DURATION_SECS);
     env.assert_terms(&late);
     env.bid(&late, &bidder, 9, 10_000);
+}
+
+#[test]
+fn bidders_keep_an_encrypted_note_on_chain_and_get_its_rent_back() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let a = env.create_auction(&seller, 1, mint, TOKEN_TERMS);
+    let bidder = env.funded(1);
+    let stranger = env.funded(1);
+
+    // The bid and its note go in one transaction, as the app sends them.
+    let key = honest_key(1);
+    let (place, bid) = env.place_bid_ix(&a, &bidder.pubkey(), 1, key, edwards_y(&key), 10_000, None);
+    let sealed = [7u8; 32];
+    let ixs = [place, env.save_note_ix(&bidder.pubkey(), bid, sealed)];
+    env.send(&ixs, &bidder, &[]).expect("bid with its note");
+    let note = note_address(&bid);
+    let data = env.data(&note);
+    assert_eq!(&data[..8], b"VNote_01");
+    assert_eq!(&data[8..40], bid.as_ref());
+    assert_eq!(&data[40..72], bidder.pubkey().as_ref());
+    assert_eq!(&data[72..104], &sealed);
+    assert_eq!(env.idl.account_discriminators["BidNote"], b"VNote_01".to_vec());
+    let rent = env.balance(&note);
+
+    // Each bid has one note.
+    let ix = env.save_note_ix(&bidder.pubkey(), bid, [1; 32]);
+    assert!(env.send(&[ix], &bidder, &[]).is_err(), "a second note on the same bid");
+
+    // Nobody else can write a note on a bid.
+    let key = honest_key(2);
+    let (place, other) = env.place_bid_ix(&a, &bidder.pubkey(), 2, key, edwards_y(&key), 10_000, None);
+    env.send(&[place], &bidder, &[]).expect("second bid");
+    let ix = env.save_note_ix(&stranger.pubkey(), other, [1; 32]);
+    env.expect_error(&[ix], &stranger, &[], "Unauthorized");
+    let ix = env.save_note_ix(&bidder.pubkey(), other, [2; 32]);
+    env.send(&[ix], &bidder, &[]).expect("a note added later");
+
+    // While the bid is open, only its bidder may close the note.
+    let ix = env.close_note_ix(&stranger.pubkey(), bidder.pubkey(), bid);
+    env.expect_error(&[ix], &stranger, &[], "BidStillOpen");
+    let before = env.balance(&bidder.pubkey());
+    let ix = env.close_note_ix(&bidder.pubkey(), bidder.pubkey(), other);
+    env.send(&[ix], &bidder, &[]).expect("the bidder drops a note");
+    assert_eq!(env.balance(&bidder.pubkey()) + TX_FEE - before, rent);
+    assert!(!env.exists(&note_address(&other)));
+
+    // Once the bid is closed (here by the safety net), anyone can close the
+    // note, and its rent still goes to the bidder.
+    env.set_time(a.end_time + EMERGENCY_DELAY_SECS);
+    let ix = env.bid_ix("emergency_refund", &a, bid, bidder.pubkey());
+    env.send(&[ix], &stranger, &[]).expect("safety-net refund");
+    assert!(!env.exists(&bid));
+    let before = env.balance(&bidder.pubkey());
+    let ix = env.close_note_ix(&stranger.pubkey(), bidder.pubkey(), bid);
+    env.send(&[ix], &stranger, &[]).expect("anyone closes a closed bid's note");
+    assert_eq!(env.balance(&bidder.pubkey()) - before, rent);
+    assert!(!env.exists(&note));
+    // The rent can only go to the bidder.
+    let key = honest_key(3);
+    env.set_time(a.end_time - 1);
+    let (place, third) = env.place_bid_ix(&a, &bidder.pubkey(), 3, key, edwards_y(&key), 10_000, None);
+    let ixs = [place, env.save_note_ix(&bidder.pubkey(), third, [3; 32])];
+    env.send(&ixs, &bidder, &[]).expect("third bid with its note");
+    let ix = env.close_note_ix(&bidder.pubkey(), stranger.pubkey(), third);
+    env.expect_error(&[ix], &bidder, &[], "Unauthorized");
 }
 
 #[test]
