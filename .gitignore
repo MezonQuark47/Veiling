@@ -1,33 +1,45 @@
-.anchor
-.DS_Store
-target
-**/*.rs.bk
-node_modules
-test-ledger
-.yarn
-.surfpool
-encrypted-ixs/arcis_temp_target
-build
-encrypted-ixs/src/main.rs
-artifacts/
+# Dependencies
+node_modules/
+.yarn/
 
-# Never commit secrets or keypairs
+# Build output (program, circuits, web app in app/dist)
+target/
+build/
+artifacts/
+dist/
+*.tsbuildinfo
+.anchor/
+test-ledger/
+.surfpool/
+encrypted-ixs/arcis_temp_target/
+encrypted-ixs/src/main.rs
+**/*.rs.bk
+
+# Secrets and keypairs: never commit these
 .env
 .env.*
 *keypair*.json
 id.json
 devnet-test.json
-circuits-upload/
 
-# Local logs (deploy output can include one-time buffer recovery phrases)
+# Logs (deploy output can include one-time recovery phrases)
 *.log
-.circuit-backup/
 
-# Copies of compiled circuits for manual upload
+# Local backups and copies
+.circuit-backup/
+.deploy-backup/
 circuits-for-upload/
+circuits-upload/
 _to_delete/
+*.bak
+*.orig
 
 # Third-party program binaries dumped for tests
 tests/svm/fixtures/
-# Local copies of a previous deployment
-.deploy-backup/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
