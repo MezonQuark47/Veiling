@@ -1093,6 +1093,10 @@ p {
   white-space: nowrap;
 }
 
+.status--upcoming {
+  color: var(--ink);
+  font-weight: 600;
+}
 .status--bidding {
   color: var(--signal);
 }
@@ -1411,6 +1415,10 @@ p {
 
 .field input[aria-invalid="true"] {
   border-color: var(--error);
+}
+
+.field .field__datetime {
+  max-width: 280px;
 }
 
 .field input[readonly] {

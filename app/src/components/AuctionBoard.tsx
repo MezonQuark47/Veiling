@@ -148,7 +148,15 @@ export function AuctionBoard({
   return (
     <section className="board" aria-label="Auction status">
       <div className={`board__headline${cleared ? " board__headline--cleared" : ""}`}>
-        {phase === "bidding" ? (
+        {phase === "upcoming" ? (
+          <>
+            <p className="board__label">Bidding opens in</p>
+            <p className="board__value">{formatDuration(auction.startTime - now)}</p>
+            <p className="board__sub">
+              {formatDateTime(auction.startTime)}, then runs until {formatDateTime(auction.endTime)}.
+            </p>
+          </>
+        ) : phase === "bidding" ? (
           <>
             <p className="board__label">Bidding closes in</p>
             <p className="board__value">{formatDuration(auction.endTime - now)}</p>

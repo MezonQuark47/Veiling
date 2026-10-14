@@ -135,6 +135,11 @@ export function Docs({ section }: { section: string }) {
 
           <Section id="bidding" title="Bidding">
             <p>
+              A seller can open bidding right away or schedule it up to 30 days ahead. A scheduled auction is listed
+              as upcoming, with its terms public and its tokens already held by the program; bids are taken only from
+              its start, for its full bidding time. Until the first bid, the seller can still cancel it.
+            </p>
+            <p>
               Set the most you would really pay. Every winner pays the clearing price, which is never above their
               own, so bidding your true limit is the simple strategy.
             </p>

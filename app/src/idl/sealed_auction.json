@@ -4490,6 +4490,16 @@
       "code": 6061,
       "name": "RevealClosed",
       "msg": "The time to reveal this collection is over"
+    },
+    {
+      "code": 6062,
+      "name": "InvalidStartTime",
+      "msg": "Bidding can start at most 30 days ahead"
+    },
+    {
+      "code": 6063,
+      "name": "BiddingNotStarted",
+      "msg": "Bidding has not started yet"
     }
   ],
   "types": [
@@ -4956,6 +4966,10 @@
           {
             "name": "max_per_bid",
             "type": "u16"
+          },
+          {
+            "name": "start_time",
+            "type": "i64"
           },
           {
             "name": "end_time",
@@ -5785,8 +5799,7 @@
     {
       "name": "CollectionSaleTerms",
       "docs": [
-        "What a collection auction sells, its minimum price and how long bidding",
-        "runs."
+        "What a collection auction sells, its minimum price and when bidding runs."
       ],
       "type": {
         "kind": "struct",
@@ -5815,6 +5828,13 @@
           },
           {
             "name": "duration_secs",
+            "type": "i64"
+          },
+          {
+            "name": "start_time",
+            "docs": [
+              "When bidding opens (unix seconds); 0 or a past time for right away."
+            ],
             "type": "i64"
           }
         ]
@@ -6915,7 +6935,7 @@
     {
       "name": "TokenSaleTerms",
       "docs": [
-        "What a token auction sells, its minimum price and how long bidding runs."
+        "What a token auction sells, its minimum price and when bidding runs."
       ],
       "type": {
         "kind": "struct",
@@ -6951,6 +6971,13 @@
           },
           {
             "name": "duration_secs",
+            "type": "i64"
+          },
+          {
+            "name": "start_time",
+            "docs": [
+              "When bidding opens (unix seconds); 0 or a past time for right away."
+            ],
             "type": "i64"
           }
         ]

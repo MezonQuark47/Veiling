@@ -73,7 +73,7 @@ import {
   findEviction,
 } from "../lib/actions";
 import { forgetClosedBids, forgetNote, readNote, saveNote } from "../lib/notes";
-import { formatCount, formatDateTime, formatSol, parseSol, plural } from "../lib/format";
+import { formatCount, formatDateTime, formatDuration, formatSol, parseSol, plural } from "../lib/format";
 import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/price";
 import { errorMessage, sendTransaction, waitUntil, type WalletSigner } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
@@ -702,13 +702,15 @@ function Progress({
   return (
     <section className="panel" aria-labelledby="progress-title">
       <h2 id="progress-title" className="panel__title">
-        {phase === "bidding" ? "After bidding closes" : "Settlement"}
+        {phase === "bidding" || phase === "upcoming" ? "After bidding closes" : "Settlement"}
       </h2>
 
       {auction.status === "cancelled" ? (
         <p>The seller cancelled this auction before any bids.</p>
       ) : auction.bidCount === 0 && auction.status === "open" ? (
-        <p>{phase === "bidding" ? "No bids yet." : "Bidding closed without bids."}</p>
+        <p>
+          {phase === "upcoming" || phase === "bidding" ? "No bids yet." : "Bidding closed without bids."}
+        </p>
       ) : (
         <ol className="progress">
           <Step state={checkState} title="Check the sealed bids">
@@ -874,11 +876,12 @@ function Progress({
         </ol>
       )}
 
-      {isSeller && auction.status === "open" && auction.bidCount === 0 && (phase === "bidding" || phase === "no-bids") ? (
+      {isSeller && auction.status === "open" && auction.bidCount === 0 && (phase === "upcoming" || phase === "bidding" || phase === "no-bids") ? (
         <div className="panel__footer">
           <p className="muted">
-            Nobody has bid yet, so you can withdraw. {collection ? "The empty collection" : "Your tokens"} and every
-            rent come back to you; the listing fee does not.
+            Nobody has bid yet, so you can withdraw{phase === "upcoming" ? ", even before bidding opens" : ""}.{" "}
+            {collection ? "The empty collection" : "Your tokens"} and every rent come back to you; the listing fee
+            does not.
           </p>
           <Button onClick={cancel} busy={action.busy === "cancel"}>
             Cancel auction
@@ -1399,6 +1402,10 @@ export function AuctionPage({ address }: { address: string }) {
               </div>
             ) : null}
             <div>
+              <dt>Bidding {now < auction.startTime ? "opens" : "opened"}</dt>
+              <dd>{formatDateTime(auction.startTime)}</dd>
+            </div>
+            <div>
               <dt>Bidding {now < auction.endTime ? "ends" : "ended"}</dt>
               <dd>{formatDateTime(auction.endTime)}</dd>
             </div>
@@ -1467,7 +1474,17 @@ export function AuctionPage({ address }: { address: string }) {
             </div>
         </dl>
         <div className="auction-grid__side">
-          {bidding ? (
+          {phase === "upcoming" ? (
+            <section className="panel" aria-labelledby="opens-title">
+              <h2 id="opens-title" className="panel__title">
+                Place a sealed bid
+              </h2>
+              <p>
+                Bidding opens {formatDateTime(auction.startTime)}, in {formatDuration(auction.startTime - now)}. Come
+                back then to place yours.
+              </p>
+            </section>
+          ) : bidding ? (
             collection ? (
               <NftBidComposer auction={auction} asset={asset} onPlaced={loaded.reload} />
             ) : (

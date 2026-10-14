@@ -142,6 +142,8 @@ export interface TokenSaleTerms {
   /** Smallest budget a bid may deposit, in lamports. */
   minDeposit: bigint;
   durationSecs: number;
+  /** When bidding opens (unix seconds); 0 for right away. */
+  startTime: number;
 }
 
 /** A collection sale's terms; see `create_collection_auction`. */
@@ -151,6 +153,8 @@ export interface CollectionSaleTerms {
   minPrice: bigint;
   maxPerBid: number;
   durationSecs: number;
+  /** When bidding opens (unix seconds); 0 for right away. */
+  startTime: number;
 }
 
 /** What a collection auction sells; see `create_collection_auction`. */
@@ -188,6 +192,7 @@ export async function buildCreateAuction(
         minPrice: Number(terms.minPrice),
         minDeposit: bn(terms.minDeposit),
         durationSecs: bn(terms.durationSecs),
+        startTime: bn(terms.startTime),
       },
       acceptedFees(fees)
     )
@@ -227,6 +232,7 @@ export async function buildCreateCollectionAuction(
         minPrice: Number(terms.minPrice),
         maxPerBid: terms.maxPerBid,
         durationSecs: bn(terms.durationSecs),
+        startTime: bn(terms.startTime),
       },
       acceptedFees(fees),
       collection

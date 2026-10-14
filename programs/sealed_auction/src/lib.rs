@@ -20,6 +20,9 @@
 //!    `create_collection_auction` creates the collection, whose NFTs are
 //!    minted only when winners claim them. Both create the auction's bid book
 //!    and charge the platform's listing fee.
+//!    An auction can be scheduled: bidding then opens at its `start_time`,
+//!    up to `MAX_START_DELAY_SECS` ahead, and runs for its duration from
+//!    there. Until the first bid, the seller can still cancel it.
 //! 2. `place_bid` stores an encrypted bid and escrows its deposit (no MPC).
 //!    Once `MAX_BIDS` bids are in, a new bid must out-deposit the smallest
 //!    one by `EVICTION_PREMIUM_PERCENT`; that bid is refunded and replaced.
@@ -189,6 +192,8 @@ const _: () = assert!(MAX_BATCHES * BATCH_SIZE == MAX_BIDS_USIZE);
 const _: () = assert!(MAX_BATCHES <= u8::MAX as usize);
 pub const MIN_DURATION_SECS: i64 = 60;
 pub const MAX_DURATION_SECS: i64 = 14 * 24 * 60 * 60;
+/// How far ahead an auction can schedule the start of bidding.
+pub const MAX_START_DELAY_SECS: i64 = 30 * 24 * 60 * 60;
 /// Once an auction holds `MAX_BIDS` bids, a new bid must deposit at least this
 /// much more (in percent, rounded up) than the smallest deposit, which is then
 /// refunded in full. Filling every slot to crowd others out therefore costs
@@ -422,7 +427,7 @@ pub mod sealed_auction {
         fees: FeeTerms,
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
-        let end_time = terms.check(now)?;
+        let (start_time, end_time) = terms.check(now)?;
         check_mint_is_safe(&ctx.accounts.mint)?;
 
         let listing_fee = charge_listing_fee(
@@ -439,7 +444,7 @@ pub mod sealed_auction {
             ctx.accounts.seller.key(),
             ctx.accounts.mint.key(),
             ctx.accounts.token_program.key(),
-            now,
+            start_time,
             end_time,
             [ctx.bumps.auction, ctx.bumps.book],
             &ctx.accounts.fee_config,
@@ -503,7 +508,7 @@ pub mod sealed_auction {
         collection: CollectionTerms,
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
-        let end_time = terms.check(now)?;
+        let (start_time, end_time) = terms.check(now)?;
         collection.check()?;
 
         let listing_fee = charge_listing_fee(
@@ -576,7 +581,7 @@ pub mod sealed_auction {
             seller_key,
             collection_info.key(),
             MPL_CORE_ID,
-            now,
+            start_time,
             end_time,
             [ctx.bumps.auction, ctx.bumps.book],
             &ctx.accounts.fee_config,
@@ -829,6 +834,7 @@ pub mod sealed_auction {
             auction.status == AuctionStatus::Open,
             AuctionError::WrongStatus
         );
+        require!(now >= auction.start_time, AuctionError::BiddingNotStarted);
         require!(now < auction.end_time, AuctionError::BiddingClosed);
         // Anything less cannot win, so it is refused before it takes a slot.
         require!(deposit >= auction.min_deposit, AuctionError::DepositTooSmall);
@@ -2529,19 +2535,26 @@ fn settle_payment<'info>(
 // Helpers: opening auctions and fees
 // ---------------------------------------------------------------------------
 
-/// Checks a duration and returns when bidding ends.
-fn end_time_after(duration_secs: i64, now: i64) -> Result<i64> {
+/// Checks a requested start and a duration, and returns when bidding starts
+/// and ends. A start of 0, or any time not after `now`, means right away.
+fn bidding_window(start_time: i64, duration_secs: i64, now: i64) -> Result<(i64, i64)> {
     require!(
         (MIN_DURATION_SECS..=MAX_DURATION_SECS).contains(&duration_secs),
         AuctionError::InvalidDuration
     );
-    Ok(now
+    let start = start_time.max(now);
+    require!(
+        start - now <= MAX_START_DELAY_SECS,
+        AuctionError::InvalidStartTime
+    );
+    let end = start
         .checked_add(duration_secs)
-        .ok_or(AuctionError::MathOverflow)?)
+        .ok_or(AuctionError::MathOverflow)?;
+    Ok((start, end))
 }
 
 impl TokenSaleTerms {
-    fn check(&self, now: i64) -> Result<i64> {
+    fn check(&self, now: i64) -> Result<(i64, i64)> {
         require!(self.supply > 0, AuctionError::InvalidSupply);
         let mut unit = 1u64;
         while unit < self.price_unit && unit < MAX_PRICE_UNIT {
@@ -2550,12 +2563,12 @@ impl TokenSaleTerms {
         require!(unit == self.price_unit, AuctionError::InvalidPriceUnit);
         require!(self.min_price > 0, AuctionError::InvalidPrice);
         require!(self.min_deposit > 0, AuctionError::InvalidMinDeposit);
-        end_time_after(self.duration_secs, now)
+        bidding_window(self.start_time, self.duration_secs, now)
     }
 }
 
 impl CollectionSaleTerms {
-    fn check(&self, now: i64) -> Result<i64> {
+    fn check(&self, now: i64) -> Result<(i64, i64)> {
         require!(
             self.supply > 0 && self.supply <= MAX_COLLECTION_SIZE,
             AuctionError::InvalidSupply
@@ -2565,7 +2578,7 @@ impl CollectionSaleTerms {
             self.max_per_bid >= 1 && self.max_per_bid as u64 <= self.supply,
             AuctionError::InvalidMaxPerBid
         );
-        end_time_after(self.duration_secs, now)
+        bidding_window(self.start_time, self.duration_secs, now)
     }
 }
 
@@ -2616,7 +2629,7 @@ fn new_auction(
     seller: Pubkey,
     mint: Pubkey,
     token_program: Pubkey,
-    now: i64,
+    start_time: i64,
     end_time: i64,
     [bump, book_bump]: [u8; 2],
     fees: &FeeConfig,
@@ -2633,7 +2646,7 @@ fn new_auction(
         min_price: 0,
         min_deposit: 0,
         max_per_bid: 0,
-        start_time: now,
+        start_time,
         end_time,
         status: AuctionStatus::Open,
         featured: false,
@@ -2685,6 +2698,7 @@ fn emit_auction_created(auction: &Account<Auction>, listing_fee: u64) {
         min_price: auction.min_price,
         min_deposit: auction.min_deposit,
         max_per_bid: auction.max_per_bid,
+        start_time: auction.start_time,
         end_time: auction.end_time,
         listing_fee,
         sale_fee_bps: auction.sale_fee_bps,
@@ -3278,7 +3292,8 @@ pub enum AuctionKind {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
 pub enum AuctionStatus {
-    /// Accepting bids until `end_time`; afterwards bids are checked.
+    /// Accepting bids from `start_time` until `end_time`; afterwards bids are
+    /// checked.
     Open,
     /// The clearing price is known; bids are being settled.
     Settling,
@@ -3460,7 +3475,7 @@ impl ExpectedTerms {
     }
 }
 
-/// What a token auction sells, its minimum price and how long bidding runs.
+/// What a token auction sells, its minimum price and when bidding runs.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TokenSaleTerms {
     /// Base units for sale, escrowed when the auction opens.
@@ -3473,10 +3488,11 @@ pub struct TokenSaleTerms {
     /// Smallest budget a bid may deposit, in lamports.
     pub min_deposit: u64,
     pub duration_secs: i64,
+    /// When bidding opens (unix seconds); 0 or a past time for right away.
+    pub start_time: i64,
 }
 
-/// What a collection auction sells, its minimum price and how long bidding
-/// runs.
+/// What a collection auction sells, its minimum price and when bidding runs.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CollectionSaleTerms {
     /// NFTs for sale.
@@ -3487,6 +3503,8 @@ pub struct CollectionSaleTerms {
     /// Most NFTs one bid may ask for.
     pub max_per_bid: u16,
     pub duration_secs: i64,
+    /// When bidding opens (unix seconds); 0 or a past time for right away.
+    pub start_time: i64,
 }
 
 /// The most a seller accepts to pay in platform fees. Opening an auction
@@ -4519,6 +4537,7 @@ pub struct AuctionCreated {
     pub min_price: u32,
     pub min_deposit: u64,
     pub max_per_bid: u16,
+    pub start_time: i64,
     pub end_time: i64,
     /// Listing fee paid.
     pub listing_fee: u64,
@@ -4809,6 +4828,10 @@ pub enum AuctionError {
     AlreadyRevealed,
     #[msg("The time to reveal this collection is over")]
     RevealClosed,
+    #[msg("Bidding can start at most 30 days ahead")]
+    InvalidStartTime,
+    #[msg("Bidding has not started yet")]
+    BiddingNotStarted,
 }
 
 // ---------------------------------------------------------------------------
@@ -5345,8 +5368,9 @@ mod tests {
             min_price: 25_000,
             min_deposit: 10_000_000,
             duration_secs: 600,
+            start_time: 0,
         };
-        assert_eq!(good.check(100).unwrap(), 700);
+        assert_eq!(good.check(100).unwrap(), (100, 700));
         for unit in [1, 10, MAX_PRICE_UNIT] {
             assert!(TokenSaleTerms { price_unit: unit, ..good }.check(0).is_ok());
         }
@@ -5373,6 +5397,7 @@ mod tests {
             min_price: 1,
             max_per_bid: 5,
             duration_secs: 600,
+            start_time: 0,
         };
         assert!(good.check(0).is_ok());
         assert!(CollectionSaleTerms { max_per_bid: 100, ..good }.check(0).is_ok());
@@ -5387,6 +5412,32 @@ mod tests {
         for terms in bad.iter() {
             assert!(terms.check(0).is_err(), "{terms:?}");
         }
+    }
+
+    #[test]
+    fn bidding_can_be_scheduled_up_to_the_limit() {
+        let now = 1_000_000;
+        // Right away: 0, a past time or now itself.
+        for start in [0, now - 50, now] {
+            assert_eq!(bidding_window(start, 600, now).unwrap(), (now, now + 600));
+        }
+        assert_eq!(bidding_window(now + 3_600, 600, now).unwrap(), (now + 3_600, now + 4_200));
+        let latest = now + MAX_START_DELAY_SECS;
+        assert_eq!(
+            bidding_window(latest, MAX_DURATION_SECS, now).unwrap(),
+            (latest, latest + MAX_DURATION_SECS)
+        );
+        assert!(bidding_window(latest + 1, 600, now).is_err());
+        assert!(bidding_window(i64::MAX, 600, now).is_err());
+        assert!(bidding_window(now + 60, MIN_DURATION_SECS - 1, now).is_err());
+        let scheduled = CollectionSaleTerms {
+            supply: 10,
+            min_price: 1,
+            max_per_bid: 1,
+            duration_secs: 600,
+            start_time: now + 90,
+        };
+        assert_eq!(scheduled.check(now).unwrap(), (now + 90, now + 690));
     }
 
     #[test]

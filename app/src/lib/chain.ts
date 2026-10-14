@@ -589,6 +589,7 @@ export function formatPercent(bps: number): string {
 }
 
 export type Phase =
+  | "upcoming"
   | "bidding"
   | "no-bids"
   | "checking"
@@ -603,6 +604,7 @@ export function phaseOf(a: Auction, now: number): Phase {
   if (a.status === "cancelled") return "cancelled";
   if (a.status === "finished") return "finished";
   if (a.status === "settling") return a.resolvedCount === a.bidCount ? "settled" : "settling";
+  if (now < a.startTime) return "upcoming";
   if (now < a.endTime) return "bidding";
   if (a.bidCount === 0) return "no-bids";
   if (now >= emergencyOpensAt(a)) return "stalled";

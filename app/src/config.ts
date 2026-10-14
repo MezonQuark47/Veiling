@@ -32,6 +32,8 @@ export const EMERGENCY_DELAY_SECS = 3 * 24 * 60 * 60;
 export const BID_NONCE_DOMAIN = "sealed-auction/bid-nonce/v1";
 export const MIN_DURATION_SECS = 60;
 export const MAX_DURATION_SECS = 14 * 24 * 60 * 60;
+/** How far ahead an auction can schedule the start of bidding. */
+export const MAX_START_DELAY_SECS = 30 * 24 * 60 * 60;
 
 /** Prices are whole "price ticks", a u32. */
 export const MAX_PRICE_TICKS = 4_294_967_295n;

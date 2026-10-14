@@ -592,6 +592,7 @@ describe("sealed_auction", () => {
     minPrice,
     minDeposit: new BN(minDeposit),
     durationSecs: new BN(DURATION_SECS),
+    startTime: new BN(0),
   });
 
   async function openAuction(seller: Keypair, tokens: number, minPrice = 1_000, minDeposit = 10_000) {
@@ -967,6 +968,7 @@ describe("sealed_auction", () => {
             minPrice: 1_000,
             minDeposit: new BN(1_000),
             durationSecs: new BN(DURATION_SECS),
+            startTime: new BN(0),
           },
           acceptedFees()
         )
@@ -1256,7 +1258,7 @@ describe("sealed_auction", () => {
     await program.methods
       .createCollectionAuction(
         seed,
-        { supply: new BN(4), minPrice: 500, maxPerBid: 2, durationSecs: new BN(DURATION_SECS) },
+        { supply: new BN(4), minPrice: 500, maxPerBid: 2, durationSecs: new BN(DURATION_SECS), startTime: new BN(0) },
         acceptedFees(),
         {
           name: "Veiling Test Cats",
@@ -1454,7 +1456,7 @@ describe("sealed_auction", () => {
     await program.methods
       .createCollectionAuction(
         seed,
-        { supply: new BN(5), minPrice: 500, maxPerBid: 3, durationSecs: new BN(DURATION_SECS) },
+        { supply: new BN(5), minPrice: 500, maxPerBid: 3, durationSecs: new BN(DURATION_SECS), startTime: new BN(0) },
         acceptedFees(),
         {
           name: "Veiling Test Tiles",

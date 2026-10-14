@@ -8,20 +8,38 @@ import { formatCount, formatSol } from "../lib/format";
 import { sendTransaction } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
 
-type Filter = "live" | "ended" | "all";
+type Filter = "live" | "upcoming" | "ended" | "all";
 
+const FILTERS: [Filter, string][] = [
+  ["live", "Live"],
+  ["upcoming", "Upcoming"],
+  ["ended", "Ended"],
+  ["all", "All"],
+];
+
+/** 0: bidding, 1: settling, 2: starts later, 3: over. */
 function rank(a: Auction, now: number): number {
   const phase = phaseOf(a, now);
   if (phase === "bidding") return 0;
   if (phase === "checking" || phase === "ready-to-clear" || phase === "settling") return 1;
-  return 2;
+  if (phase === "upcoming") return 2;
+  return 3;
+}
+
+function matches(filter: Filter, a: Auction, now: number): boolean {
+  const r = rank(a, now);
+  if (filter === "live") return r < 2;
+  if (filter === "upcoming") return r === 2;
+  if (filter === "ended") return r === 3;
+  return true;
 }
 
 /** The featured auction, leading the front page. */
 function FeaturedCard({ auction, now }: { auction: Auction; now: number }) {
   const asset = useAssetInfo(auction);
   const art = useMetadataImage(asset.collection?.uri ?? null);
-  const bidding = phaseOf(auction, now) === "bidding";
+  const phase = phaseOf(auction, now);
+  const bidding = phase === "bidding";
   return (
     <a className="feature" href={`#/auction/${auction.address.toBase58()}`}>
       <span className="feature__top">
@@ -51,7 +69,9 @@ function FeaturedCard({ auction, now }: { auction: Auction; now: number }) {
           <dd>{formatSol(auction.totalDeposited, 2)} SOL</dd>
         </div>
       </dl>
-      <span className="btn btn--primary feature__cta">{bidding ? "Place a sealed bid" : "View the auction"}</span>
+      <span className="btn btn--primary feature__cta">
+        {bidding ? "Place a sealed bid" : phase === "upcoming" ? "See what is coming" : "View the auction"}
+      </span>
     </a>
   );
 }
@@ -106,14 +126,14 @@ export function Home() {
     return list.sort((x, y) => {
       if (x.featured !== y.featured) return x.featured ? -1 : 1;
       const r = rank(x, now) - rank(y, now);
-      return r !== 0 ? r : y.startTime - x.startTime;
+      if (r !== 0) return r;
+      // Upcoming sales: the next to open first.
+      return rank(x, now) === 2 ? x.startTime - y.startTime : y.startTime - x.startTime;
     });
   }, [auctions.data, isAdmin, now]);
 
-  const featured = visible.find((a) => a.featured && !a.hidden && rank(a, now) < 2) ?? visible.find((a) => a.featured);
-  const filtered = visible.filter((a) =>
-    filter === "all" ? true : filter === "live" ? rank(a, now) < 2 : rank(a, now) === 2
-  );
+  const featured = visible.find((a) => a.featured && !a.hidden && rank(a, now) < 3) ?? visible.find((a) => a.featured);
+  const filtered = visible.filter((a) => matches(filter, a, now));
 
   return (
     <main className="page">
@@ -154,14 +174,14 @@ export function Home() {
             Auctions
           </h2>
           <div className="segmented" role="group" aria-label="Filter auctions">
-            {(["live", "ended", "all"] as Filter[]).map((f) => (
+            {FILTERS.map(([f, label]) => (
               <button
                 key={f}
                 className={`segmented__item${filter === f ? " segmented__item--on" : ""}`}
                 aria-pressed={filter === f}
                 onClick={() => setFilter(f)}
               >
-                {f === "live" ? "Live" : f === "ended" ? "Ended" : "All"}
+                {label}
               </button>
             ))}
           </div>
@@ -170,7 +190,13 @@ export function Home() {
         {auctions.loading && !auctions.data ? <p className="muted">Loading auctions…</p> : null}
         {auctions.data && filtered.length === 0 ? (
           <div className="empty">
-            <p>{filter === "live" ? "No live auctions right now." : "Nothing here yet."}</p>
+            <p>
+              {filter === "live"
+                ? "No live auctions right now."
+                : filter === "upcoming"
+                ? "No scheduled auctions right now."
+                : "Nothing here yet."}
+            </p>
             <a className="btn btn--secondary" href="#/launch">
               Launch the first one
             </a>

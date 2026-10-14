@@ -45,6 +45,7 @@ const MAX_BIDS: u64 = 256;
 const SOL: u64 = 1_000_000_000;
 const EMERGENCY_DELAY_SECS: i64 = 3 * 24 * 60 * 60;
 const MAX_DURATION_SECS: i64 = 14 * 24 * 60 * 60;
+const MAX_START_DELAY_SECS: i64 = 30 * 24 * 60 * 60;
 const REVEAL_DELAY_SECS: i64 = 7 * 24 * 60 * 60;
 /// An item list's header, then entries of a u32 end, a length byte and a
 /// 24-byte name.
@@ -75,6 +76,7 @@ const TOKEN_TERMS: TokenTerms = TokenTerms {
     min_price: 2_500,
     min_deposit: 2_500,
     duration_secs: DURATION_SECS,
+    start_time: 0,
 };
 
 fn repo_path(relative: &str) -> PathBuf {
@@ -132,11 +134,11 @@ impl Idl {
         // The argument encoders below follow these layouts.
         idl.assert_fields(
             "TokenSaleTerms",
-            &[("supply", "u64"), ("price_unit", "u64"), ("min_price", "u32"), ("min_deposit", "u64"), ("duration_secs", "i64")],
+            &[("supply", "u64"), ("price_unit", "u64"), ("min_price", "u32"), ("min_deposit", "u64"), ("duration_secs", "i64"), ("start_time", "i64")],
         );
         idl.assert_fields(
             "CollectionSaleTerms",
-            &[("supply", "u64"), ("min_price", "u32"), ("max_per_bid", "u16"), ("duration_secs", "i64")],
+            &[("supply", "u64"), ("min_price", "u32"), ("max_per_bid", "u16"), ("duration_secs", "i64"), ("start_time", "i64")],
         );
         idl.assert_fields(
             "ExpectedTerms",
@@ -282,10 +284,15 @@ impl Args {
             .u32(t.min_price)
             .u64(t.min_deposit)
             .i64(t.duration_secs)
+            .i64(t.start_time)
     }
     /// `CollectionSaleTerms`.
     fn nft_terms(self, t: &NftTerms) -> Self {
-        self.u64(t.supply).u32(t.min_price).u16(t.max_per_bid).i64(t.duration_secs)
+        self.u64(t.supply)
+            .u32(t.min_price)
+            .u16(t.max_per_bid)
+            .i64(t.duration_secs)
+            .i64(t.start_time)
     }
     /// `FeeTerms`: the most the seller accepts to pay.
     fn fees(self, fees: (u64, u16)) -> Self {
@@ -415,6 +422,8 @@ struct TokenTerms {
     min_price: u32,
     min_deposit: u64,
     duration_secs: i64,
+    /// When bidding opens; 0 for right away.
+    start_time: i64,
 }
 
 /// Terms of a test collection auction, as `create_collection_auction` takes
@@ -425,6 +434,8 @@ struct NftTerms {
     min_price: u32,
     max_per_bid: u16,
     duration_secs: i64,
+    /// When bidding opens; 0 for right away.
+    start_time: i64,
 }
 
 /// An opened auction and its terms as a bidder sees them.
@@ -905,7 +916,7 @@ impl Env {
             min_price: terms.min_price,
             min_deposit: terms.min_deposit,
             max_per_bid: 0,
-            end_time: self.now() + terms.duration_secs,
+            end_time: terms.start_time.max(self.now()) + terms.duration_secs,
         };
         (ix, info)
     }
@@ -980,7 +991,7 @@ impl Env {
             // The cheapest valid bid: one NFT at the minimum price.
             min_deposit: terms.min_price as u64 * NFT_PRICE_SCALE,
             max_per_bid: terms.max_per_bid,
-            end_time: self.now() + terms.duration_secs,
+            end_time: terms.start_time.max(self.now()) + terms.duration_secs,
         };
         (ix, info)
     }
@@ -1298,6 +1309,7 @@ fn opening_checks_the_sale_terms() {
         (TokenTerms { min_deposit: 0, ..TOKEN_TERMS }, "InvalidMinDeposit"),
         (TokenTerms { duration_secs: 59, ..TOKEN_TERMS }, "InvalidDuration"),
         (TokenTerms { duration_secs: MAX_DURATION_SECS + 1, ..TOKEN_TERMS }, "InvalidDuration"),
+        (TokenTerms { start_time: env.now() + MAX_START_DELAY_SECS + 1, ..TOKEN_TERMS }, "InvalidStartTime"),
     ];
     for (terms, error) in refused {
         let (ix, _) = env.create_auction_ix(&seller.pubkey(), 1, mint, terms, (LISTING_FEE, SALE_FEE_BPS));
@@ -1320,6 +1332,7 @@ fn opening_checks_the_sale_terms() {
         min_price: 900,
         max_per_bid: 5,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     let refused = [
         (NftTerms { supply: 0, ..nft }, "InvalidSupply"),
@@ -1328,6 +1341,7 @@ fn opening_checks_the_sale_terms() {
         (NftTerms { max_per_bid: 0, ..nft }, "InvalidMaxPerBid"),
         (NftTerms { max_per_bid: 7, ..nft }, "InvalidMaxPerBid"),
         (NftTerms { duration_secs: MAX_DURATION_SECS + 1, ..nft }, "InvalidDuration"),
+        (NftTerms { start_time: env.now() + MAX_START_DELAY_SECS + 1, ..nft }, "InvalidStartTime"),
     ];
     for (terms, error) in refused {
         let (ix, _) = env.create_collection_ix(&seller.pubkey(), 2, terms, &CATS);
@@ -1820,6 +1834,7 @@ fn collection_auctions_mint_on_claim_and_hand_the_collection_to_the_seller() {
         min_price: 900,
         max_per_bid: 5,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
 
     // Someone sends lamports to the collection's address first; opening
@@ -1964,6 +1979,7 @@ fn bids_at_the_clearing_price_share_every_nft() {
         min_price: 1_000,
         max_per_bid: 5,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     let a = env.create_collection(&seller, 9, terms);
     let bidders: Vec<Keypair> = (0..4).map(|_| env.funded(1)).collect();
@@ -2063,6 +2079,7 @@ fn bids_at_the_clearing_price_are_refunded_if_one_never_reveals() {
         min_price: 1_000,
         max_per_bid: 5,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     let a = env.create_collection(&seller, 9, terms);
     let bidders: Vec<Keypair> = (0..2).map(|_| env.funded(1)).collect();
@@ -2104,6 +2121,7 @@ fn a_cancelled_collection_auction_returns_the_empty_collection() {
         min_price: 1_000,
         max_per_bid: 10,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     let plain = CollectionTerms {
         uri_per_item: false,
@@ -2137,6 +2155,64 @@ fn a_cancelled_collection_auction_returns_the_empty_collection() {
 }
 
 #[test]
+fn scheduled_auctions_take_bids_only_from_their_start() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let opened_at = env.now();
+    let start = opened_at + 3_600;
+
+    // A token auction scheduled an hour ahead runs its full duration from then.
+    let terms = TokenTerms { start_time: start, ..TOKEN_TERMS };
+    let a = env.create_auction(&seller, 4, mint, terms);
+    env.assert_terms(&a);
+    assert_eq!(a.end_time, start + DURATION_SECS);
+    assert_eq!(env.read(&a.auction, "Auction", "start_time", 8), start.to_le_bytes());
+    assert_eq!(env.token_amount(&a.vault), 100, "the tokens are escrowed right away");
+
+    let bidder = env.funded(1);
+    let key = honest_key(7);
+    let (ix, _) = env.place_bid_ix(&a, &bidder.pubkey(), 7, key, edwards_y(&key), 10_000, None);
+    env.expect_error(&[ix], &bidder, &[], "BiddingNotStarted");
+    env.set_time(start - 1);
+    let (ix, _) = env.place_bid_ix(&a, &bidder.pubkey(), 7, key, edwards_y(&key), 10_000, None);
+    env.expect_error(&[ix], &bidder, &[], "BiddingNotStarted");
+    env.set_time(start);
+    let bid = env.bid(&a, &bidder, 7, 10_000);
+    assert_eq!(env.bid_u64(&bid, "deposit"), 10_000);
+    env.set_time(start + DURATION_SECS);
+    let key = honest_key(8);
+    let (ix, _) = env.place_bid_ix(&a, &bidder.pubkey(), 8, key, edwards_y(&key), 10_000, None);
+    env.expect_error(&[ix], &bidder, &[], "BiddingClosed");
+
+    // Before it starts, the seller can still call a scheduled sale off.
+    env.set_time(opened_at);
+    let nft = NftTerms {
+        supply: 3,
+        min_price: 900,
+        max_per_bid: 1,
+        duration_secs: DURATION_SECS,
+        start_time: opened_at + MAX_START_DELAY_SECS,
+    };
+    let c = env.create_collection(&seller, 5, nft);
+    env.assert_terms(&c);
+    assert_eq!(c.end_time, opened_at + MAX_START_DELAY_SECS + DURATION_SECS);
+    let ixs = [
+        env.collection_seller_ix("cancel_collection_auction", &c),
+        env.collection_seller_ix("close_collection_auction", &c),
+    ];
+    env.send(&ixs, &seller, &[]).expect("cancel and close before the start");
+    assert!(!env.exists(&c.auction));
+
+    // A start in the past means right away.
+    let terms = TokenTerms { start_time: opened_at - 500, ..TOKEN_TERMS };
+    let late = env.create_auction(&seller, 6, mint, terms);
+    assert_eq!(late.end_time, opened_at + DURATION_SECS);
+    env.assert_terms(&late);
+    env.bid(&late, &bidder, 9, 10_000);
+}
+
+#[test]
 fn a_token_auction_can_be_cancelled_and_closed_in_one_transaction() {
     let mut env = Env::new();
     let seller = env.funded(10);
@@ -2161,6 +2237,7 @@ fn collections_named_per_item_mint_every_edition_under_its_item_name() {
         min_price: 1_000,
         max_per_bid: 5,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     let tiles = CollectionTerms {
         name: "Veiling Tiles",
@@ -2317,6 +2394,7 @@ fn hidden_collections_open_their_nfts_only_once_revealed() {
         min_price: 1_000,
         max_per_bid: 4,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     // The address of the metadata is fixed when the auction opens; the
     // files need not be there before the reveal.
@@ -2413,6 +2491,7 @@ fn unrevealed_collections_give_winners_their_payments_back() {
         min_price: 1_000,
         max_per_bid: 4,
         duration_secs: DURATION_SECS,
+        start_time: 0,
     };
     let hidden = CollectionTerms {
         item_uri: "https://arweave.net/never-published/",

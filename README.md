@@ -27,6 +27,11 @@ price, and unused deposits are refunded.
    bids tens of thousands of times higher. For a collection a tick is 1,000
    lamports per NFT. Opening also creates the auction's bid book; its rent
    comes back when the auction is closed.
+
+   Bidding runs for 1 minute to 14 days. It opens right away, or at a
+   `start_time` the seller schedules up to 30 days ahead (a time already past
+   means right away); the auction then runs its full duration from that start.
+   Until the first bid, the seller can cancel, scheduled or not.
 2. **Bidders place sealed bids.** A bid is an encrypted `(price, quantity)`
    pair plus a public SOL deposit, and commits to the auction terms the
    bidder saw; it is refused if the auction has any other terms.
@@ -455,8 +460,7 @@ these services.
 - On devnet, paid storage goes to Turbo's test service, which deletes files
   after about three days, so a hidden drop stored there must be revealed
   within three days of launching.
-- No scheduled start, allowlists or mint stages: bidding opens when the
-  auction is created, for anyone.
+- No allowlists or mint stages: once bidding opens, anyone can bid.
 - A bidder who has turned on required memos for their Token-2022 account must
   turn it off before the tokens they won can be delivered.
 - `@solana/web3.js` v1, required by Arcium's client, carries npm advisories that

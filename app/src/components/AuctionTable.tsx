@@ -6,6 +6,8 @@ import { type AssetInfo, goodsAmount, useAssetInfo } from "./ui";
 export function statusText(a: Auction, now: number, asset: AssetInfo): string {
   const clearing = formatPrice(a, a.clearingPrice, asset.decimals);
   switch (phaseOf(a, now)) {
+    case "upcoming":
+      return `Starts in ${formatDuration(a.startTime - now)}`;
     case "bidding":
       return `Ends in ${formatDuration(a.endTime - now)}`;
     case "no-bids":

@@ -4496,6 +4496,16 @@ export type SealedAuction = {
       "code": 6061,
       "name": "revealClosed",
       "msg": "The time to reveal this collection is over"
+    },
+    {
+      "code": 6062,
+      "name": "invalidStartTime",
+      "msg": "Bidding can start at most 30 days ahead"
+    },
+    {
+      "code": 6063,
+      "name": "biddingNotStarted",
+      "msg": "Bidding has not started yet"
     }
   ],
   "types": [
@@ -4962,6 +4972,10 @@ export type SealedAuction = {
           {
             "name": "maxPerBid",
             "type": "u16"
+          },
+          {
+            "name": "startTime",
+            "type": "i64"
           },
           {
             "name": "endTime",
@@ -5791,8 +5805,7 @@ export type SealedAuction = {
     {
       "name": "collectionSaleTerms",
       "docs": [
-        "What a collection auction sells, its minimum price and how long bidding",
-        "runs."
+        "What a collection auction sells, its minimum price and when bidding runs."
       ],
       "type": {
         "kind": "struct",
@@ -5821,6 +5834,13 @@ export type SealedAuction = {
           },
           {
             "name": "durationSecs",
+            "type": "i64"
+          },
+          {
+            "name": "startTime",
+            "docs": [
+              "When bidding opens (unix seconds); 0 or a past time for right away."
+            ],
             "type": "i64"
           }
         ]
@@ -6921,7 +6941,7 @@ export type SealedAuction = {
     {
       "name": "tokenSaleTerms",
       "docs": [
-        "What a token auction sells, its minimum price and how long bidding runs."
+        "What a token auction sells, its minimum price and when bidding runs."
       ],
       "type": {
         "kind": "struct",
@@ -6957,6 +6977,13 @@ export type SealedAuction = {
           },
           {
             "name": "durationSecs",
+            "type": "i64"
+          },
+          {
+            "name": "startTime",
+            "docs": [
+              "When bidding opens (unix seconds); 0 or a past time for right away."
+            ],
             "type": "i64"
           }
         ]

@@ -132,6 +132,14 @@ export function mockAuctions(): Auction[] {
       liveBids: 256,
       totalDeposited: 1_900_000_000n,
     }),
+    // Scheduled: bidding opens tomorrow.
+    base(9, {
+      mint: key(203),
+      supply: 2_000_000n * TOKEN,
+      minPrice: 10_000n,
+      startTime: now() + 93_600,
+      endTime: now() + 93_600 + 259_200,
+    }),
     base(3, { endTime: now() - 600, bidCount: 23, checkedCount: 12, liveBids: 23, totalDeposited: 18_000_000_000n }),
     base(4, {
       status: "settling",

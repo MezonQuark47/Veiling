@@ -19,6 +19,7 @@ import {
   NFT_MINT_COST_LAMPORTS,
   NFT_PRICE_SCALE,
   REVEAL_DELAY_SECS,
+  MAX_START_DELAY_SECS,
 } from "../config";
 import { DemandChart } from "../components/DemandChart";
 import { ImagePicker, ImageSetPicker, isSmallImage, useImageUrl } from "../components/ImagePicker";
@@ -38,7 +39,7 @@ import {
   traitsOf,
 } from "../components/LaunchParts";
 import { type StorageOption, StorageChoice } from "../components/StorageChoice";
-import { Button, Notice, useAction, useLoader, useMetadataImage } from "../components/ui";
+import { Button, Notice, useAction, useLoader, useMetadataImage, useNow } from "../components/ui";
 import {
   buildCreateAuction,
   buildCreateCollectionAuction,
@@ -57,7 +58,17 @@ import {
   formatPercent,
   randomU64,
 } from "../lib/chain";
-import { formatCount, formatSol, formatTokens, parseDecimal, parseSol, plural } from "../lib/format";
+import {
+  formatCount,
+  formatDateTime,
+  formatDuration,
+  formatSol,
+  formatTokens,
+  nowSecs,
+  parseDecimal,
+  parseSol,
+  plural,
+} from "../lib/format";
 import { type PreparedImage, formatKb } from "../lib/images";
 import { type ListedItem, itemBatches, numberedName } from "../lib/items";
 import {
@@ -93,6 +104,109 @@ const DURATIONS: { label: string; secs: number }[] = [
   { label: "3 days", secs: 259_200 },
   { label: "7 days", secs: 604_800 },
 ];
+
+/** A scheduled start must be at least this far ahead, so it is still ahead when the auction lands. */
+const MIN_START_LEAD_SECS = 5 * 60;
+/** Room left under the program's limit for the time a launch takes. */
+const START_LIMIT_MARGIN_SECS = 60 * 60;
+
+/** `"YYYY-MM-DDTHH:mm"` in local time, as a `datetime-local` input takes it. */
+function toLocalInput(unixSecs: number): string {
+  const d = new Date(unixSecs * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Unix seconds of a `datetime-local` value, read as local time; null if it is not one. */
+function fromLocalInput(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+/** What is wrong with a scheduled start, if anything. */
+function startProblem(startAt: string | null, now: number): string | null {
+  if (startAt === null) return null;
+  const start = fromLocalInput(startAt);
+  if (start === null) return "Pick the date and time bidding opens.";
+  if (start < now + MIN_START_LEAD_SECS) return "Schedule bidding at least 5 minutes ahead, or let it open right away.";
+  if (start > now + MAX_START_DELAY_SECS - START_LIMIT_MARGIN_SECS) return "Bidding can open at most 30 days ahead.";
+  return null;
+}
+
+/** The next full hour, an hour from now: the first time offered for a scheduled start. */
+const suggestedStart = (now: number) => Math.ceil((now + 3_600) / 3_600) * 3_600;
+
+/** When bidding opens and for how long it runs, with what that means in plain dates. */
+function BiddingWindow({
+  startAt,
+  onStartAt,
+  duration,
+  onDuration,
+}: {
+  startAt: string | null;
+  onStartAt: (value: string | null) => void;
+  duration: number;
+  onDuration: (secs: number) => void;
+}) {
+  const now = useNow(15_000);
+  const start = startAt === null ? null : fromLocalInput(startAt);
+  const problem = startProblem(startAt, now);
+  const durationLabel = DURATIONS.find((d) => d.secs === duration)?.label ?? formatDuration(duration);
+  return (
+    <fieldset className="group">
+      <legend className="group__title">Bidding</legend>
+      <div className="field">
+        <span className="field__label" id="opens-label">
+          Opens
+        </span>
+        <Segmented
+          label="When bidding opens"
+          value={startAt === null ? "now" : "later"}
+          options={[
+            ["now", "Right away"],
+            ["later", "At a set time"],
+          ]}
+          onChange={(v) => onStartAt(v === "now" ? null : toLocalInput(suggestedStart(nowSecs())))}
+        />
+      </div>
+      {startAt !== null ? (
+        <div className="field">
+          <label htmlFor="start-at">Date and time (your local time)</label>
+          <input
+            id="start-at"
+            type="datetime-local"
+            className="field__datetime"
+            value={startAt}
+            min={toLocalInput(now + MIN_START_LEAD_SECS)}
+            max={toLocalInput(now + MAX_START_DELAY_SECS - START_LIMIT_MARGIN_SECS)}
+            onChange={(e) => onStartAt(e.target.value)}
+            aria-invalid={problem ? true : undefined}
+            aria-describedby="window-hint"
+          />
+        </div>
+      ) : null}
+      <div className="field">
+        <span className="field__label">Runs for</span>
+        <Segmented
+          label="How long bidding runs"
+          value={String(duration)}
+          options={DURATIONS.map((d) => [String(d.secs), d.label] as [string, string])}
+          onChange={(v) => onDuration(Number(v))}
+        />
+      </div>
+      <p id="window-hint" className="hint">
+        {startAt === null
+          ? `Bidding opens as soon as the auction is created and runs for ${durationLabel}.`
+          : problem
+          ? problem
+          : `Bidding opens ${formatDateTime(start!)}, in ${formatDuration(start! - now)}, and closes ${formatDateTime(
+              start! + duration
+            )}. The auction is listed as upcoming until then, and you can cancel it until the first bid.`}
+      </p>
+    </fieldset>
+  );
+}
 
 const U64_MAX = (1n << 64n) - 1n;
 /** The smallest default for the smallest bid: 0.001 SOL. */
@@ -251,6 +365,8 @@ export function Launch() {
   const [nftMinPriceInput, setNftMinPrice] = useState("0.1");
   const [minDepositInput, setMinDeposit] = useState<string | null>(null);
   const [duration, setDuration] = useState(DURATIONS[1].secs);
+  /** When bidding opens, as a `datetime-local` value; null for right away. */
+  const [startAt, setStartAt] = useState<string | null>(null);
   const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "token" | "auction">("form");
   const [uploadProgress, setUploadProgress] = useState<[number, number] | null>(null);
   const [txProgress, setTxProgress] = useState<[number, number] | null>(null);
@@ -651,6 +767,11 @@ export function Launch() {
     return seed;
   };
 
+  const startIssue = startProblem(startAt, nowSecs());
+  const problems = startIssue ? [...plan.problems, startIssue] : plan.problems;
+  /** The start to send: 0 for right away. A time that has passed by then also opens right away. */
+  const chosenStart = () => (startAt === null ? 0 : fromLocalInput(startAt) ?? 0);
+
   const launchCollection = async () => {
     if (!signer || !fees.data) throw new Error("Connect a wallet first");
     const seed = await launchSeed(signer.publicKey);
@@ -701,6 +822,7 @@ export function Launch() {
         minPrice: plan.minTicks,
         maxPerBid: Number.parseInt(maxPerBid, 10),
         durationSecs: duration,
+        startTime: chosenStart(),
       },
       {
         name: details.name.trim(),
@@ -724,7 +846,7 @@ export function Launch() {
   const launch = () =>
     action.run("launch", async () => {
       if (!signer) throw new Error("Connect a wallet first");
-      if (plan.problems.length > 0 || !plan.minDeposit) throw new Error(plan.problems[0]);
+      if (problems.length > 0 || !plan.minDeposit) throw new Error(problems[0]);
       if (!fees.data) throw new Error("The platform's fees are not set up yet.");
       let auction: PublicKey;
       if (collection) {
@@ -774,6 +896,7 @@ export function Launch() {
             minPrice: plan.minTicks,
             minDeposit: plan.minDeposit,
             durationSecs: duration,
+            startTime: chosenStart(),
           },
           fees.data
         );
@@ -1235,16 +1358,7 @@ export function Launch() {
             )}
           </fieldset>
 
-          <fieldset className="group">
-            <legend className="group__title">Bidding time</legend>
-            <Segmented
-              label="Bidding time"
-              value={String(duration)}
-              options={DURATIONS.map((d) => [String(d.secs), d.label] as [string, string])}
-              onChange={(v) => setDuration(Number(v))}
-            />
-            <p className="hint">Bidding opens as soon as the auction is created.</p>
-          </fieldset>
+          <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration} />
 
           {collection ? (
             <fieldset className="group">
@@ -1307,9 +1421,9 @@ export function Launch() {
             </p>
           </fieldset>
 
-          {plan.problems.length > 0 && touched ? <Notice tone="info">{plan.problems[0]}</Notice> : null}
+          {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
           <div className="launch__submit">
-            <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || plan.problems.length > 0}>
+            <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
               {!signer
                 ? "Connect a wallet to launch"
                 : kind === "drop"
