@@ -425,6 +425,12 @@ they host. In the browser, the app:
      loses its EXIF and XMP; an animated WebP cannot be kept as an original.
      A PNG keeps only the chunks that shape the still picture. Each changed
      file is decoded again to check it is still the same picture.
+
+   The work runs in Web Workers (`src/lib/imageWorker.ts`, sharing
+   `src/lib/imageCore.ts` with the page): up to four images at a time, one per
+   core, so a large collection is ready sooner and the page stays responsive
+   while it is prepared. Where workers cannot draw (no `OffscreenCanvas`), the
+   page prepares the images itself, one at a time.
 2. Writes the metadata JSON files (`src/lib/uploads.ts`), with Metaplex's
    `image` and `properties.files` fields. For one image per NFT it also writes
    an Arweave path manifest, so NFT `i` reads `{manifest}/{i}.json`.

@@ -1,6 +1,6 @@
-import { useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { formatCount } from "../lib/format";
-import { IMAGE_ACCEPT, type PreparedImage, byFileName, formatKb, formatSize, prepareImage } from "../lib/images";
+import { IMAGE_ACCEPT, type PreparedImage, byFileName, formatKb, formatSize, prepareImage, prepareImages } from "../lib/images";
 
 /** A temporary link to an image's bytes, for previews; released when no longer shown. */
 export function useImageUrl(image: PreparedImage | null): string | null {
@@ -175,28 +175,28 @@ export function ImageSetPicker({
 }) {
   const [progress, setProgress] = useState<[number, number] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Only the latest choice counts if a new one is made while one is being prepared.
+  const run = useRef(0);
   const choose = async (files: File[]) => {
     if (files.length === 0) return;
     const sorted = byFileName(files);
+    const mine = ++run.current;
     setError(null);
-    const prepared: PreparedImage[] = [];
-    const failed: string[] = [];
-    for (let i = 0; i < sorted.length; i++) {
-      setProgress([i, sorted.length]);
-      try {
-        prepared.push(await prepareImage(sorted[i]));
-      } catch (e) {
-        failed.push(message(e));
-      }
-    }
+    const started = performance.now();
+    const { images, failed } = await prepareImages(sorted, (done, total) => {
+      if (run.current === mine) setProgress([done, total]);
+    });
+    if (run.current !== mine) return;
     setProgress(null);
+    if (import.meta.env.DEV) {
+      console.info(`[images] prepared ${images.length} of ${sorted.length} in ${Math.round(performance.now() - started)} ms`);
+    }
     if (failed.length > 0) {
-      setError(
-        failed.length === 1 ? failed[0] : `${formatCount(failed.length)} files could not be used. The first: ${failed[0]}`
-      );
+      const first = failed[0].error;
+      setError(failed.length === 1 ? first : `${formatCount(failed.length)} files could not be used. The first: ${first}`);
       return;
     }
-    onChange(prepared);
+    onChange(images);
   };
   const drop = useDrop(choose);
   const total = value.reduce((sum, image) => sum + image.bytes.length, 0);
@@ -221,7 +221,7 @@ export function ImageSetPicker({
         <span className="picker__body">
           {progress ? (
             <span className="picker__meta">
-              Preparing {formatCount(progress[0] + 1)} of {formatCount(progress[1])}…
+              Preparing images: {formatCount(progress[0])} of {formatCount(progress[1])} ready…
             </span>
           ) : value.length > 0 ? (
             <span className="picker__meta">
