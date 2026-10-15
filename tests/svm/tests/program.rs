@@ -6,12 +6,14 @@
 //! real instructions: sharing NFTs at the clearing price, delivering tokens,
 //! minting a collection's NFTs through Metaplex Core and paying the seller.
 //!
-//! Build the program first (`arcium build`) and put a copy of Metaplex Core
-//! next to these tests:
+//! Build the program first (`arcium build`) and put copies of Metaplex Core
+//! and Meteora DAMM v2 next to these tests:
 //!
 //! ```bash
 //! solana program dump -u devnet CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d \
 //!   tests/svm/fixtures/mpl_core.so
+//! solana program dump -u devnet cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG \
+//!   tests/svm/fixtures/cp_amm.so
 //! cargo test --manifest-path tests/svm/Cargo.toml
 //! ```
 
@@ -40,6 +42,9 @@ const TOKEN_PROGRAM: Address = Address::from_str_const("TokenkegQfeZyiNwAJbNbGKP
 const ATA_PROGRAM: Address = Address::from_str_const("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const SYSTEM_PROGRAM: Address = Address::from_str_const("11111111111111111111111111111111");
 const COMPUTE_BUDGET: Address = Address::from_str_const("ComputeBudget111111111111111111111111111111");
+const CP_AMM: Address = Address::from_str_const("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
+const WSOL: Address = Address::from_str_const("So11111111111111111111111111111111111111112");
+const TOKEN_2022: Address = Address::from_str_const("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
 /// Bids one page of the bid book holds; an auction has up to four pages.
 const PAGE_BIDS: u64 = 256;
@@ -481,6 +486,29 @@ impl Env {
                 core.display()
             )
         });
+        let damm = artifact("CP_AMM_SO", "tests/svm/fixtures/cp_amm.so");
+        svm.add_program_from_file(CP_AMM, &damm).unwrap_or_else(|e| {
+            panic!(
+                "load {}: {e:?}. Dump Meteora DAMM v2 first: solana program dump -u devnet \
+                 cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG tests/svm/fixtures/cp_amm.so",
+                damm.display()
+            )
+        });
+        // The SOL mint, as every cluster has it: 9 decimals, no authority.
+        let mut native_mint = vec![0u8; 82];
+        native_mint[44] = 9;
+        native_mint[45] = 1;
+        svm.set_account(
+            WSOL,
+            Account {
+                lamports: svm.minimum_balance_for_rent_exemption(82),
+                data: native_mint,
+                owner: TOKEN_PROGRAM,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
         let mut env = Env {
             svm,
             idl: Idl::load(),
@@ -557,7 +585,13 @@ impl Env {
                 self.max_compute_units = self.max_compute_units.max(meta.compute_units_consumed);
                 Ok(meta.compute_units_consumed)
             }
-            Err(failed) => Err(failed.err),
+            Err(failed) => {
+                // SVM_LOGS=1 prints the program logs of failed transactions.
+                if std::env::var_os("SVM_LOGS").is_some() {
+                    println!("{}", failed.meta.logs.join("\n"));
+                }
+                Err(failed.err)
+            }
         }
     }
 
@@ -649,6 +683,8 @@ impl Env {
             ("crank_pool", 8),
             ("extra_pages", 1),
             ("page_bumps", 3),
+            ("liquidity", 1),
+            ("liquidity_floor", 8),
         ] {
             if name == field {
                 return at;
@@ -3044,4 +3080,486 @@ fn shares_at_the_clearing_price_span_pages() {
     let won: Vec<u64> = [3usize, 100, 257, 259].iter().map(|&i| env.bid_u64(&bids[i], "won")).collect();
     assert_eq!(won, vec![1, 1, 1, 0]);
     assert_eq!(env.read_u64(&a.auction, "Auction", "sold"), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-liquidity: pools on Meteora DAMM v2 (the real program, from devnet)
+// ---------------------------------------------------------------------------
+
+/// `Auction::liquidity` states.
+const LIQUIDITY_PLANNED: u8 = 1;
+const LIQUIDITY_FAILED: u8 = 2;
+const LIQUIDITY_POOLED: u8 = 3;
+const LIQUIDITY_RELEASED: u8 = 4;
+
+fn damm(seeds: &[&[u8]]) -> Address {
+    Address::find_program_address(seeds, &CP_AMM).0
+}
+
+/// DAMM v2's one customizable pool for a token and SOL.
+fn damm_pool(mint: &Address) -> Address {
+    let (hi, lo) = if mint.as_ref() > WSOL.as_ref() { (mint, &WSOL) } else { (&WSOL, mint) };
+    damm(&[b"cpool", hi.as_ref(), lo.as_ref()])
+}
+
+/// The accounts of one auction's planned pool.
+struct Lp {
+    plan: Address,
+    authority: Address,
+    reserve: Address,
+    wsol: Address,
+    pool: Address,
+    vault_a: Address,
+    vault_b: Address,
+}
+
+impl Lp {
+    fn of(a: &AuctionInfo) -> Self {
+        let authority = pda(&[b"lp_authority", a.auction.as_ref()]);
+        let pool = damm_pool(&a.mint);
+        Lp {
+            plan: pda(&[b"liquidity", a.auction.as_ref()]),
+            authority,
+            reserve: ata(&authority, &a.mint),
+            wsol: ata(&authority, &WSOL),
+            pool,
+            vault_a: damm(&[b"token_vault", a.mint.as_ref(), pool.as_ref()]),
+            vault_b: damm(&[b"token_vault", WSOL.as_ref(), pool.as_ref()]),
+        }
+    }
+}
+
+fn u128_at(data: &[u8], at: usize) -> u128 {
+    u128::from_le_bytes(data[at..at + 16].try_into().unwrap())
+}
+
+impl Env {
+    fn plan_ix(&self, a: &AuctionInfo, lp_bps: u16, floor: u64, trade_fee_bps: u16) -> Instruction {
+        let lp = Lp::of(a);
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("plan_liquidity", &Args::default().u16(lp_bps).u64(floor).u16(trade_fee_bps).0),
+            vec![
+                signer(a.seller),
+                w(a.auction),
+                w(lp.plan),
+                w(lp.authority),
+                r(a.mint),
+                r(WSOL),
+                w(ata(&a.seller, &a.mint)),
+                w(lp.reserve),
+                w(lp.wsol),
+                r(TOKEN_PROGRAM),
+                r(TOKEN_PROGRAM),
+                r(ATA_PROGRAM),
+                r(SYSTEM_PROGRAM),
+            ],
+        )
+    }
+
+    fn bootstrap_ix(&self, a: &AuctionInfo, cranker: Address, nft_mint: Address) -> Instruction {
+        let lp = Lp::of(a);
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("bootstrap_liquidity", &[]),
+            vec![
+                signer(cranker),
+                w(a.auction),
+                w(lp.plan),
+                w(lp.authority),
+                w(a.seller),
+                w(self.treasury.pubkey()),
+                r(a.mint),
+                r(WSOL),
+                w(lp.reserve),
+                w(lp.wsol),
+                w(ata(&a.seller, &a.mint)),
+                signer(nft_mint),
+                w(damm(&[b"position_nft_account", nft_mint.as_ref()])),
+                w(lp.pool),
+                w(damm(&[b"position", nft_mint.as_ref()])),
+                w(lp.vault_a),
+                w(lp.vault_b),
+                r(damm(&[b"pool_authority"])),
+                r(damm(&[b"__event_authority"])),
+                r(CP_AMM),
+                r(TOKEN_PROGRAM),
+                r(TOKEN_PROGRAM),
+                r(TOKEN_2022),
+                r(ATA_PROGRAM),
+                r(SYSTEM_PROGRAM),
+            ],
+        )
+    }
+
+    fn claim_pool_fees_ix(&self, a: &AuctionInfo, cranker: Address, nft_mint: Address) -> Instruction {
+        let lp = Lp::of(a);
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("claim_pool_fees", &[]),
+            vec![
+                signer(cranker),
+                w(lp.plan),
+                w(lp.authority),
+                w(a.seller),
+                w(self.treasury.pubkey()),
+                r(a.mint),
+                r(WSOL),
+                w(lp.reserve),
+                w(lp.wsol),
+                r(lp.pool),
+                w(damm(&[b"position", nft_mint.as_ref()])),
+                r(damm(&[b"position_nft_account", nft_mint.as_ref()])),
+                w(lp.vault_a),
+                w(lp.vault_b),
+                r(damm(&[b"pool_authority"])),
+                r(damm(&[b"__event_authority"])),
+                r(CP_AMM),
+                r(TOKEN_PROGRAM),
+                r(TOKEN_PROGRAM),
+                r(ATA_PROGRAM),
+                r(SYSTEM_PROGRAM),
+            ],
+        )
+    }
+
+    fn release_ix(&self, a: &AuctionInfo) -> Instruction {
+        let lp = Lp::of(a);
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("release_liquidity", &[]),
+            vec![
+                signer(a.seller),
+                w(a.auction),
+                r(lp.plan),
+                w(lp.authority),
+                r(a.mint),
+                w(lp.reserve),
+                w(lp.wsol),
+                w(ata(&a.seller, &a.mint)),
+                r(TOKEN_PROGRAM),
+                r(TOKEN_PROGRAM),
+                r(ATA_PROGRAM),
+                r(SYSTEM_PROGRAM),
+            ],
+        )
+    }
+
+    /// Buys tokens from the pool with `lamports` of SOL; returns the tokens.
+    fn buy_from_pool(&mut self, a: &AuctionInfo, buyer: &Keypair, lamports: u64) -> u64 {
+        let lp = Lp::of(a);
+        let wsol = ata(&buyer.pubkey(), &WSOL);
+        let tokens = ata(&buyer.pubkey(), &a.mint);
+        let before = if self.exists(&tokens) { self.token_amount(&tokens) } else { 0 };
+        let mut data = solana_sha256_hasher::hashv(&[b"global:swap"]).to_bytes()[..8].to_vec();
+        data.extend_from_slice(&lamports.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        let ixs = [
+            create_ata_ix(&buyer.pubkey(), &buyer.pubkey(), &WSOL),
+            create_ata_ix(&buyer.pubkey(), &buyer.pubkey(), &a.mint),
+            solana_system_interface::instruction::transfer(&buyer.pubkey(), &wsol, lamports),
+            Instruction::new_with_bytes(TOKEN_PROGRAM, &[17u8], vec![w(wsol)]), // SyncNative
+            Instruction::new_with_bytes(
+                CP_AMM,
+                &data,
+                vec![
+                    r(damm(&[b"pool_authority"])),
+                    w(lp.pool),
+                    w(wsol),
+                    w(tokens),
+                    w(lp.vault_a),
+                    w(lp.vault_b),
+                    r(a.mint),
+                    r(WSOL),
+                    signer(buyer.pubkey()),
+                    r(TOKEN_PROGRAM),
+                    r(TOKEN_PROGRAM),
+                    r(CP_AMM), // no referral account
+                    r(damm(&[b"__event_authority"])),
+                    r(CP_AMM),
+                ],
+            ),
+        ];
+        self.send_with_limit(&ixs, buyer, &[], 400_000).expect("swap");
+        self.token_amount(&tokens) - before
+    }
+
+    fn liquidity_state(&self, a: &AuctionInfo) -> u8 {
+        self.data(&a.auction)[self.auction_tail(&a.auction, "liquidity")]
+    }
+
+    /// A sale of 100,000 tokens (no decimals) at least 1_000 lamports each,
+    /// planned with a pool of `lp_bps` of the net proceeds and a `floor`,
+    /// two bids placed and bidding over.
+    fn planned_sale(&mut self, seed: u64, lp_bps: u16, floor: u64) -> (Keypair, AuctionInfo, Vec<(Keypair, Address)>) {
+        let seller = self.funded(10);
+        let mint = self.fixed_supply_mint(&seller, 200_000);
+        let terms = TokenTerms {
+            supply: 100_000,
+            min_price: 1_000,
+            min_deposit: 10_000_000,
+            ..TOKEN_TERMS
+        };
+        let a = self.create_auction(&seller, seed, mint, terms);
+        let ix = self.plan_ix(&a, lp_bps, floor, 100);
+        self.send(&[ix], &seller, &[]).expect("plan liquidity");
+        let bids = (0..2)
+            .map(|i| {
+                let bidder = self.funded(2);
+                let bid = self.bid(&a, &bidder, 40 + i, 600_000_000);
+                (bidder, bid)
+            })
+            .collect();
+        self.set_time(a.end_time + 1);
+        (seller, a, bids)
+    }
+
+    /// Both bids budget 0.6 SOL; at 10_000 lamports per token the first
+    /// (above) buys 60,000 tokens and the second (at the price) the 40,000
+    /// left: the sale fills and raises 1 SOL.
+    fn settle_filled_sale(&mut self, a: &AuctionInfo, bids: &[(Keypair, Address)]) {
+        self.simulate_clearing(a, 10_000, true, 600_000_000, 600_000_000);
+        self.simulate_award(a, &bids[0].1, OUTCOME_ABOVE, 60_000, 600_000_000);
+        self.simulate_award(a, &bids[1].1, OUTCOME_AT, 40_000, 400_000_000);
+    }
+}
+
+#[test]
+fn sellers_plan_liquidity_before_bids_within_the_limits() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 2_000);
+    let a = env.create_auction(&seller, 1, mint, TOKEN_TERMS);
+    let lp = Lp::of(&a);
+
+    for (bps, floor, fee, error) in [
+        (1_999, 1, 100, "InvalidLiquidityShare"),
+        (10_001, 1, 100, "InvalidLiquidityShare"),
+        (3_000, 0, 100, "InvalidLiquidityFloor"),
+        (3_000, 1, 50, "InvalidPoolFee"),
+    ] {
+        let ix = env.plan_ix(&a, bps, floor, fee);
+        env.expect_error(&[ix], &seller, &[], error);
+    }
+    // Someone else cannot plan the seller's auction.
+    let other = env.funded(1);
+    let mut ix = env.plan_ix(&a, 3_000, 1, 100);
+    ix.accounts[0] = signer(other.pubkey());
+    env.expect_error(&[ix], &other, &[], "Unauthorized");
+
+    let before = env.balance(&seller.pubkey());
+    let ix = env.plan_ix(&a, 3_000, 50_000, 25);
+    env.send(&[ix], &seller, &[]).expect("plan");
+    // The reserve matches the tokens for sale; the pool's rent is deposited.
+    assert_eq!(env.token_amount(&lp.reserve), 100);
+    assert_eq!(env.token_amount(&ata(&seller.pubkey(), &mint)), 2_000 - 100 - 100);
+    assert_eq!(env.balance(&lp.authority), 25_000_000);
+    assert!(before - env.balance(&seller.pubkey()) > 25_000_000);
+    assert_eq!(env.liquidity_state(&a), LIQUIDITY_PLANNED);
+    let floor_at = env.auction_tail(&a.auction, "liquidity_floor");
+    assert_eq!(u64::from_le_bytes(env.data(&a.auction)[floor_at..floor_at + 8].try_into().unwrap()), 50_000);
+
+    // Planning once is enough, and only before any bid.
+    let bidder = env.funded(1);
+    env.bid(&a, &bidder, 1, 2_500);
+    let b = env.create_auction(&seller, 2, mint, TOKEN_TERMS);
+    env.bid(&b, &bidder, 2, 2_500);
+    let ix = env.plan_ix(&b, 3_000, 1, 100);
+    env.expect_error(&[ix], &seller, &[], "HasBids");
+
+    // While the sale is running, the reserve stays.
+    let ix = env.release_ix(&a);
+    env.expect_error(&[ix], &seller, &[], "LiquidityStillNeeded");
+}
+
+#[test]
+fn a_cancelled_sale_gives_the_reserve_back() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 2_000);
+    let a = env.create_auction(&seller, 1, mint, TOKEN_TERMS);
+    let lp = Lp::of(&a);
+    env.send(&[env.plan_ix(&a, 5_000, 1, 200)], &seller, &[]).expect("plan");
+    // Closing needs the plan settled first.
+    env.send(&[env.seller_ix("cancel_auction", &a)], &seller, &[]).expect("cancel");
+    let ix = env.seller_ix("close_auction", &a);
+    env.expect_error(&[ix], &seller, &[], "LiquidityPending");
+
+    let held = env.balance(&lp.authority) + env.balance(&lp.reserve) + env.balance(&lp.wsol);
+    let before = env.balance(&seller.pubkey());
+    env.send(&[env.release_ix(&a)], &seller, &[]).expect("release");
+    assert_eq!(env.balance(&seller.pubkey()) + TX_FEE - before, held);
+    assert_eq!(env.token_amount(&ata(&seller.pubkey(), &mint)), 2_000);
+    assert!(!env.exists(&lp.authority) && !env.exists(&lp.reserve) && !env.exists(&lp.wsol));
+    assert_eq!(env.liquidity_state(&a), LIQUIDITY_RELEASED);
+    env.send(&[env.seller_ix("close_auction", &a)], &seller, &[]).expect("close");
+}
+
+#[test]
+fn the_pool_opens_at_the_clearing_price_locks_for_good_and_splits_its_fees() {
+    let mut env = Env::new();
+    let (seller, a, bids) = env.planned_sale(1, 3_000, 100_000_000);
+    let lp = Lp::of(&a);
+    env.settle_filled_sale(&a, &bids);
+
+    // The seller is paid through the pool's opening, not before it.
+    let ix = env.seller_ix("claim_proceeds", &a);
+    env.expect_error(&[ix], &seller, &[], "LiquidityPending");
+
+    let cranker = env.funded(1);
+    let nft = Keypair::new();
+    let seller_before = env.balance(&seller.pubkey());
+    let treasury_before = env.balance(&env.treasury.pubkey());
+    let ix = env.bootstrap_ix(&a, cranker.pubkey(), nft.pubkey());
+    let units = env.send_with_limit(&[ix], &cranker, &[&nft], 1_000_000).expect("bootstrap");
+    println!("bootstrap_liquidity: {units} compute units");
+
+    // 1 SOL raised, 1% sale fee: 0.99 SOL net, 30% of it (0.297 SOL) into
+    // the pool with the 29,700 tokens it buys at 10_000 lamports each.
+    let fee = 10_000_000;
+    let pool_sol = 297_000_000;
+    assert_eq!(env.balance(&env.treasury.pubkey()) - treasury_before, fee);
+    let (in_sol, in_tokens) = (env.token_amount(&lp.vault_b), env.token_amount(&lp.vault_a));
+    assert!(in_sol <= pool_sol && in_sol + 2 >= pool_sol, "{in_sol}");
+    assert!(in_tokens <= 29_700 && in_tokens + 1 >= 29_700, "{in_tokens}");
+    let pool = env.data(&lp.pool);
+    let price = (u128_at(&pool, 456) as f64 / 2f64.powi(64)).powi(2);
+    assert!((price / 10_000.0 - 1.0).abs() < 1e-12, "pool price {price}");
+    // The rest of the reserve, the rest of the SOL and the unused rent go to
+    // the seller; the authority keeps only its rent-exempt minimum.
+    assert_eq!(env.token_amount(&ata(&seller.pubkey(), &a.mint)), 70_300);
+    assert_eq!(env.token_amount(&lp.reserve), 0);
+    assert_eq!(env.token_amount(&lp.wsol), 0);
+    let kept = env.svm.minimum_balance_for_rent_exemption(0);
+    assert_eq!(env.balance(&lp.authority), kept);
+    let rent_used = 25_000_000 - kept;
+    let paid = env.balance(&seller.pubkey()) - seller_before;
+    assert!(paid > 990_000_000 - pool_sol && paid < 990_000_000 - pool_sol + rent_used, "{paid}");
+    assert_eq!(env.read_u64(&a.auction, "Auction", "proceeds"), 0);
+    assert_eq!(env.liquidity_state(&a), LIQUIDITY_POOLED);
+
+    // Locked for good, and the position belongs to the program.
+    let position_address = damm(&[b"position", nft.pubkey().as_ref()]);
+    let position = env.data(&position_address);
+    let liquidity = u128_at(&pool, 360);
+    assert!(liquidity > 0);
+    assert_eq!(u128_at(&position, 152), 0, "unlocked liquidity");
+    assert_eq!(u128_at(&position, 184), liquidity, "permanently locked");
+    assert_eq!(u128_at(&pool, 552), liquidity);
+    let nft_account = env.data(&damm(&[b"position_nft_account", nft.pubkey().as_ref()]));
+    assert_eq!(&nft_account[32..64], lp.authority.as_ref());
+    // A second opening is refused.
+    let nft2 = Keypair::new();
+    let ix = env.bootstrap_ix(&a, cranker.pubkey(), nft2.pubkey());
+    env.expect_error(&[ix], &cranker, &[&nft2], "LiquidityNotPlanned");
+
+    // Right after opening, the anti-sniper fee takes half of a purchase.
+    let buyer = env.funded(5);
+    let got = env.buy_from_pool(&a, &buyer, 100_000_000);
+    // Half of the 0.1 SOL is the fee; the other half buys from x * y = k.
+    let after_fee = 29_700 * 50_000_000 / (pool_sol + 50_000_000);
+    assert!(got <= after_fee && got + 3 >= after_fee, "{got} vs {after_fee}");
+    let s0 = env.balance(&seller.pubkey());
+    let t0 = env.balance(&env.treasury.pubkey());
+    let ix = env.claim_pool_fees_ix(&a, cranker.pubkey(), nft.pubkey());
+    env.send_with_limit(&[ix], &cranker, &[], 400_000).expect("claim pool fees");
+    let to_seller = env.balance(&seller.pubkey()) - s0;
+    let to_platform = env.balance(&env.treasury.pubkey()) - t0;
+    let claimed = to_seller + to_platform;
+    // LPs get 80% of the 50% fee on 0.1 SOL (DAMM v2 keeps the rest).
+    assert!(claimed > 39_000_000 && claimed <= 40_000_000, "{claimed}");
+    // The platform's 20% is rounded up, the seller's 80% down.
+    assert_eq!(to_seller, claimed * 8_000 / 10_000);
+    assert_eq!(to_platform, claimed - to_seller);
+    assert_eq!(env.balance(&lp.authority), kept);
+    assert_eq!(env.token_amount(&lp.wsol), 0);
+
+    // Ten minutes on, the fee is down to the pool's 1%.
+    env.set_time(env.now() + 11 * 60);
+    env.buy_from_pool(&a, &buyer, 100_000_000);
+    let s0 = env.balance(&seller.pubkey());
+    let t0 = env.balance(&env.treasury.pubkey());
+    let ix = env.claim_pool_fees_ix(&a, cranker.pubkey(), nft.pubkey());
+    env.send_with_limit(&[ix], &cranker, &[], 400_000).expect("claim pool fees");
+    let claimed = env.balance(&seller.pubkey()) - s0 + env.balance(&env.treasury.pubkey()) - t0;
+    assert!(claimed > 790_000 && claimed <= 800_000, "{claimed}");
+    // Nothing new to claim: nothing moves.
+    let ix = env.claim_pool_fees_ix(&a, cranker.pubkey(), nft.pubkey());
+    env.send_with_limit(&[ix], &cranker, &[], 400_000).expect("claim nothing");
+
+    // The sale finishes as usual: winners collect, the seller closes.
+    env.send(&[env.seller_ix("claim_proceeds", &a)], &seller, &[]).expect("claim proceeds");
+    for (bidder, bid) in &bids {
+        let ix = env.claim_tokens_ix(&a, cranker.pubkey(), *bid, bidder.pubkey());
+        env.send(&[ix], &cranker, &[]).expect("claim tokens");
+        env.send(&[env.bid_ix("close_bid", &a, *bid, bidder.pubkey())], &cranker, &[]).expect("close bid");
+    }
+    env.send(&[env.seller_ix("close_auction", &a)], &seller, &[]).expect("close auction");
+    // The plan stays: it routes the pool's fees for good.
+    assert!(env.exists(&lp.plan));
+}
+
+#[test]
+fn a_sale_that_misses_the_pool_minimum_refunds_every_bid() {
+    let mut env = Env::new();
+    // The pool must get 2 SOL, but the sale can raise only 0.99 SOL net.
+    let (seller, a, bids) = env.planned_sale(2, 3_000, 2_000_000_000);
+    let lp = Lp::of(&a);
+    env.simulate_clearing(&a, 10_000, true, 600_000_000, 600_000_000);
+    // What the clearing callback records when the floor is out of reach.
+    env.write_auction_tail(&a.auction, "liquidity", &[LIQUIDITY_FAILED]);
+
+    let caller = env.funded(1);
+    for (bidder, bid) in &bids {
+        let held = env.balance(bid);
+        let before = env.balance(&bidder.pubkey());
+        let ix = env.bid_ix("refund_failed_bid", &a, *bid, bidder.pubkey());
+        env.send(&[ix], &caller, &[]).expect("refund");
+        assert_eq!(env.balance(&bidder.pubkey()) - before, held);
+        assert!(!env.exists(bid));
+    }
+    // Every token comes back: the sale and the reserve.
+    env.send(&[env.seller_ix("claim_proceeds", &a)], &seller, &[]).expect("claim proceeds");
+    env.send(&[env.release_ix(&a)], &seller, &[]).expect("release");
+    assert_eq!(env.token_amount(&ata(&seller.pubkey(), &a.mint)), 200_000);
+    assert!(!env.exists(&lp.authority));
+    env.send(&[env.seller_ix("close_auction", &a)], &seller, &[]).expect("close auction");
+}
+
+#[test]
+fn bids_are_refunded_this_way_only_when_the_floor_was_missed() {
+    let mut env = Env::new();
+    let (_seller, a, bids) = env.planned_sale(3, 3_000, 100_000_000);
+    env.simulate_clearing(&a, 10_000, true, 600_000_000, 600_000_000);
+    let caller = env.funded(1);
+    let ix = env.bid_ix("refund_failed_bid", &a, bids[0].1, bids[0].0.pubkey());
+    env.expect_error(&[ix], &caller, &[], "LiquidityNotPlanned");
+}
+
+#[test]
+fn a_pool_opened_by_someone_else_first_leaves_the_sale_paying_out_in_full() {
+    let mut env = Env::new();
+    let (seller, a, bids) = env.planned_sale(4, 3_000, 100_000_000);
+    let lp = Lp::of(&a);
+    env.settle_filled_sale(&a, &bids);
+    // Someone created DAMM v2's pool for this token and SOL first.
+    env.svm
+        .set_account(
+            lp.pool,
+            Account { lamports: 10_000_000, data: vec![1; 1_112], owner: CP_AMM, executable: false, rent_epoch: 0 },
+        )
+        .unwrap();
+
+    let cranker = env.funded(1);
+    let nft = Keypair::new();
+    let seller_before = env.balance(&seller.pubkey());
+    let held = env.balance(&lp.authority) + env.balance(&lp.reserve) + env.balance(&lp.wsol);
+    let ix = env.bootstrap_ix(&a, cranker.pubkey(), nft.pubkey());
+    env.send_with_limit(&[ix], &cranker, &[&nft], 1_000_000).expect("bootstrap");
+    // No pool: the whole 0.99 SOL net, the reserve and the deposit go back.
+    assert_eq!(env.balance(&seller.pubkey()) - seller_before, 990_000_000 + held);
+    assert_eq!(env.token_amount(&ata(&seller.pubkey(), &a.mint)), 100_000);
+    assert!(!env.exists(&lp.authority) && !env.exists(&lp.reserve) && !env.exists(&lp.wsol));
+    assert_eq!(env.liquidity_state(&a), LIQUIDITY_RELEASED);
+    env.send(&[env.seller_ix("claim_proceeds", &a)], &seller, &[]).expect("claim proceeds");
 }

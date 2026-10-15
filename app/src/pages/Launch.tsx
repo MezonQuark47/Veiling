@@ -21,6 +21,14 @@ import {
   PAGE_BIDS,
   REVEAL_DELAY_SECS,
   MAX_START_DELAY_SECS,
+  ANTI_SNIPER_FEE_BPS,
+  ANTI_SNIPER_MINUTES,
+  DAMM_PROTOCOL_FEE_PERCENT,
+  LP_RENT_DEPOSIT,
+  MAX_LP_BPS,
+  MIN_LP_BPS,
+  POOL_FEE_TIERS,
+  SELLER_POOL_FEE_BPS,
 } from "../config";
 import { DemandChart } from "../components/DemandChart";
 import { ImagePicker, ImageSetPicker, isSmallImage, useImageUrl } from "../components/ImagePicker";
@@ -44,6 +52,7 @@ import { Button, Notice, useAction, useLoader, useMetadataImage, useNow } from "
 import {
   buildAddBookPages,
   buildCreateAuction,
+  type LiquidityTerms,
   buildCreateCollectionAuction,
   buildCreateToken,
   buildItemList,
@@ -61,6 +70,7 @@ import {
   fetchTokenInfo,
   formatPercent,
   pageCrankFee,
+  poolSol,
   randomU64,
   sellerCrankFee,
 } from "../lib/chain";
@@ -404,6 +414,11 @@ export function Launch() {
   const [duration, setDuration] = useState(DURATIONS[1].secs);
   /** Pages of the bid book: 256 bids each. */
   const [pages, setPages] = useState(1);
+  // Auto-liquidity: a Meteora pool at the clearing price (token sales only).
+  const [lpOn, setLpOn] = useState(false);
+  const [lpPercent, setLpPercent] = useState("30");
+  const [lpFloor, setLpFloor] = useState("1");
+  const [lpFee, setLpFee] = useState<number>(100);
   /** When bidding opens, as a `datetime-local` value; null for right away. */
   const [startAt, setStartAt] = useState<string | null>(null);
   const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "token" | "auction">("form");
@@ -797,6 +812,37 @@ export function Launch() {
     pages,
   ]);
 
+  const lp = useMemo(() => {
+    const none = { problems: [] as string[], terms: null as LiquidityTerms | null, atMin: null as { net: bigint; sol: bigint } | null };
+    if (collection || !lpOn) return none;
+    const problems: string[] = [];
+    const percent = Number.parseFloat(lpPercent);
+    const lpBps = Math.round(percent * 100);
+    if (!Number.isFinite(percent) || lpBps < MIN_LP_BPS || lpBps > MAX_LP_BPS)
+      problems.push(`The pool's share must be between ${MIN_LP_BPS / 100}% and ${MAX_LP_BPS / 100}% of the proceeds.`);
+    const floor = parseSol(lpFloor);
+    if (!floor || floor <= 0n) problems.push("Enter the pool's minimum in SOL, above zero.");
+    // The pool's reserve: as many tokens again as are for sale.
+    const needed = plan.sellAmount * 2n;
+    if (plan.sellAmount > 0n && Number.isInteger(tokenDecimals)) {
+      if (source === "new") {
+        const total = parseDecimal(supply, tokenDecimals);
+        if (total && needed > total)
+          problems.push("With auto-liquidity the total supply must cover the sale twice: the tokens for sale and as many again for the pool's reserve.");
+      } else if (existingBalance !== null && needed > existingBalance) {
+        problems.push(`With auto-liquidity you need twice the tokens for sale, ${formatTokens(needed, tokenDecimals)} in all.`);
+      }
+    }
+    // What the pool would get if the sale only fills at the minimum price.
+    let atMin = null;
+    if (fees.data && floor && floor > 0n && plan.saleValue > 0n && lpBps >= MIN_LP_BPS && lpBps <= MAX_LP_BPS) {
+      const net = plan.saleValue - (plan.saleValue * BigInt(fees.data.saleFeeBps)) / 10_000n;
+      atMin = { net, sol: poolSol(net, lpBps, floor) };
+    }
+    const terms = problems.length === 0 && floor ? { lpBps, floor, tradeFeeBps: lpFee } : null;
+    return { problems, terms, atMin };
+  }, [collection, lpOn, lpPercent, lpFloor, lpFee, plan.sellAmount, plan.saleValue, tokenDecimals, source, supply, existingBalance, fees.data]);
+
   const onUploadProgress = (done: number, total: number) => setUploadProgress([done, total]);
 
   /** A fresh auction address for this wallet, kept until a launch goes through. */
@@ -810,7 +856,12 @@ export function Launch() {
 
   const startIssue = startProblem(startAt, nowSecs());
   const crankIssue = crank.data === null ? "The platform's settlement rewards are not set up yet." : null;
-  const problems = [...plan.problems, ...(startIssue ? [startIssue] : []), ...(crankIssue ? [crankIssue] : [])];
+  const problems = [
+    ...plan.problems,
+    ...lp.problems,
+    ...(startIssue ? [startIssue] : []),
+    ...(crankIssue ? [crankIssue] : []),
+  ];
   /** The start to send: 0 for right away. A time that has passed by then also opens right away. */
   const chosenStart = () => (startAt === null ? 0 : fromLocalInput(startAt) ?? 0);
 
@@ -941,7 +992,8 @@ export function Launch() {
             durationSecs: duration,
             startTime: chosenStart(),
           },
-          fees.data
+          fees.data,
+          lp.terms
         );
         if (pages > 1) {
           const room = await buildAddBookPages(signer.publicKey, built.auction, 1, pages - 1);
@@ -1411,6 +1463,79 @@ export function Launch() {
           <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration}>
             <BidRoom pages={pages} onPages={setPages} />
           </BiddingWindow>
+
+          {collection ? null : (
+            <fieldset className="group">
+              <legend className="group__title">Auto-liquidity</legend>
+              <label className="check">
+                <input type="checkbox" checked={lpOn} onChange={(e) => setLpOn(e.target.checked)} />
+                <span>
+                  <span className="check__title">Open a Meteora pool at the clearing price</span>
+                  <span className="check__text">
+                    When the sale settles, part of what it raised and the {symbolText} that buys open a trading pool
+                    at exactly the price every winner paid. The pool is locked forever: winners can always sell, and
+                    nobody can pull the liquidity out.
+                  </span>
+                </span>
+              </label>
+              {lpOn ? (
+                <>
+                  <div className="field-row">
+                    <div className="field">
+                      <label htmlFor="lppercent">Share of the proceeds (%)</label>
+                      <input
+                        id="lppercent"
+                        inputMode="decimal"
+                        value={lpPercent}
+                        onChange={(e) => setLpPercent(e.target.value.replace(/[^0-9.]/g, ""))}
+                      />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="lpfloor">Pool minimum (SOL)</label>
+                      <input
+                        id="lpfloor"
+                        inputMode="decimal"
+                        value={lpFloor}
+                        onChange={(e) => setLpFloor(e.target.value.replace(/[^0-9.]/g, ""))}
+                      />
+                    </div>
+                  </div>
+                  <p className="hint">
+                    From {MIN_LP_BPS / 100}% to {MAX_LP_BPS / 100}% of what the sale raises after the platform fee. The
+                    share rises as needed to reach the minimum; a sale that cannot reach it does not go ahead, and every
+                    bid is refunded in full.
+                    {lp.atMin
+                      ? lp.atMin.net < (parseSol(lpFloor) ?? 0n)
+                        ? ` Filling only at the minimum price would raise ${formatSol(lp.atMin.net)} SOL after fees, short of the minimum.`
+                        : ` Filling only at the minimum price, the pool would get ${formatSol(lp.atMin.sol)} SOL.`
+                      : ""}
+                  </p>
+                  <div className="field">
+                    <span className="field__label">Pool fee</span>
+                    <Segmented
+                      label="Pool fee"
+                      value={String(lpFee)}
+                      options={POOL_FEE_TIERS.map((bps) => [String(bps), formatPercent(bps)] as [string, string])}
+                      onChange={(v) => setLpFee(Number(v))}
+                    />
+                  </div>
+                  <p className="hint">
+                    What traders pay once trading has settled: it opens at {formatPercent(ANTI_SNIPER_FEE_BPS)} against
+                    snipers and falls to this over {ANTI_SNIPER_MINUTES} minutes. Meteora keeps{" "}
+                    {DAMM_PROTOCOL_FEE_PERCENT}% of every fee; of the rest, {formatPercent(SELLER_POOL_FEE_BPS)} goes to
+                    you and {formatPercent(10_000 - SELLER_POOL_FEE_BPS)} to Veiling, for as long as the pool trades.
+                  </p>
+                  <p className="hint">
+                    {plan.sellAmount > 0n && Number.isInteger(tokenDecimals)
+                      ? `You also escrow ${formatTokens(plan.sellAmount, tokenDecimals)} ${symbolText} as the pool's reserve`
+                      : "You also escrow as many tokens again as the pool's reserve"}{" "}
+                    and {formatSol(LP_RENT_DEPOSIT)} SOL for its rent. The pool takes only the tokens its SOL buys at
+                    the clearing price; the rest, and the rent it does not use, come back to you.
+                  </p>
+                </>
+              ) : null}
+            </fieldset>
+          )}
 
           {collection ? (
             <fieldset className="group">

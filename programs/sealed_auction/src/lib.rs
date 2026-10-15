@@ -112,6 +112,9 @@ use solana_curve25519::edwards::{add_edwards, multiply_edwards, validate_edwards
 use solana_curve25519::scalar::PodScalar;
 use solana_sha256_hasher::hashv;
 
+pub mod liquidity;
+use liquidity::*;
+
 declare_id!("CjUVaVK3jF9o4EehHWtB13TGg9SPXBWKGBepmZHwyLK2");
 
 // ---------------------------------------------------------------------------
@@ -1624,6 +1627,10 @@ pub mod sealed_auction {
         // Once the safety net opens, no new computation may be queued, so an
         // endless chain of settlement attempts cannot hold off a refund.
         require!(before_emergency(auction, now)?, AuctionError::EmergencyActive);
+        require!(
+            auction.liquidity != LIQUIDITY_FAILED,
+            AuctionError::LiquidityFloorMissed
+        );
         require!(bid.status == BidStatus::Sealed, AuctionError::BidAlreadySettled);
         ensure_idle(&bid.pending_computation, bid.pending_since, now)?;
 
@@ -2001,6 +2008,12 @@ pub mod sealed_auction {
         let auction = &ctx.accounts.auction;
         let now = Clock::get()?.unix_timestamp;
         require!(seller_can_claim(auction, now)?, AuctionError::NotSettled);
+        // A planned pool opens first (`bootstrap_liquidity`), or the plan is
+        // released (`release_liquidity`).
+        require!(
+            auction.liquidity != LIQUIDITY_PLANNED,
+            AuctionError::LiquidityPending
+        );
 
         let owed = auction
             .sold
@@ -2222,6 +2235,78 @@ pub mod sealed_auction {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Auto-liquidity (see the `liquidity` module)
+    // -----------------------------------------------------------------------
+
+    /// Opts a token auction into auto-liquidity before any bid: `lp_bps` of
+    /// the net proceeds (20% to 100%), raised to at least `floor` lamports,
+    /// will open a Meteora DAMM v2 pool at the clearing price with a
+    /// `trade_fee_bps` fee (0.25%, 1% or 2%) after a 10-minute anti-sniper
+    /// fee. Escrows a reserve of as many tokens as are for sale and the
+    /// pool's rent; what the pool does not use comes back.
+    pub fn plan_liquidity(
+        ctx: Context<PlanLiquidity>,
+        lp_bps: u16,
+        floor: u64,
+        trade_fee_bps: u16,
+    ) -> Result<()> {
+        liquidity::plan(ctx, lp_bps, floor, trade_fee_bps)
+    }
+
+    /// Opens the planned pool once every bid is settled, locks its position
+    /// for good and pays the seller the rest of the proceeds, less the sale
+    /// fee. Anyone can call it. If DAMM v2's pool for this token and SOL
+    /// already exists, no pool opens and the seller gets everything.
+    pub fn bootstrap_liquidity<'info>(ctx: Context<'info, BootstrapLiquidity<'info>>) -> Result<()> {
+        liquidity::bootstrap(ctx)
+    }
+
+    /// Claims the pool's trading fees and pays them out: 80% to the seller,
+    /// 20% to the platform. Anyone can call it.
+    pub fn claim_pool_fees(ctx: Context<ClaimPoolFees>) -> Result<()> {
+        liquidity::claim_fees(ctx)
+    }
+
+    /// Returns the reserve and the rent deposit to the seller when no pool
+    /// will open: the sale missed the floor, was cancelled, ended without
+    /// bids, or stalled until the safety net opened.
+    pub fn release_liquidity(ctx: Context<ReleaseLiquidity>) -> Result<()> {
+        liquidity::release(ctx)
+    }
+
+    /// Refunds a bid of a sale that missed its pool's minimum: no MPC
+    /// needed, the whole deposit and the account's rent go back to the
+    /// bidder. Anyone can call it.
+    pub fn refund_failed_bid(ctx: Context<EmergencyRefund>) -> Result<()> {
+        let auction = &ctx.accounts.auction;
+        require!(
+            auction.liquidity == LIQUIDITY_FAILED && auction.status == AuctionStatus::Settling,
+            AuctionError::LiquidityNotPlanned
+        );
+        require!(
+            ctx.accounts.bid.status == BidStatus::Sealed,
+            AuctionError::BidAlreadySettled
+        );
+        let deposit = ctx.accounts.bid.deposit;
+        let auction = &mut ctx.accounts.auction;
+        auction.resolved_count = auction
+            .resolved_count
+            .checked_add(1)
+            .ok_or(AuctionError::MathOverflow)?;
+        auction.live_bids = auction
+            .live_bids
+            .checked_sub(1)
+            .ok_or(AuctionError::MathOverflow)?;
+        emit!(BidRefunded {
+            auction: auction.key(),
+            bid: ctx.accounts.bid.key(),
+            bidder: ctx.accounts.bid.bidder,
+            amount: deposit,
+        });
+        Ok(())
+    }
+
     /// Safety net: once `EMERGENCY_DELAY_SECS` have passed since the end of
     /// bidding, an unsettled bid's full deposit and the account's rent go back
     /// to its owner and the bid counts as lost. That includes a collection bid
@@ -2322,6 +2407,13 @@ pub mod sealed_auction {
             AuctionError::WrongStatus
         );
         require!(auction.live_bids == 0, AuctionError::BidsOutstanding);
+        require!(
+            matches!(
+                auction.liquidity,
+                LIQUIDITY_NONE | LIQUIDITY_POOLED | LIQUIDITY_RELEASED
+            ),
+            AuctionError::LiquidityPending
+        );
         close_extra_pages(
             auction,
             ctx.remaining_accounts,
@@ -3197,6 +3289,8 @@ fn new_auction(
         crank_pool: 0,
         extra_pages: 0,
         page_bumps: [0; MAX_EXTRA_PAGES],
+        liquidity: LIQUIDITY_NONE,
+        liquidity_floor: 0,
     }
 }
 
@@ -3838,6 +3932,19 @@ fn apply_clearing(
     auction.weight_above = weight_above;
     auction.weight_at = if filled { weight_at } else { 0 };
     auction.status = AuctionStatus::Settling;
+    if auction.liquidity == LIQUIDITY_PLANNED {
+        let expected_net = expected_net_proceeds(auction);
+        if expected_net < auction.liquidity_floor {
+            // The pool could not get its floor: the sale fails and every bid
+            // is refunded (`refund_failed_bid`).
+            auction.liquidity = LIQUIDITY_FAILED;
+            emit!(LiquidityFloorMissed {
+                auction: auction.key(),
+                expected_net,
+                floor: auction.liquidity_floor,
+            });
+        }
+    }
     emit!(AuctionCleared {
         auction: auction.key(),
         clearing_price: auction.clearing_price,
@@ -4285,6 +4392,11 @@ pub struct Auction {
     /// opened before pages existed read these as zero: one page.
     pub extra_pages: u8,
     pub page_bumps: [u8; MAX_EXTRA_PAGES],
+    /// Token auctions: auto-liquidity state (`LIQUIDITY_*`, see
+    /// `liquidity`) and the least SOL its pool must get. Auctions opened
+    /// before auto-liquidity read zero: none.
+    pub liquidity: u8,
+    pub liquidity_floor: u64,
 }
 
 /// The items of a collection auction named per item. Item `k` covers NFT
@@ -6065,6 +6177,24 @@ pub enum AuctionError {
     UsePagedClearing,
     #[msg("The bids fit on one page; find the clearing price with find_clearing")]
     UseSingleClearing,
+    #[msg("This auction already has an auto-liquidity plan")]
+    LiquidityAlreadyPlanned,
+    #[msg("The pool's share of the proceeds must be between 20% and 100%")]
+    InvalidLiquidityShare,
+    #[msg("The pool's minimum SOL must be above zero")]
+    InvalidLiquidityFloor,
+    #[msg("The pool fee must be 0.25%, 1% or 2%")]
+    InvalidPoolFee,
+    #[msg("This auction has no pending auto-liquidity plan")]
+    LiquidityNotPlanned,
+    #[msg("The auto-liquidity plan must be carried out or released first")]
+    LiquidityPending,
+    #[msg("The sale missed the pool's minimum; refund the bids with refund_failed_bid")]
+    LiquidityFloorMissed,
+    #[msg("The reserve is still needed for the pool")]
+    LiquidityStillNeeded,
+    #[msg("The pool accounts do not match")]
+    WrongPoolAccounts,
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 import { BN } from "@anchor-lang/core";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { MPL_CORE_ID } from "../config";
-import type { Auction, Bid, CollectionInfo, CollectionMetadata, ItemList, NftMetadata, TokenInfo } from "./chain";
+import type { Auction, Bid, CollectionInfo, CollectionMetadata, ItemList, LiquidityPlan, NftMetadata, TokenInfo } from "./chain";
 import { type ListedItem, entriesOf, itemIndexOf, itemNftName } from "./items";
 
 const key = (seed: number) => Keypair.fromSeed(new Uint8Array(32).fill(seed)).publicKey;
@@ -59,14 +59,47 @@ const base = (seed: number, overrides: Partial<Auction>): Auction => ({
   crankRewards: { checkBatch: 6_000_000n, clearing: 25_000_000n, settlement: 4_000_000n, seedDraw: 3_000_000n },
   crankPool: 31_000_000n,
   extraPages: 0,
+  liquidity: "none",
+  liquidityFloor: 0n,
   ...overrides,
 });
+
+/** A plan for the mock sales that have one: 30% of the net proceeds, at least 5 SOL, a 1% pool. */
+export function mockLiquidityPlan(auction: Auction): LiquidityPlan {
+  const pooled = auction.liquidity === "pooled";
+  return {
+    address: key(240),
+    auction: auction.address,
+    seller: auction.seller,
+    treasury: auction.treasury,
+    mint: auction.mint,
+    tokenProgram: auction.tokenProgram,
+    lpBps: 3_000,
+    floor: auction.liquidityFloor,
+    tradeFeeBps: 100,
+    reserve: auction.supply,
+    poolSol: pooled ? 8_910_000_000n : 0n,
+    poolTokens: pooled ? 297_000n * TOKEN : 0n,
+    pool: pooled ? key(241) : PublicKey.default,
+    position: pooled ? key(242) : PublicKey.default,
+    positionNftMint: pooled ? key(243) : PublicKey.default,
+    feesToSeller: pooled ? 412_000_000n : 0n,
+    feesToPlatform: pooled ? 103_000_000n : 0n,
+  };
+}
 
 export function mockAuctions(): Auction[] {
   // `?mock&nofeature` previews the front page without a featured auction.
   const featured = !new URLSearchParams(window.location.search).has("nofeature");
   return [
-    base(1, { featured, bidCount: 37, liveBids: 37, totalDeposited: 41_250_000_000n }),
+    base(1, {
+      featured,
+      bidCount: 37,
+      liveBids: 37,
+      totalDeposited: 41_250_000_000n,
+      liquidity: "planned",
+      liquidityFloor: 5_000_000_000n,
+    }),
     base(6, {
       kind: "collection",
       tokenProgram: MPL_CORE_ID,
@@ -187,6 +220,8 @@ export function mockAuctions(): Auction[] {
       delivered: 500_000n * TOKEN,
       proceeds: 40_000_000_000_000n,
       totalDeposited: 77_000_000_000_000n,
+      liquidity: "pooled",
+      liquidityFloor: 5_000_000_000n,
     }),
   ];
 }

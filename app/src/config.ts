@@ -128,3 +128,26 @@ export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, fold: 1_0
 
 /** Where sellers ask to have an auction featured. */
 export const FEATURE_CONTACT = { label: "@velaryon69", href: "https://x.com/velaryon69" };
+
+// Auto-liquidity: a token sale can open a Meteora DAMM v2 pool at its
+// clearing price. Must match the program's `liquidity` module.
+export const CP_AMM_ID = new PublicKey("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
+export const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+/** Share of the net proceeds a pool takes, in bps: 20% to 100%. */
+export const MIN_LP_BPS = 2_000;
+export const MAX_LP_BPS = 10_000;
+/** Trading fees a pool settles at, in bps. */
+export const POOL_FEE_TIERS = [25, 100, 200] as const;
+/** The anti-sniper fee: 50% at opening, down to the pool's fee over 10 minutes. */
+export const ANTI_SNIPER_FEE_BPS = 5_000;
+export const ANTI_SNIPER_MINUTES = 10;
+/** The seller's share of the pool's trading fees; the platform gets the rest. */
+export const SELLER_POOL_FEE_BPS = 8_000;
+/** DAMM v2's own cut of every trading fee, before the pool's position gets the rest. */
+export const DAMM_PROTOCOL_FEE_PERCENT = 20;
+/** Sent with the plan for the pool's rent; what the pool does not use comes back. */
+export const LP_RENT_DEPOSIT = 25_000_000n;
+/** Compute units for opening the pool and for claiming its fees (measured about 300k and 100k). */
+export const LP_COMPUTE_UNITS = { bootstrap: 500_000, claimFees: 300_000 } as const;
+/** Where a pool can be seen and traded. */
+export const meteoraPoolUrl = (pool: PublicKey) => `https://app.meteora.ag/dammv2/${pool.toBase58()}`;

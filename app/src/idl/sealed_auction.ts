@@ -317,6 +317,264 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "bootstrapLiquidity",
+      "docs": [
+        "Opens the planned pool once every bid is settled, locks its position",
+        "for good and pays the seller the rest of the proceeds, less the sale",
+        "fee. Anyone can call it. If DAMM v2's pool for this token and SOL",
+        "already exists, no pool opens and the seller gets everything."
+      ],
+      "discriminator": [
+        4,
+        228,
+        215,
+        71,
+        225,
+        253,
+        119,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "docs": [
+            "Anyone can open the pool once the sale is settled."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "plan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "wsolMint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lpAuthority"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "lpWsol",
+          "writable": true
+        },
+        {
+          "name": "sellerTokenAccount",
+          "writable": true
+        },
+        {
+          "name": "positionNftMint",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "positionNftAccount",
+          "writable": true
+        },
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "tokenAVault",
+          "writable": true
+        },
+        {
+          "name": "tokenBVault",
+          "writable": true
+        },
+        {
+          "name": "poolAuthority"
+        },
+        {
+          "name": "eventAuthority"
+        },
+        {
+          "name": "cpAmmProgram",
+          "address": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "wsolTokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "token2022Program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "cancelAuction",
       "docs": [
         "Lets the seller withdraw a token auction that nobody has bid on yet."
@@ -1009,6 +1267,278 @@ export type SealedAuction = {
               }
             ]
           }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claimPoolFees",
+      "docs": [
+        "Claims the pool's trading fees and pays them out: 80% to the seller,",
+        "20% to the platform. Anyone can call it."
+      ],
+      "discriminator": [
+        33,
+        187,
+        125,
+        186,
+        41,
+        247,
+        236,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "docs": [
+            "Anyone can claim; the fees only ever go to the seller and the",
+            "platform."
+          ],
+          "signer": true
+        },
+        {
+          "name": "plan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "plan.auction",
+                "account": "liquidityPlan"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "plan.auction",
+                "account": "liquidityPlan"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "relations": [
+            "plan"
+          ]
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "relations": [
+            "plan"
+          ]
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "plan"
+          ]
+        },
+        {
+          "name": "wsolMint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lpAuthority"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "lpWsol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lpAuthority"
+              },
+              {
+                "kind": "account",
+                "path": "wsolTokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "wsolMint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "pool",
+          "relations": [
+            "plan"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "relations": [
+            "plan"
+          ]
+        },
+        {
+          "name": "positionNftAccount"
+        },
+        {
+          "name": "tokenAVault",
+          "writable": true
+        },
+        {
+          "name": "tokenBVault",
+          "writable": true
+        },
+        {
+          "name": "poolAuthority"
+        },
+        {
+          "name": "eventAuthority"
+        },
+        {
+          "name": "cpAmmProgram",
+          "address": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "wsolTokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -4089,6 +4619,285 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "planLiquidity",
+      "docs": [
+        "Opts a token auction into auto-liquidity before any bid: `lp_bps` of",
+        "the net proceeds (20% to 100%), raised to at least `floor` lamports,",
+        "will open a Meteora DAMM v2 pool at the clearing price with a",
+        "`trade_fee_bps` fee (0.25%, 1% or 2%) after a 10-minute anti-sniper",
+        "fee. Escrows a reserve of as many tokens as are for sale and the",
+        "pool's rent; what the pool does not use comes back."
+      ],
+      "discriminator": [
+        210,
+        240,
+        211,
+        238,
+        233,
+        138,
+        171,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "plan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "docs": [
+            "will own the pool position."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "wsolMint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "sellerTokenAccount",
+          "writable": true
+        },
+        {
+          "name": "reserve",
+          "docs": [
+            "`init_if_needed` because anyone can create an associated token account."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lpAuthority"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "lpWsol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lpAuthority"
+              },
+              {
+                "kind": "account",
+                "path": "wsolTokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "wsolMint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "wsolTokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "lpBps",
+          "type": "u16"
+        },
+        {
+          "name": "floor",
+          "type": "u64"
+        },
+        {
+          "name": "tradeFeeBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "proposeAdmin",
       "docs": [
         "First step of a two-step admin handover."
@@ -4137,6 +4946,68 @@ export type SealedAuction = {
           "type": "pubkey"
         }
       ]
+    },
+    {
+      "name": "refundFailedBid",
+      "docs": [
+        "Refunds a bid of a sale that missed its pool's minimum: no MPC",
+        "needed, the whole deposit and the account's rent go back to the",
+        "bidder. Anyone can call it."
+      ],
+      "discriminator": [
+        225,
+        59,
+        47,
+        215,
+        162,
+        250,
+        180,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "bidder",
+          "writable": true
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          },
+          "relations": [
+            "bid"
+          ]
+        },
+        {
+          "name": "bid",
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "refundUnrevealed",
@@ -4196,6 +5067,261 @@ export type SealedAuction = {
         {
           "name": "bid",
           "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "releaseLiquidity",
+      "docs": [
+        "Returns the reserve and the rent deposit to the seller when no pool",
+        "will open: the sale missed the floor, was cancelled, ended without",
+        "bids, or stalled until the safety net opened."
+      ],
+      "discriminator": [
+        24,
+        120,
+        50,
+        126,
+        207,
+        12,
+        78,
+        199
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "plan",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "lpAuthority"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "lpWsol",
+          "docs": [
+            "handler); closed if open."
+          ],
+          "writable": true
+        },
+        {
+          "name": "sellerTokenAccount",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "seller"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "wsolTokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -4828,6 +5954,19 @@ export type SealedAuction = {
         48,
         49
       ]
+    },
+    {
+      "name": "liquidityPlan",
+      "discriminator": [
+        86,
+        76,
+        105,
+        113,
+        100,
+        95,
+        48,
+        49
+      ]
     }
   ],
   "events": [
@@ -5079,6 +6218,58 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "liquidityAdded",
+      "discriminator": [
+        154,
+        26,
+        221,
+        108,
+        238,
+        64,
+        217,
+        161
+      ]
+    },
+    {
+      "name": "liquidityFloorMissed",
+      "discriminator": [
+        92,
+        108,
+        255,
+        100,
+        236,
+        194,
+        208,
+        214
+      ]
+    },
+    {
+      "name": "liquidityPlanned",
+      "discriminator": [
+        141,
+        79,
+        82,
+        61,
+        181,
+        119,
+        142,
+        82
+      ]
+    },
+    {
+      "name": "liquiditySkipped",
+      "discriminator": [
+        245,
+        45,
+        34,
+        203,
+        131,
+        226,
+        6,
+        40
+      ]
+    },
+    {
       "name": "listingUpdated",
       "discriminator": [
         190,
@@ -5115,6 +6306,19 @@ export type SealedAuction = {
         67,
         168,
         168
+      ]
+    },
+    {
+      "name": "poolFeesClaimed",
+      "discriminator": [
+        172,
+        6,
+        248,
+        216,
+        198,
+        124,
+        73,
+        110
       ]
     },
     {
@@ -5489,6 +6693,51 @@ export type SealedAuction = {
       "code": 6068,
       "name": "useSingleClearing",
       "msg": "The bids fit on one page; find the clearing price with find_clearing"
+    },
+    {
+      "code": 6069,
+      "name": "liquidityAlreadyPlanned",
+      "msg": "This auction already has an auto-liquidity plan"
+    },
+    {
+      "code": 6070,
+      "name": "invalidLiquidityShare",
+      "msg": "The pool's share of the proceeds must be between 20% and 100%"
+    },
+    {
+      "code": 6071,
+      "name": "invalidLiquidityFloor",
+      "msg": "The pool's minimum SOL must be above zero"
+    },
+    {
+      "code": 6072,
+      "name": "invalidPoolFee",
+      "msg": "The pool fee must be 0.25%, 1% or 2%"
+    },
+    {
+      "code": 6073,
+      "name": "liquidityNotPlanned",
+      "msg": "This auction has no pending auto-liquidity plan"
+    },
+    {
+      "code": 6074,
+      "name": "liquidityPending",
+      "msg": "The auto-liquidity plan must be carried out or released first"
+    },
+    {
+      "code": 6075,
+      "name": "liquidityFloorMissed",
+      "msg": "The sale missed the pool's minimum; refund the bids with refund_failed_bid"
+    },
+    {
+      "code": 6076,
+      "name": "liquidityStillNeeded",
+      "msg": "The reserve is still needed for the pool"
+    },
+    {
+      "code": 6077,
+      "name": "wrongPoolAccounts",
+      "msg": "The pool accounts do not match"
     }
   ],
   "types": [
@@ -5868,6 +7117,19 @@ export type SealedAuction = {
                 3
               ]
             }
+          },
+          {
+            "name": "liquidity",
+            "docs": [
+              "Token auctions: auto-liquidity state (`LIQUIDITY_*`, see",
+              "`liquidity`) and the least SOL its pool must get. Auctions opened",
+              "before auto-liquidity read zero: none."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "liquidityFloor",
+            "type": "u64"
           }
         ]
       }
@@ -7742,6 +9004,209 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "liquidityAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "poolSol",
+            "type": "u64"
+          },
+          {
+            "name": "poolTokens",
+            "type": "u64"
+          },
+          {
+            "name": "tokensReturned",
+            "type": "u64"
+          },
+          {
+            "name": "sellerPaid",
+            "type": "u64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidityFloorMissed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "expectedNet",
+            "type": "u64"
+          },
+          {
+            "name": "floor",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidityPlan",
+      "docs": [
+        "A seller's auto-liquidity terms and, once opened, the pool. Kept after the",
+        "auction closes: it says where the pool's fees go."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "docs": [
+              "Receives the platform's share of the pool's fees."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "tokenProgram",
+            "type": "pubkey"
+          },
+          {
+            "name": "lpBps",
+            "type": "u16"
+          },
+          {
+            "name": "floor",
+            "type": "u64"
+          },
+          {
+            "name": "tradeFeeBps",
+            "type": "u16"
+          },
+          {
+            "name": "reserve",
+            "docs": [
+              "Tokens escrowed for the pool."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "poolSol",
+            "docs": [
+              "What went into the pool."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "poolTokens",
+            "type": "u64"
+          },
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "positionNftMint",
+            "type": "pubkey"
+          },
+          {
+            "name": "feesToSeller",
+            "docs": [
+              "Pool fees paid out so far, in lamports."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "feesToPlatform",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "authorityBump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidityPlanned",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "lpBps",
+            "type": "u16"
+          },
+          {
+            "name": "floor",
+            "type": "u64"
+          },
+          {
+            "name": "tradeFeeBps",
+            "type": "u16"
+          },
+          {
+            "name": "reserve",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquiditySkipped",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "poolTaken",
+            "docs": [
+              "Whether DAMM v2's pool for the pair already existed."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "tokensReturned",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "listingUpdated",
       "type": {
         "kind": "struct",
@@ -8216,6 +9681,30 @@ export type SealedAuction = {
             "fields": [
               "u32"
             ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "poolFeesClaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "u64"
+          },
+          {
+            "name": "platform",
+            "type": "u64"
           }
         ]
       }

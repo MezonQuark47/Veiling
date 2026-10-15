@@ -9,6 +9,7 @@ import {
   PENDING_TIMEOUT_SECS,
 } from "../config";
 import { AuctionBoard } from "../components/AuctionBoard";
+import { LiquidityPanel } from "../components/LiquidityPanel";
 import { statusText, supplyDescription } from "../components/AuctionTable";
 import {
   AddressLink,
@@ -74,6 +75,7 @@ import {
   buildFindClearing,
   buildFinalizeShares,
   buildPlaceBid,
+  buildRefundFailedBid,
   buildSetListing,
   buildSettleBid,
   findEviction,
@@ -763,9 +765,23 @@ function Progress({
       return "Arcium could not finish this time. Try again.";
     });
 
+  // A sale that missed its pool's minimum refunds its bids instead, with no
+  // computation.
+  const failed = auction.liquidity === "failed";
   const settle = (bid: Bid) =>
     action.run(`settle-${bid.address.toBase58()}`, async () => {
       const s = needSigner();
+      if (failed) {
+        const sig = await sendTransaction(await buildRefundFailedBid(s.publicKey, bid), s);
+        forgetNote(bid.address);
+        refresh();
+        return (
+          <>
+            Bid {bid.index + 1}'s whole deposit of {formatSol(bid.deposit)} SOL went back to its owner.{" "}
+            <TxLink signature={sig} />
+          </>
+        );
+      }
       await sendTransaction(await buildSettleBid(s.publicKey, auction, bid), s);
       const after = await waitUntil(
         () => fetchBid(bid.address),
@@ -911,8 +927,15 @@ function Progress({
   // Hidden art that sold must be revealed before the seller is paid; if it
   // never is, the sale can only end once every winner has their payment back.
   const awaitingReveal = collection && auction.unrevealed && auction.sold > 0n;
+  // A planned pool opens first, and pays the seller as it does.
+  const poolFirst =
+    auction.liquidity === "planned" &&
+    auction.status === "settling" &&
+    auction.resolvedCount === auction.bidCount &&
+    !emergency;
   const canClaim =
     isSeller &&
+    !poolFirst &&
     (!awaitingReveal || (missed && auction.proceeds === 0n)) &&
     ((auction.status === "settling" && (auction.resolvedCount === auction.bidCount || emergency)) ||
       (auction.status === "open" && auction.bidCount === 0 && now >= auction.endTime) ||
@@ -1005,11 +1028,19 @@ function Progress({
               )
             ) : null}
           </Step>
-          <Step state={settleState} title="Settle every bid">
-            <p className="muted">
-              {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} settled. Arcium decides each
-              bid against the price without showing what it bid. Anyone can settle any bid.
-            </p>
+          <Step state={settleState} title={failed ? "Refund every bid" : "Settle every bid"}>
+            {failed ? (
+              <p className="muted">
+                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} refunded. The sale missed its
+                pool's minimum, so every bid gets its whole deposit back, with no computation. Anyone can refund any
+                bid.
+              </p>
+            ) : (
+              <p className="muted">
+                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} settled. Arcium decides each
+                bid against the price without showing what it bid. Anyone can settle any bid.
+              </p>
+            )}
             {collection && auction.filled && auction.weightAt > 0n && auction.status !== "open" ? (
               <p className="muted">
                 Bids at exactly the clearing price share the {plural(Number(left), "NFT")} left there by size; any NFT
@@ -1032,7 +1063,7 @@ function Progress({
                   .slice(0, 1)
                   .map((b) => (
                     <Button key="mine" variant="primary" onClick={() => settle(b)} busy={action.busy === `settle-${b.address.toBase58()}`} disabled={!signer}>
-                      Settle my bid
+                      {failed ? "Refund my bid" : "Settle my bid"}
                     </Button>
                   ))}
                 {unsettled.length > 0 ? (
@@ -1041,7 +1072,7 @@ function Progress({
                     busy={action.busy === `settle-${unsettled[0].address.toBase58()}`}
                     disabled={!signer}
                   >
-                    Settle the next bid
+                    {failed ? "Refund the next bid" : "Settle the next bid"}
                   </Button>
                 ) : null}
                 {sharesReady && atClearing.length > 0 ? (
@@ -1146,7 +1177,11 @@ function Progress({
       {canClaim && !(auction.status === "open" && auction.bidCount === 0) ? (
         <div className="panel__footer">
           <p>
-            {auction.status === "settling"
+            {auction.liquidity === "pooled"
+              ? "Your share of the proceeds was paid when the pool opened. Finish the sale to take back any unsold tokens."
+              : auction.liquidity === "failed"
+                ? "The sale did not go ahead. Take back your tokens and the pool's reserve."
+                : auction.status === "settling"
               ? auction.saleFeeBps > 0
                 ? `You can collect ${formatSol(auction.proceeds - fee)} SOL: ${formatSol(auction.proceeds)} SOL of sales less the ${formatPercent(auction.saleFeeBps)} platform fee (${formatSol(fee)} SOL)${collection ? "." : ", plus any unsold tokens."}`
                 : `You can collect ${formatSol(auction.proceeds)} SOL${collection ? "." : " and any unsold tokens."}`
@@ -1155,8 +1190,20 @@ function Progress({
                 : "Settlement stalled; you can take your tokens back."}
           </p>
           <Button variant="primary" onClick={claim} busy={action.busy === "claim"}>
-            {auction.status === "settling" ? "Claim proceeds" : collection ? "End the sale" : "Take tokens back"}
+            {auction.liquidity === "pooled"
+              ? "Finish the sale"
+              : auction.liquidity === "failed"
+                ? "Take tokens back"
+                : auction.status === "settling"
+                  ? "Claim proceeds"
+                  : collection
+                    ? "End the sale"
+                    : "Take tokens back"}
           </Button>
+        </div>
+      ) : isSeller && poolFirst ? (
+        <div className="panel__footer">
+          <p className="muted">Open the pool under Auto-liquidity; it pays you the rest of the proceeds as it opens.</p>
         </div>
       ) : isSeller && awaitingReveal && auction.status === "settling" && !missed ? (
         <div className="panel__footer">
@@ -1778,6 +1825,7 @@ export function AuctionPage({ address }: { address: string }) {
             meta={about}
             collectionUri={collectionUri}
           />
+          {collection ? null : <LiquidityPanel auction={auction} asset={asset} refresh={loaded.reload} />}
         </div>
       </div>
       {collection ? <Gallery auction={auction} meta={about} entries={entries} /> : null}

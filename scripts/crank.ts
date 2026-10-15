@@ -15,6 +15,11 @@
  * Bids are settled `SETTLE_AT_ONCE` at a time (default 4); each is its own
  * computation.
  *
+ * A token sale with auto-liquidity opens its Meteora pool once every bid is
+ * settled (`bootstrap_liquidity`, which also pays the seller), and pays out
+ * the pool's trading fees on later runs. A sale that missed its pool's
+ * minimum refunds its bids instead of settling them.
+ *
  *   ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
  *   ANCHOR_WALLET=~/.config/solana/devnet-test.json ARCIUM_CLUSTER_OFFSET=456 \
  *   [IDL=target/idl/sealed_auction.json] [SETTLE_AT_ONCE=4] \
@@ -22,8 +27,14 @@
  */
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
-import { ComputeBudgetProgram, PublicKey } from "@solana/web3.js";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { ComputeBudgetProgram, Keypair, PublicKey } from "@solana/web3.js";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import {
   awaitComputationFinalization,
   getArciumEnv,
@@ -59,6 +70,20 @@ const COMPUTE_UNITS: Record<string, number> = {
 };
 
 const variant = (value: object) => Object.keys(value)[0];
+
+// Auto-liquidity (the program's `liquidity` module).
+const CP_AMM_ID = new PublicKey("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
+const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+const LIQUIDITY_PLANNED = 1;
+const LIQUIDITY_FAILED = 2;
+const LIQUIDITY_POOLED = 3;
+const damm = (...seeds: Buffer[]) => PublicKey.findProgramAddressSync(seeds, CP_AMM_ID)[0];
+/** DAMM v2's one customizable pool for a token and SOL. */
+function dammPool(mint: PublicKey) {
+  const [a, b] = [mint.toBuffer(), WSOL_MINT.toBuffer()];
+  return Buffer.compare(a, b) > 0 ? damm(Buffer.from("cpool"), a, b) : damm(Buffer.from("cpool"), b, a);
+}
+const dammVault = (mint: PublicKey, pool: PublicKey) => damm(Buffer.from("token_vault"), mint.toBuffer(), pool.toBuffer());
 
 async function main() {
   const auctionAddress = new PublicKey(process.argv[2] ?? "");
@@ -169,7 +194,16 @@ async function main() {
     }
   }
 
-  if (variant(auction.status) === "settling") {
+  if (variant(auction.status) === "settling" && (auction.liquidity ?? 0) === LIQUIDITY_FAILED) {
+    console.log("The sale missed its pool's minimum: refunding every bid in full.");
+    for (const b of (await fetchBids()).filter((b) => variant(b.account.status) === "sealed")) {
+      console.log(`Refunding bid ${b.account.index}...`);
+      await program.methods
+        .refundFailedBid()
+        .accountsPartial({ bidder: b.account.bidder, auction: auctionAddress, bid: b.publicKey })
+        .rpc();
+    }
+  } else if (variant(auction.status) === "settling") {
     const sealed = (await fetchBids()).filter((b) => variant(b.account.status) === "sealed");
     const atOnce = Math.max(1, Number(process.env.SETTLE_AT_ONCE ?? 4));
     for (let i = 0; i < sealed.length; i += atOnce) {
@@ -202,6 +236,70 @@ async function main() {
   }
 
   auction = await fetchAuction();
+  const lpAuthority = PublicKey.findProgramAddressSync(
+    [Buffer.from("lp_authority"), auctionAddress.toBuffer()],
+    program.programId
+  )[0];
+  const planAddress = PublicKey.findProgramAddressSync(
+    [Buffer.from("liquidity"), auctionAddress.toBuffer()],
+    program.programId
+  )[0];
+  const lpWsol = getAssociatedTokenAddressSync(WSOL_MINT, lpAuthority, true, TOKEN_PROGRAM_ID);
+  if (
+    (auction.liquidity ?? 0) === LIQUIDITY_PLANNED &&
+    variant(auction.status) === "settling" &&
+    auction.resolvedCount === auction.bidCount
+  ) {
+    console.log("Opening the pool at the clearing price and paying the seller...");
+    const nft = Keypair.generate();
+    const pool = dammPool(auction.mint);
+    const sellerTokenAccount = getAssociatedTokenAddressSync(auction.mint, auction.seller, false, auction.tokenProgram);
+    await program.methods
+      .bootstrapLiquidity()
+      .accountsPartial({
+        cranker: payer,
+        auction: auctionAddress,
+        plan: planAddress,
+        lpAuthority,
+        seller: auction.seller,
+        treasury: auction.treasury,
+        mint: auction.mint,
+        wsolMint: WSOL_MINT,
+        reserve: getAssociatedTokenAddressSync(auction.mint, lpAuthority, true, auction.tokenProgram),
+        lpWsol,
+        sellerTokenAccount,
+        positionNftMint: nft.publicKey,
+        positionNftAccount: damm(Buffer.from("position_nft_account"), nft.publicKey.toBuffer()),
+        pool,
+        position: damm(Buffer.from("position"), nft.publicKey.toBuffer()),
+        tokenAVault: dammVault(auction.mint, pool),
+        tokenBVault: dammVault(WSOL_MINT, pool),
+        poolAuthority: damm(Buffer.from("pool_authority")),
+        eventAuthority: damm(Buffer.from("__event_authority")),
+        cpAmmProgram: CP_AMM_ID,
+        tokenProgram: auction.tokenProgram,
+        wsolTokenProgram: TOKEN_PROGRAM_ID,
+        token2022Program: TOKEN_2022_PROGRAM_ID,
+      })
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 500_000 }),
+        createAssociatedTokenAccountIdempotentInstruction(
+          payer,
+          sellerTokenAccount,
+          auction.seller,
+          auction.mint,
+          auction.tokenProgram
+        ),
+      ])
+      .signers([nft])
+      .rpc();
+    auction = await fetchAuction();
+    console.log(
+      (auction.liquidity ?? 0) === LIQUIDITY_POOLED
+        ? `Pool ${pool.toBase58()} is open and locked.`
+        : "Someone had opened Meteora's pool for this token first: no pool, the seller got everything."
+    );
+  }
   const collection = variant(auction.kind) === "collection";
   // Once every bid is settled, Arcium draws the seed that decides which NFTs
   // each winner's places become. Auctions from before shuffling hand out no
@@ -318,6 +416,40 @@ async function main() {
   }
 
   auction = await fetchAuction();
+  if ((auction.liquidity ?? 0) === LIQUIDITY_POOLED) {
+    const plan = await accounts.liquidityPlan.fetch(planAddress);
+    console.log("Paying out the pool's trading fees (80% seller, 20% platform)...");
+    await program.methods
+      .claimPoolFees()
+      .accountsPartial({
+        cranker: payer,
+        plan: planAddress,
+        lpAuthority,
+        seller: plan.seller,
+        treasury: plan.treasury,
+        mint: plan.mint,
+        wsolMint: WSOL_MINT,
+        reserve: getAssociatedTokenAddressSync(plan.mint, lpAuthority, true, plan.tokenProgram),
+        lpWsol,
+        pool: plan.pool,
+        position: plan.position,
+        positionNftAccount: damm(Buffer.from("position_nft_account"), plan.positionNftMint.toBuffer()),
+        tokenAVault: dammVault(plan.mint, plan.pool),
+        tokenBVault: dammVault(WSOL_MINT, plan.pool),
+        poolAuthority: damm(Buffer.from("pool_authority")),
+        eventAuthority: damm(Buffer.from("__event_authority")),
+        cpAmmProgram: CP_AMM_ID,
+        tokenProgram: plan.tokenProgram,
+        wsolTokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 })])
+      .rpc();
+    const after = await accounts.liquidityPlan.fetch(planAddress);
+    console.log(
+      `Pool fees paid out so far: ${after.feesToSeller.toNumber() / 1e9} SOL to the seller, ` +
+        `${after.feesToPlatform.toNumber() / 1e9} SOL to the platform.`
+    );
+  }
   const net = (await provider.connection.getBalance(payer, "confirmed")) - startBalance;
   console.log(`This wallet's net for the run, fees and rewards together: ${net / 1e9} SOL`);
   console.log(

@@ -13,6 +13,7 @@ import {
   ExtensionType,
   LENGTH_SIZE,
   TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
   TYPE_SIZE,
   createAssociatedTokenAccountIdempotentInstruction,
   createInitializeMetadataPointerInstruction,
@@ -23,13 +24,31 @@ import {
   getMintLen,
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateAuthorityInstruction, pack } from "@solana/spl-token-metadata";
-import { BATCH_SIZE, MAX_NFTS_PER_CLAIM, MAX_PAGES, MPL_CORE_ID, QUEUE_COMPUTE_UNITS } from "../config";
+import {
+  BATCH_SIZE,
+  CP_AMM_ID,
+  LP_COMPUTE_UNITS,
+  MAX_NFTS_PER_CLAIM,
+  MAX_PAGES,
+  MPL_CORE_ID,
+  QUEUE_COMPUTE_UNITS,
+  WSOL_MINT,
+} from "../config";
 import { computationAccounts, encryptBid, newComputationOffset } from "./arcium";
 import { closeNoteInstruction, hasChainNote } from "./bidNotes";
 import {
   type Auction,
   type Bid,
   type FeeConfig,
+  type LiquidityPlan,
+  dammEventAuthority,
+  dammNftAccountAddress,
+  dammPoolAddress,
+  dammPoolAuthority,
+  dammPositionAddress,
+  dammVaultAddress,
+  liquidityPlanAddress,
+  lpAuthorityAddress,
   assetAddress,
   auctionAddress,
   bidAddress,
@@ -187,7 +206,8 @@ export async function buildCreateAuction(
   mint: PublicKey,
   tokenProgram: PublicKey,
   terms: TokenSaleTerms,
-  fees: FeeConfig
+  fees: FeeConfig,
+  liquidity: LiquidityTerms | null = null
 ) {
   const seed = randomU64();
   const auction = auctionAddress(seller, seed);
@@ -216,7 +236,159 @@ export async function buildCreateAuction(
       tokenProgram,
     })
     .transaction();
+  // The plan goes in the same transaction, so it is fixed before any bid.
+  if (liquidity) tx.add(await planLiquidityInstruction(seller, auction, mint, tokenProgram, liquidity));
   return { tx, auction };
+}
+
+// ---------------------------------------------------------------------------
+// Auto-liquidity
+// ---------------------------------------------------------------------------
+
+/** What a seller chooses for the pool their token sale opens. */
+export interface LiquidityTerms {
+  /** Share of the net proceeds, in bps (20% to 100%). */
+  lpBps: number;
+  /** The least SOL the pool gets, in lamports. */
+  floor: bigint;
+  /** The pool's trading fee after the anti-sniper fee, in bps. */
+  tradeFeeBps: number;
+}
+
+/** The plan's authority and its two token accounts. */
+function lpAccounts(auction: PublicKey, mint: PublicKey, tokenProgram: PublicKey) {
+  const lpAuthority = lpAuthorityAddress(auction);
+  return {
+    lpAuthority,
+    reserve: getAssociatedTokenAddressSync(mint, lpAuthority, true, tokenProgram),
+    lpWsol: getAssociatedTokenAddressSync(WSOL_MINT, lpAuthority, true, TOKEN_PROGRAM_ID),
+  };
+}
+
+async function planLiquidityInstruction(
+  seller: PublicKey,
+  auction: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey,
+  terms: LiquidityTerms
+) {
+  return program.methods
+    .planLiquidity(terms.lpBps, bn(terms.floor), terms.tradeFeeBps)
+    .accountsPartial({
+      seller,
+      auction,
+      plan: liquidityPlanAddress(auction),
+      ...lpAccounts(auction, mint, tokenProgram),
+      mint,
+      wsolMint: WSOL_MINT,
+      sellerTokenAccount: getAssociatedTokenAddressSync(mint, seller, false, tokenProgram),
+      tokenProgram,
+      wsolTokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .instruction();
+}
+
+/**
+ * Opens the planned pool once every bid is settled, locks it for good and
+ * pays the seller the rest. Anyone can send it; it needs the new position
+ * NFT's keypair as a signer.
+ */
+export async function buildBootstrapLiquidity(payer: PublicKey, auction: Auction) {
+  const nft = Keypair.generate();
+  const pool = dammPoolAddress(auction.mint);
+  const sellerTokenAccount = getAssociatedTokenAddressSync(auction.mint, auction.seller, false, auction.tokenProgram);
+  const tx = await program.methods
+    .bootstrapLiquidity()
+    .accountsPartial({
+      cranker: payer,
+      auction: auction.address,
+      plan: liquidityPlanAddress(auction.address),
+      ...lpAccounts(auction.address, auction.mint, auction.tokenProgram),
+      seller: auction.seller,
+      treasury: auction.treasury,
+      mint: auction.mint,
+      wsolMint: WSOL_MINT,
+      sellerTokenAccount,
+      positionNftMint: nft.publicKey,
+      positionNftAccount: dammNftAccountAddress(nft.publicKey),
+      pool,
+      position: dammPositionAddress(nft.publicKey),
+      tokenAVault: dammVaultAddress(auction.mint, pool),
+      tokenBVault: dammVaultAddress(WSOL_MINT, pool),
+      poolAuthority: dammPoolAuthority,
+      eventAuthority: dammEventAuthority,
+      cpAmmProgram: CP_AMM_ID,
+      tokenProgram: auction.tokenProgram,
+      wsolTokenProgram: TOKEN_PROGRAM_ID,
+      token2022Program: TOKEN_2022_PROGRAM_ID,
+    })
+    .preInstructions([
+      computeLimit(LP_COMPUTE_UNITS.bootstrap),
+      // The seller's token account gets the unused reserve; it may be closed.
+      createAssociatedTokenAccountIdempotentInstruction(payer, sellerTokenAccount, auction.seller, auction.mint, auction.tokenProgram),
+    ])
+    .transaction();
+  return { tx, signers: [nft] };
+}
+
+/** Claims the pool's trading fees: 80% to the seller, 20% to the platform. Anyone can send it. */
+export function buildClaimPoolFees(payer: PublicKey, plan: LiquidityPlan) {
+  return program.methods
+    .claimPoolFees()
+    .accountsPartial({
+      cranker: payer,
+      plan: plan.address,
+      ...lpAccounts(plan.auction, plan.mint, plan.tokenProgram),
+      seller: plan.seller,
+      treasury: plan.treasury,
+      mint: plan.mint,
+      wsolMint: WSOL_MINT,
+      pool: plan.pool,
+      position: plan.position,
+      positionNftAccount: dammNftAccountAddress(plan.positionNftMint),
+      tokenAVault: dammVaultAddress(plan.mint, plan.pool),
+      tokenBVault: dammVaultAddress(WSOL_MINT, plan.pool),
+      poolAuthority: dammPoolAuthority,
+      eventAuthority: dammEventAuthority,
+      cpAmmProgram: CP_AMM_ID,
+      tokenProgram: plan.tokenProgram,
+      wsolTokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .preInstructions([computeLimit(LP_COMPUTE_UNITS.claimFees)])
+    .transaction();
+}
+
+/** Gives the reserve and the rent deposit back when no pool will open. */
+async function releaseLiquidityInstruction(auction: Auction) {
+  return program.methods
+    .releaseLiquidity()
+    .accountsPartial({
+      seller: auction.seller,
+      auction: auction.address,
+      plan: liquidityPlanAddress(auction.address),
+      ...lpAccounts(auction.address, auction.mint, auction.tokenProgram),
+      mint: auction.mint,
+      sellerTokenAccount: getAssociatedTokenAddressSync(auction.mint, auction.seller, false, auction.tokenProgram),
+      tokenProgram: auction.tokenProgram,
+      wsolTokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .instruction();
+}
+
+export async function buildReleaseLiquidity(auction: Auction) {
+  return new Transaction().add(await releaseLiquidityInstruction(auction));
+}
+
+/**
+ * Refunds a bid of a sale that missed its pool's minimum: the whole deposit
+ * and the account's rent, without any computation. Anyone can send it.
+ */
+export async function buildRefundFailedBid(payer: PublicKey, bid: Bid) {
+  const refund = await program.methods
+    .refundFailedBid()
+    .accountsPartial({ bidder: bid.bidder, auction: bid.auction, bid: bid.address })
+    .instruction();
+  return new Transaction().add(refund, ...(await noteCloseAfter(payer, bid)));
 }
 
 /**
@@ -671,18 +843,29 @@ function sellerTokenAccounts(auction: Auction) {
   };
 }
 
-/** Pays the seller the proceeds less the platform's sale fee (and unsold tokens). */
-export function buildClaimProceeds(auction: Auction) {
+/**
+ * Pays the seller the proceeds less the platform's sale fee (and unsold
+ * tokens). A sale whose pool will not open (it missed the minimum, ended
+ * without bids or stalled) also gets the pool's reserve back here.
+ */
+export async function buildClaimProceeds(auction: Auction) {
   if (auction.kind === "collection") {
     return program.methods
       .claimCollectionProceeds()
       .accountsPartial({ seller: auction.seller, auction: auction.address, treasury: auction.treasury })
       .transaction();
   }
-  return program.methods
-    .claimProceeds()
-    .accountsPartial({ ...sellerTokenAccounts(auction), treasury: auction.treasury })
-    .transaction();
+  const tx = new Transaction();
+  // A planned pool that will not open is released first: claiming waits for it.
+  if (auction.liquidity === "planned") tx.add(await releaseLiquidityInstruction(auction));
+  tx.add(
+    await program.methods
+      .claimProceeds()
+      .accountsPartial({ ...sellerTokenAccounts(auction), treasury: auction.treasury })
+      .instruction()
+  );
+  if (auction.liquidity === "failed") tx.add(await releaseLiquidityInstruction(auction));
+  return tx;
 }
 
 /** The clearing state, which closes with an auction that has more than one page. */
@@ -722,7 +905,10 @@ export async function buildCancelAuction(auction: Auction) {
           .cancelCollectionAuction()
           .accountsPartial({ seller: auction.seller, auction: auction.address, treasury: auction.treasury })
       : program.methods.cancelAuction().accountsPartial({ ...sellerTokenAccounts(auction), treasury: auction.treasury });
-  return new Transaction().add(await cancel.instruction(), await closeInstruction(auction));
+  const tx = new Transaction().add(await cancel.instruction());
+  // A planned pool's reserve and rent deposit come back too.
+  if (auction.liquidity === "planned") tx.add(await releaseLiquidityInstruction(auction));
+  return tx.add(await closeInstruction(auction));
 }
 
 /**

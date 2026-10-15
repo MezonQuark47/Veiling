@@ -12,7 +12,9 @@ import { type ItemEntry, itemNftName, numberedName } from "./items";
 import { shuffledItems } from "./shuffle";
 import type { SealedAuction } from "../idl/sealed_auction";
 import {
+  CP_AMM_ID,
   EMERGENCY_DELAY_SECS,
+  WSOL_MINT,
   EVICTION_PREMIUM_PERCENT,
   FOLD_PASSES,
   FOLD_REWARD_PERCENT,
@@ -92,6 +94,32 @@ export const pageOf = (index: number) => Math.floor(index / PAGE_BIDS);
 export function foldAddress(auction: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([seed("fold"), auction.toBytes()], PROGRAM_ID)[0];
 }
+
+/** A token sale's auto-liquidity plan. */
+export function liquidityPlanAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("liquidity"), auction.toBytes()], PROGRAM_ID)[0];
+}
+
+/** The data-less address that holds a plan's reserve and owns its pool position. */
+export function lpAuthorityAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("lp_authority"), auction.toBytes()], PROGRAM_ID)[0];
+}
+
+const damm = (seeds: Uint8Array[]) => PublicKey.findProgramAddressSync(seeds, CP_AMM_ID)[0];
+
+/** DAMM v2's one customizable pool for a token and SOL, and its accounts. */
+export function dammPoolAddress(mint: PublicKey): PublicKey {
+  const [a, b] = [mint.toBytes(), WSOL_MINT.toBytes()];
+  // The larger key first, comparing bytes.
+  const k = a.findIndex((byte, i) => byte !== b[i]);
+  const mintFirst = k >= 0 && a[k] > b[k];
+  return damm([seed("cpool"), mintFirst ? a : b, mintFirst ? b : a]);
+}
+export const dammVaultAddress = (mint: PublicKey, pool: PublicKey) => damm([seed("token_vault"), mint.toBytes(), pool.toBytes()]);
+export const dammPositionAddress = (nftMint: PublicKey) => damm([seed("position"), nftMint.toBytes()]);
+export const dammNftAccountAddress = (nftMint: PublicKey) => damm([seed("position_nft_account"), nftMint.toBytes()]);
+export const dammPoolAuthority = damm([seed("pool_authority")]);
+export const dammEventAuthority = damm([seed("__event_authority")]);
 
 export function bidAddress(auction: PublicKey, bidder: PublicKey, bidSeed: BN): PublicKey {
   return PublicKey.findProgramAddressSync(
@@ -198,6 +226,43 @@ export interface Auction {
   crankPool: bigint;
   /** Pages of the bid book beyond the first, each room for `PAGE_BIDS` more bids. */
   extraPages: number;
+  /** Token sales: the auto-liquidity plan's state (`LiquidityPlan` holds the terms). */
+  liquidity: LiquidityState;
+  /** The least SOL the planned pool gets, in lamports. */
+  liquidityFloor: bigint;
+}
+
+/**
+ * Auto-liquidity: none; planned and waiting for the sale; failed (the sale
+ * missed the pool's minimum, so every bid is refunded); pooled (the pool is
+ * open and locked); released (no pool, the reserve went back to the seller).
+ */
+export type LiquidityState = "none" | "planned" | "failed" | "pooled" | "released";
+const LIQUIDITY_STATES: LiquidityState[] = ["none", "planned", "failed", "pooled", "released"];
+
+/** A token sale's auto-liquidity terms and, once opened, its pool. */
+export interface LiquidityPlan {
+  address: PublicKey;
+  auction: PublicKey;
+  seller: PublicKey;
+  treasury: PublicKey;
+  mint: PublicKey;
+  tokenProgram: PublicKey;
+  /** Share of the net proceeds that goes into the pool, in bps. */
+  lpBps: number;
+  /** The least SOL the pool gets, in lamports. */
+  floor: bigint;
+  /** The pool's trading fee after the anti-sniper fee, in bps. */
+  tradeFeeBps: number;
+  /** Tokens escrowed for the pool. */
+  reserve: bigint;
+  poolSol: bigint;
+  poolTokens: bigint;
+  pool: PublicKey;
+  position: PublicKey;
+  positionNftMint: PublicKey;
+  feesToSeller: bigint;
+  feesToPlatform: bigint;
 }
 
 /** Lamports paid to whoever runs each private step, when its computation succeeds. */
@@ -290,6 +355,9 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     crankPool: big(a.crankPool),
     // Auctions opened before pages existed read as one page.
     extraPages: a.extraPages ?? 0,
+    // ...and those opened before auto-liquidity, as none.
+    liquidity: LIQUIDITY_STATES[a.liquidity ?? 0] ?? "none",
+    liquidityFloor: a.liquidityFloor ? big(a.liquidityFloor) : 0n,
   };
 }
 
@@ -332,6 +400,47 @@ export async function fetchClearingFold(auction: Auction): Promise<ClearingFold 
   const fold = await program.account.clearingFold.fetchNullable(foldAddress(auction.address));
   return fold ? { pass: fold.pass, page: fold.page, steps: fold.steps } : null;
 }
+
+export async function fetchLiquidityPlan(auction: Auction): Promise<LiquidityPlan | null> {
+  if (auction.liquidity === "none") return null;
+  if (MOCK) return (await import("./mock")).mockLiquidityPlan(auction);
+  const address = liquidityPlanAddress(auction.address);
+  const p = await program.account.liquidityPlan.fetchNullable(address);
+  if (!p) return null;
+  return {
+    address,
+    auction: p.auction,
+    seller: p.seller,
+    treasury: p.treasury,
+    mint: p.mint,
+    tokenProgram: p.tokenProgram,
+    lpBps: p.lpBps,
+    floor: big(p.floor),
+    tradeFeeBps: p.tradeFeeBps,
+    reserve: big(p.reserve),
+    poolSol: big(p.poolSol),
+    poolTokens: big(p.poolTokens),
+    pool: p.pool,
+    position: p.position,
+    positionNftMint: p.positionNftMint,
+    feesToSeller: big(p.feesToSeller),
+    feesToPlatform: big(p.feesToPlatform),
+  };
+}
+
+/**
+ * The SOL the pool gets out of `net` proceeds (after the sale fee): its share,
+ * raised to the floor, never more than `net`. Mirrors `pool_sol`.
+ */
+export function poolSol(net: bigint, lpBps: number, floor: bigint): bigint {
+  const share = (net * BigInt(lpBps)) / 10_000n;
+  const raised = share > floor ? share : floor;
+  return raised < net ? raised : net;
+}
+
+/** Whether every bid of a sale with a planned pool is resolved, so the pool can open. */
+export const poolReady = (a: Auction) =>
+  a.liquidity === "planned" && a.status === "settling" && a.resolvedCount === a.bidCount;
 
 function decodeCrankRewards(r: { checkBatch: BN; clearing: BN; settlement: BN; seedDraw: BN }): CrankRewards {
   return { checkBatch: big(r.checkBatch), clearing: big(r.clearing), settlement: big(r.settlement), seedDraw: big(r.seedDraw) };
