@@ -15,6 +15,13 @@ import {
   NFT_MINT_COST_LAMPORTS,
   PAGE_BIDS,
   REVEAL_DELAY_SECS,
+  ANTI_SNIPER_FEE_BPS,
+  ANTI_SNIPER_MINUTES,
+  DAMM_PROTOCOL_FEE_PERCENT,
+  MAX_LP_BPS,
+  MIN_LP_BPS,
+  POOL_FEE_TIERS,
+  SELLER_POOL_FEE_BPS,
 } from "../config";
 import { useLoader } from "../components/ui";
 import { bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee } from "../lib/chain";
@@ -31,6 +38,7 @@ export const DOC_SECTIONS: [string, string][] = [
   ["price", "The clearing price"],
   ["launch", "Drops and collections"],
   ["nfts", "NFT collections"],
+  ["liquidity", "Auto-liquidity"],
   ["fees", "Fees"],
   ["privacy", "What stays private"],
   ["safety", "If settlement stalls"],
@@ -374,6 +382,44 @@ export function Docs({ section }: { section: string }) {
                 they can then change the collection's and its NFTs' metadata.
               </li>
             </ul>
+          </Section>
+
+          <Section id="liquidity" title="Auto-liquidity">
+            <p>
+              A token sale can open a trading pool on Meteora the moment it settles, at exactly the clearing price.
+              Winners can trade right away, and the market starts from the price everyone paid.
+            </p>
+            <ul>
+              <li>
+                <strong>Fixed before any bid.</strong> The seller chooses a share of the proceeds after the platform
+                fee, from {MIN_LP_BPS / 100}% to {MAX_LP_BPS / 100}%, the least SOL the pool gets, and its trading
+                fee ({POOL_FEE_TIERS.map((bps) => formatPercent(bps)).join(", ")}). Bidders see all of it on the
+                auction page, and it cannot change.
+              </li>
+              <li>
+                <strong>A minimum that holds.</strong> The pool's share rises as needed to reach its minimum. If the
+                sale cannot raise it, the sale does not go ahead: every bid gets its whole deposit back, and the
+                seller their tokens.
+              </li>
+              <li>
+                <strong>Locked forever.</strong> The pool belongs to the program, which has no way to withdraw it.
+                Nobody, the seller included, can pull the liquidity.
+              </li>
+              <li>
+                <strong>No snipers.</strong> Trading opens with a {formatPercent(ANTI_SNIPER_FEE_BPS)} fee that falls
+                to the pool's fee over {ANTI_SNIPER_MINUTES} minutes, so bots gain nothing by buying first.
+              </li>
+              <li>
+                <strong>Fees for as long as it trades.</strong> Meteora keeps {DAMM_PROTOCOL_FEE_PERCENT}% of every
+                trading fee. Anyone can pay out the rest, in SOL: {formatPercent(SELLER_POOL_FEE_BPS)} to the seller
+                and {formatPercent(10_000 - SELLER_POOL_FEE_BPS)} to Veiling.
+              </li>
+            </ul>
+            <p>
+              The seller escrows as many tokens again as are for sale. The pool takes only the tokens its SOL buys at
+              the clearing price; the rest comes back when it opens. If Meteora's pool for the token already exists
+              by then, no pool is added and the seller simply receives everything.
+            </p>
           </Section>
 
           <Section id="fees" title="Fees">

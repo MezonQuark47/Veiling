@@ -150,6 +150,51 @@ bidding (`EMERGENCY_DELAY_SECS`):
   still finish until the seller claims, except the NFT shuffle: if its seed
   is not drawn by then, each winner's places are their own NFT numbers.
 
+### Auto-liquidity
+
+A token sale can open a Meteora DAMM v2 pool the moment it settles, at
+exactly its clearing price, so winners can trade at once and the price they
+paid is where the market starts (`programs/sealed_auction/src/liquidity.rs`).
+
+- **Planned before any bid.** The seller opts in with `plan_liquidity`, in the
+  same transaction as `create_auction`: `lp_bps` of the net proceeds (after
+  the sale fee), from 20% to 100%; a `floor`, the least SOL the pool gets;
+  and the pool's trading fee (0.25%, 1% or 2%). They escrow a reserve of as
+  many tokens as are for sale and 0.025 SOL for the pool's rent. Bidders see
+  all of it before they bid, and none of it can change.
+- **The floor.** The pool's share rises as needed, up to all the net
+  proceeds, to reach the floor. If the clearing shows the sale cannot raise
+  the floor, the sale fails: every bid gets its whole deposit back with
+  `refund_failed_bid` (no MPC), and the seller takes back the tokens and the
+  reserve (`claim_proceeds`, `release_liquidity`).
+- **Opening.** Once every bid is settled, anyone can send
+  `bootstrap_liquidity`. It moves the pool's SOL out of the proceeds, opens
+  DAMM v2's pool for the token and SOL at the clearing price with the tokens
+  that SOL buys there (never more than were sold), permanently locks the whole
+  position, and pays the seller the rest of the proceeds, the unused reserve
+  and the unused rent. The pool is full range (x · y = k) and collects its
+  fees in SOL.
+- **Locked for good.** The position NFT belongs to a data-less address of the
+  program (`[b"lp_authority", auction]`), and no instruction withdraws
+  liquidity, so the seller cannot pull it.
+- **Anti-sniper fee.** Trading opens with a 50% fee that falls linearly to the
+  pool's fee over 10 one-minute steps (DAMM v2's fee time scheduler).
+- **Fees.** DAMM v2 keeps 20% of every trading fee. Anyone can send
+  `claim_pool_fees`, which pays the rest out in SOL: 80% to the seller, 20%
+  to the platform's treasury. The plan account stays after the auction
+  closes, so this works for as long as the pool trades.
+- **Someone opened the pool first.** DAMM v2 has one customizable pool per
+  token and SOL. If it already exists when the sale settles,
+  `bootstrap_liquidity` opens no pool: the seller gets all the net proceeds
+  and the reserve, and nothing is held up. A dedicated DAMM v2 config whose
+  pool creator is this program's `[b"pool_creator"]` address removes this
+  case.
+- **Stalled sales.** A planned pool's reserve also comes back if the sale is
+  cancelled, ends without bids, or reaches the safety net.
+
+Measured on devnet: opening the pool takes about 300,000 compute units and
+about 0.017 SOL of rent, paid from the seller's deposit.
+
 ### NFT collections
 
 - NFT `i` (from 0) is named `"{item_name} #{i + 1}"`. Its metadata URI is
@@ -315,7 +360,9 @@ cargo test -p encrypted-ixs                     # circuits under mock MPC (after
 cargo test -p sealed_auction                    # layouts, keys, awards, shares, fees, Core encodings
 solana program dump -u devnet CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d \
   tests/svm/fixtures/mpl_core.so                # Metaplex Core, for the LiteSVM tests
-cargo +stable test --manifest-path tests/svm/Cargo.toml # terms, bidding, fees, sales, shares, NFTs, items, reveals, safety net, closing
+solana program dump -u devnet cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG \
+  tests/svm/fixtures/cp_amm.so                  # Meteora DAMM v2, for the auto-liquidity tests
+cargo +stable test --manifest-path tests/svm/Cargo.toml # terms, bidding, fees, sales, shares, NFTs, items, reveals, pools, safety net, closing
 ```
 
 The LiteSVM crate needs a newer compiler than the program's pinned 1.89, hence
@@ -323,7 +370,8 @@ The LiteSVM crate needs a newer compiler than the program's pinned 1.89, hence
 
 The LiteSVM tests write the results MPC callbacks would record straight into
 the accounts, then run the real instructions after them, including minting
-NFTs through the real Metaplex Core program.
+NFTs through the real Metaplex Core program and opening, trading against and
+claiming fees from pools on the real Meteora DAMM v2 program.
 
 `anchor build` rebuilds only the program; use it when the circuits have not
 changed, so their hashes stay those of the hosted files. `arcium build` clears
@@ -568,6 +616,9 @@ these services.
   platforms are regulated in many places, including Turkey under SPK rules).
 - Multisig with a timelock for the upgrade authority, the MXE authority and
   the fee admin, or an immutable program.
+- A dedicated Meteora DAMM v2 config for auto-liquidity pools, with this
+  program's `[b"pool_creator"]` address as the pool creator, so nobody can
+  open a sale's pool before it settles.
 - Dedicated RPC provider, monitoring, and permanent circuit hosting.
 - Point the app at mainnet (`WALLET_CHAIN`, `RPC_URL`), which also moves paid
   storage to Turbo's main services, and check the pinned Turbo payment
