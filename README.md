@@ -319,12 +319,13 @@ rather than blocking the seller.
 
 Queueing an MPC computation costs a network fee (measured on devnet with the
 v2 circuits: about 0.0053 SOL to check four bids, 0.0224 SOL to find the
-price, 0.0035 SOL to settle a bid and 0.0028 SOL to draw a collection's
+price, 0.0042 SOL to settle a batch of four bids (0.0037 SOL for one) and
+0.0028 SOL to draw a collection's
 seed). So that anyone can settle a sale without paying for it, every auction
 keeps a crank pool in its own account:
 
-- the seller pays a clearing, one batch check and, for a collection, a seed
-  draw into it when the auction opens;
+- the seller pays a clearing, one batch check, one batch settlement and, for
+  a collection, a seed draw into it when the auction opens;
 - pages opened on demand are paid for out of the pool, and so are the steps of
   the paged clearing they need (9 steps with the second page, 8 more with
   each further one; a step pays the clearing reward, as it costs about the
@@ -349,7 +350,7 @@ keeps a crank pool in its own account:
 
 The admin sets the rewards with `set_crank_rewards`
 (`scripts/set-crank-rewards.ts`), each capped at 0.1 SOL; each auction keeps
-the rewards it opened with. The defaults on devnet are 0.006, 0.025, 0.004
+the rewards it opened with. The defaults on devnet are 0.006, 0.025, 0.0046
 and 0.003 SOL, a little above the measured fees.
 
 ### What is public and what stays private

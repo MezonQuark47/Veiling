@@ -1,6 +1,6 @@
 /**
  * Sets the rewards paid to whoever runs each MPC step, in lamports: a batch
- * check (four bids), the clearing, one bid's settlement and a collection's
+ * check (four bids), the clearing, a batch settlement (up to four bids) and a collection's
  * seed draw. Only the admin can run it, and the program caps each at 0.1 SOL.
  * Auctions that are already open keep the rewards they opened with.
  *
@@ -10,8 +10,8 @@
  *
  * Set them a little above what queueing each computation costs, so running
  * the steps never costs anyone money. Measured on devnet with the v2
- * circuits: about 0.0053, 0.0224, 0.0035 and 0.0028 SOL, hence for example
- * `6000000 25000000 4000000 3000000`.
+ * circuits: about 0.0053, 0.0224, 0.0042 and 0.0028 SOL, hence for example
+ * `6000000 25000000 4600000 3000000`.
  */
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";

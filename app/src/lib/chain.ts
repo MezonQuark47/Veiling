@@ -889,7 +889,7 @@ export const crankConfigAddress = PublicKey.findProgramAddressSync([seed("crank"
 
 /** The crank rewards auctions open with now; null if the platform has not set them. */
 export async function fetchCrankRewards(): Promise<CrankRewards | null> {
-  if (MOCK) return { checkBatch: 6_000_000n, clearing: 25_000_000n, settlement: 4_000_000n, seedDraw: 3_000_000n };
+  if (MOCK) return { checkBatch: 6_000_000n, clearing: 25_000_000n, settlement: 4_600_000n, seedDraw: 3_000_000n };
   const config = await program.account.crankConfig.fetchNullable(crankConfigAddress);
   return config ? decodeCrankRewards(config.rewards) : null;
 }
