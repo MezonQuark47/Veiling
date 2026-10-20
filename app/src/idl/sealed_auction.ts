@@ -258,6 +258,108 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "awardBatchCallback",
+      "discriminator": [
+        197,
+        111,
+        221,
+        111,
+        5,
+        32,
+        188,
+        118
+      ],
+      "accounts": [
+        {
+          "name": "arciumProgram",
+          "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
+        },
+        {
+          "name": "compDefAccount"
+        },
+        {
+          "name": "mxeAccount"
+        },
+        {
+          "name": "computationAccount",
+          "docs": [
+            "against the bids' pending computation."
+          ]
+        },
+        {
+          "name": "clusterAccount"
+        },
+        {
+          "name": "instructionsSysvar",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "docs": [
+            "The batch's page, named by `settle_batch`; checked in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "reward."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "output",
+          "type": {
+            "defined": {
+              "name": "signedComputationOutputs",
+              "generics": [
+                {
+                  "kind": "type",
+                  "type": {
+                    "defined": {
+                      "name": "awardBatchOutput"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "awardBidV2Callback",
       "discriminator": [
         127,
@@ -4216,6 +4318,74 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "initAwardBatchCompDef",
+      "discriminator": [
+        17,
+        48,
+        9,
+        209,
+        132,
+        185,
+        93,
+        220
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mxeAccount",
+          "writable": true
+        },
+        {
+          "name": "compDefAccount",
+          "writable": true
+        },
+        {
+          "name": "addressLookupTable",
+          "writable": true
+        },
+        {
+          "name": "lutProgram",
+          "address": "AddressLookupTab1e1111111111111111111111111"
+        },
+        {
+          "name": "arciumProgram",
+          "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "circuitUrl",
+          "type": "string"
+        }
+      ]
+    },
+    {
       "name": "initAwardBidCompDef",
       "discriminator": [
         241,
@@ -6395,6 +6565,154 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "settleBatch",
+      "docs": [
+        "Decides the bids of one batch record together: up to `BATCH_SIZE`",
+        "bids, checked in one `check_batch`, in one computation instead of one",
+        "each (`award_batch`). Each bid's outcome is revealed anyway once it",
+        "settles, so this reveals nothing more. Its callback settles each bid as",
+        "`settle_bid` does.",
+        "",
+        "Pass the batch's bids as remaining accounts, in index order from a",
+        "multiple of `BATCH_SIZE` (fewer only for the last batch), all still",
+        "sealed and idle, and as `book` the page that holds them. When one of",
+        "them is not, settle the others one at a time (`settle_bid`). Anyone can",
+        "call it; it pays its caller the settlement reward once for the batch."
+      ],
+      "discriminator": [
+        22,
+        2,
+        21,
+        223,
+        225,
+        122,
+        163,
+        214
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "docs": [
+            "The page of the book that holds the batch's record, which the cluster",
+            "reads in place; checked in the handler."
+          ]
+        },
+        {
+          "name": "signPdaAccount",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  65,
+                  114,
+                  99,
+                  105,
+                  117,
+                  109,
+                  83,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114,
+                  65,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mxeAccount"
+        },
+        {
+          "name": "mempoolAccount",
+          "writable": true
+        },
+        {
+          "name": "executingPool",
+          "writable": true
+        },
+        {
+          "name": "computationAccount",
+          "writable": true
+        },
+        {
+          "name": "compDefAccount"
+        },
+        {
+          "name": "clusterAccount",
+          "writable": true
+        },
+        {
+          "name": "poolAccount",
+          "writable": true,
+          "address": "G2sRWJvi3xoyh5k2gY49eG9L8YhAEWQPtNb1zb1GXTtC"
+        },
+        {
+          "name": "clockAccount",
+          "writable": true,
+          "address": "7EbMUTLo5DjdzbN7s8BXeZwXzEwNQb1hScfRvWg8a6ot"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "arciumProgram",
+          "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
+        }
+      ],
+      "args": [
+        {
+          "name": "computationOffset",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "settleBid",
       "docs": [
         "Decides one bid against the public clearing price, from the batch",
@@ -8413,6 +8731,52 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "awardBatchOutput",
+      "docs": [
+        "The output of the callback instruction. Provided as a struct with ordered fields",
+        "as anchor does not support tuples and tuple structs yet."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "field0",
+            "type": {
+              "defined": {
+                "name": "awardBatchOutputStruct0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "awardBatchOutputStruct0",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "field0",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
+            "name": "field1",
+            "type": {
+              "array": [
+                "u64",
+                4
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "awardBidV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
@@ -9847,7 +10211,8 @@ export type SealedAuction = {
       "name": "crankRewards",
       "docs": [
         "Lamports paid to whoever runs each MPC step, when its computation",
-        "succeeds: a batch check, the clearing, one bid's settlement, and a",
+        "succeeds: a batch check, the clearing, one settlement (of a batch of up to",
+        "four bids, `settle_batch`, or of one bid, `settle_bid`), and a",
         "collection's seed draw. They cover the fees the caller paid to queue it."
       ],
       "type": {

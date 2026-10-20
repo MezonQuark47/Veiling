@@ -27,6 +27,9 @@
 //!    that public result, and reveals its size (budget or NFTs) only if it
 //!    wins something: the program needs it to work out the award in the
 //!    open. A losing bid's price and size are never revealed.
+//!    `award_batch` decides the four bids of a batch record at once, in one
+//!    computation instead of four: each bid's outcome is revealed anyway once
+//!    it settles, so deciding them together reveals nothing more.
 //! 4. Collections only: once every bid is settled, `draw_seed` draws the
 //!    random seed that decides which NFTs each winner gets.
 //!
@@ -285,6 +288,38 @@ mod circuits {
             quantity: if above || at { bid.quantity } else { 0u64 },
         }
         .reveal()
+    }
+
+    /// Revealed outcome for the four bids of a batch record, as `Award` for
+    /// each slot.
+    pub struct AwardBatch {
+        pub outcomes: [u8; BATCH_SIZE],
+        pub quantities: [u64; BATCH_SIZE],
+    }
+
+    /// Decides every bid of a batch record against the public clearing
+    /// price, exactly as `award_bid_v2` does for each slot. Padding slots of
+    /// a last, partial batch were recorded empty and come out as nothing.
+    #[instruction]
+    pub fn award_batch(record_ctxt: Enc<Mxe, BatchRecord>, clearing_price: u32, filled: bool) -> AwardBatch {
+        let record = record_ctxt.to_arcis().unpack();
+        let mut outcomes = [0u8; BATCH_SIZE];
+        let mut quantities = [0u64; BATCH_SIZE];
+        for k in 0..BATCH_SIZE {
+            let bid = record[k];
+            let counts = bid.price > 0u32;
+            let above = counts && (!filled || bid.price > clearing_price);
+            let at = counts && filled && bid.price == clearing_price;
+            outcomes[k] = if above {
+                1u8
+            } else if at {
+                2u8
+            } else {
+                0u8
+            };
+            quantities[k] = if above || at { bid.quantity } else { 0u64 };
+        }
+        AwardBatch { outcomes, quantities }.reveal()
     }
 
     /// Digit values of one `fold_batch_v2` pass: each pass fixes the next

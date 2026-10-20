@@ -54,13 +54,16 @@
 //!    a page at a time instead: `FOLD_PASSES` passes over the pages, each
 //!    fixing four bits of the price, with the totals in between kept
 //!    encrypted (`ClearingFold`).
-//! 5. `settle_bid` decides one bid against that price. Its callback records
+//! 5. `settle_batch` decides the bids of one batch record against that price
+//!    in one computation (`settle_bid` decides one bid, for a batch that
+//!    cannot be settled whole). Its callback records
 //!    what the bid won and moves the payment to the auction. A collection bid
 //!    exactly at the clearing price only records its size, and
 //!    `finalize_share` splits the remaining NFTs between those bids once they
 //!    are all known (after `tally_clearing_page` has counted them page by
-//!    page, when there are several pages). Neither touches any other account, so nobody can block
-//!    their own settlement.
+//!    page, when there are several pages). A bid closed by the safety net
+//!    while its batch was being decided is skipped, so nobody can block the
+//!    others' settlement.
 //! 6. `claim_tokens` (or `claim_nfts`) delivers what a bid won and
 //!    `close_bid` returns the unused deposit; anyone can call both, funds only
 //!    go to the bid's owner.
@@ -135,6 +138,7 @@ declare_id!("CjUVaVK3jF9o4EehHWtB13TGg9SPXBWKGBepmZHwyLK2");
 const COMP_DEF_OFFSET_CHECK_BIDS: u32 = comp_def_offset("check_bids_v2");
 const COMP_DEF_OFFSET_CLEAR_PRICE: u32 = comp_def_offset("clear_price_v2");
 const COMP_DEF_OFFSET_AWARD_BID: u32 = comp_def_offset("award_bid_v2");
+const COMP_DEF_OFFSET_AWARD_BATCH: u32 = comp_def_offset("award_batch");
 const COMP_DEF_OFFSET_DRAW_SEED: u32 = comp_def_offset("draw_seed");
 const COMP_DEF_OFFSET_FOLD_BATCH: u32 = comp_def_offset("fold_batch_v2");
 
@@ -532,6 +536,17 @@ pub mod sealed_auction {
         init_computation_def(
             ctx.accounts,
             circuit_source(circuit_url, circuit_hash!("award_bid_v2"))?,
+        )?;
+        Ok(())
+    }
+
+    pub fn init_award_batch_comp_def(
+        ctx: Context<InitAwardBatchCompDef>,
+        circuit_url: String,
+    ) -> Result<()> {
+        init_computation_def(
+            ctx.accounts,
+            circuit_source(circuit_url, circuit_hash!("award_batch"))?,
         )?;
         Ok(())
     }
@@ -2061,70 +2076,192 @@ pub mod sealed_auction {
         let quantity = award.field_1 as u64;
         let reward = ctx.accounts.auction.crank_rewards.settlement;
         pay_cranker(&mut ctx.accounts.auction, &ctx.accounts.cranker.to_account_info(), reward)?;
+        let bid_info = ctx.accounts.bid.to_account_info();
+        apply_award(
+            &mut ctx.accounts.auction,
+            &mut ctx.accounts.bid,
+            &bid_info,
+            &ctx.accounts.book,
+            outcome,
+            quantity,
+        )
+    }
 
-        require!(
-            ctx.accounts.auction.status == AuctionStatus::Settling,
-            AuctionError::WrongStatus
-        );
-        require!(
-            ctx.accounts.bid.status == BidStatus::Sealed,
-            AuctionError::BidAlreadySettled
-        );
+    /// Decides the bids of one batch record together: up to `BATCH_SIZE`
+    /// bids, checked in one `check_batch`, in one computation instead of one
+    /// each (`award_batch`). Each bid's outcome is revealed anyway once it
+    /// settles, so this reveals nothing more. Its callback settles each bid as
+    /// `settle_bid` does.
+    ///
+    /// Pass the batch's bids as remaining accounts, in index order from a
+    /// multiple of `BATCH_SIZE` (fewer only for the last batch), all still
+    /// sealed and idle, and as `book` the page that holds them. When one of
+    /// them is not, settle the others one at a time (`settle_bid`). Anyone can
+    /// call it; it pays its caller the settlement reward once for the batch.
+    pub fn settle_batch<'info>(
+        ctx: Context<'info, SettleBatch<'info>>,
+        computation_offset: u64,
+    ) -> Result<()> {
+        require_pinned_circuit(&ctx.accounts.comp_def_account, circuit_hash!("award_batch"))?;
+        let auction = &ctx.accounts.auction;
+        let now = Clock::get()?.unix_timestamp;
+        require!(auction.status == AuctionStatus::Settling, AuctionError::WrongStatus);
+        require!(before_emergency(auction, now)?, AuctionError::EmergencyActive);
+        require!(auction.liquidity != LIQUIDITY_FAILED, AuctionError::LiquidityFloorMissed);
+        require!(!auction.raise_missed, AuctionError::MinimumRaiseMissed);
 
-        if ctx.accounts.auction.kind == AuctionKind::Token {
-            // The bid's private budget, revealed because it won something;
-            // the check made sure its deposit covers it.
-            let budget = quantity;
-            require!(
-                (outcome == OUTCOME_NONE) == (budget == 0) && budget <= ctx.accounts.bid.deposit,
-                AuctionError::InvalidAllocation
-            );
-            let (won, payment) = token_award(&ctx.accounts.auction, outcome, budget)?;
-            let auction = &mut ctx.accounts.auction;
-            auction.sold = auction.sold.checked_add(won).ok_or(AuctionError::MathOverflow)?;
-            require!(auction.sold <= auction.supply, AuctionError::Oversold);
-            return settle_payment(&mut ctx.accounts.auction, &mut ctx.accounts.bid, outcome, won, payment);
+        let infos = ctx.remaining_accounts;
+        require!(!infos.is_empty(), AuctionError::WrongBidAccounts);
+        let mut bids = Vec::with_capacity(infos.len());
+        for info in infos {
+            require!(info.is_writable, AuctionError::WrongBidAccounts);
+            bids.push(Account::<Bid>::try_from(info)?);
+        }
+        let first = bids[0].index;
+        require!(first % BATCH_SIZE as u32 == 0, AuctionError::WrongBidAccounts);
+        let count = (auction.bid_count - first.min(auction.bid_count)).min(BATCH_SIZE as u32) as usize;
+        require!(count > 0 && bids.len() == count, AuctionError::WrongBidAccounts);
+        for (k, bid) in bids.iter().enumerate() {
+            require_keys_eq!(bid.auction, auction.key(), AuctionError::WrongBidAccounts);
+            require!(bid.index == first + k as u32, AuctionError::WrongBidAccounts);
+            require!(bid.status == BidStatus::Sealed, AuctionError::BidAlreadySettled);
+            ensure_idle(&bid.pending_computation, bid.pending_since, now)?;
         }
 
-        if outcome == OUTCOME_AT {
-            // The share depends on every other bid at the clearing price, so
-            // only the size is recorded now; `finalize_share` does the rest.
-            let (page, index) = page_slot(ctx.accounts.bid.index);
-            let size = u32::try_from(quantity).map_err(|_| AuctionError::InvalidAllocation)?;
-            require_keys_eq!(
-                ctx.accounts.book.key(),
-                page_address(&ctx.accounts.auction, page)?,
-                AuctionError::WrongBookPage
-            );
-            let mut book = ctx.accounts.book.load_mut()?;
-            require!(
-                book.clearing_quantities[index] == 0,
-                AuctionError::InvalidAllocation
-            );
-            book.clearing_quantities[index] = size;
-            drop(book);
-            record_clearing_quantity(&mut ctx.accounts.auction, quantity)?;
+        // The batch's record, which the cluster reads in place.
+        let (page, local) = page_slot(first);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        let batch = local / BATCH_SIZE;
+        let record_nonce = u128::from_le_bytes(ctx.accounts.book.load()?.batch_nonces[batch]);
+        let record_offset = BATCH_RECORDS_OFFSET + BATCH_RECORD_LEN * batch as u32;
+        let args = ArgBuilder::new()
+            .plaintext_u128(record_nonce)
+            .account(ctx.accounts.book.key(), record_offset, BATCH_RECORD_LEN)
+            .plaintext_u32(auction.clearing_price)
+            .plaintext_bool(auction.filled)
+            .build();
 
-            let bid = &mut ctx.accounts.bid;
-            bid.status = BidStatus::AtClearing;
-            bid.outcome = outcome;
-            bid.pending_computation = Pubkey::default();
-            bid.pending_since = 0;
-            emit!(BidAtClearing {
-                auction: bid.auction,
-                bid: bid.key(),
-                bidder: bid.bidder,
-                quantity,
-            });
-            return Ok(());
+        // Order must match the custom accounts of `AwardBatchCallback`; the
+        // bids follow as its remaining accounts.
+        let mut callback_accounts = vec![
+            CallbackAccount {
+                pubkey: ctx.accounts.auction.key(),
+                is_writable: true,
+            },
+            CallbackAccount {
+                pubkey: ctx.accounts.book.key(),
+                is_writable: true,
+            },
+            CallbackAccount {
+                pubkey: ctx.accounts.payer.key(),
+                is_writable: true,
+            },
+        ];
+        callback_accounts.extend(bids.iter().map(|bid| CallbackAccount {
+            pubkey: bid.key(),
+            is_writable: true,
+        }));
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+        let callback = AwardBatchCallback::callback_ix(
+            computation_offset,
+            &ctx.accounts.mxe_account,
+            &callback_accounts,
+        )?;
+        queue_computation_exact(ctx.accounts, computation_offset, args, callback)?;
+
+        // Every bid of the batch waits for this computation.
+        let computation = ctx.accounts.computation_account.key();
+        let (slot, counter) = computation_identity(&ctx.accounts.computation_account)?;
+        for bid in bids.iter_mut() {
+            bid.pending_computation = computation;
+            bid.pending_since = now;
+            bid.pending_slot = slot;
+            bid.pending_slot_counter = counter;
+            bid.exit(&crate::ID)?;
         }
+        Ok(())
+    }
 
-        let won = collection_fill(&ctx.accounts.auction, outcome, quantity)?;
-        let payment = nft_payment(&ctx.accounts.auction, won)?;
-        let auction = &mut ctx.accounts.auction;
-        auction.sold = auction.sold.checked_add(won).ok_or(AuctionError::MathOverflow)?;
-        require!(auction.sold <= auction.supply, AuctionError::Oversold);
-        settle_payment(&mut ctx.accounts.auction, &mut ctx.accounts.bid, outcome, won, payment)
+    #[arcium_callback(encrypted_ix = "award_batch")]
+    pub fn award_batch_callback(
+        ctx: Context<AwardBatchCallback>,
+        output: SignedComputationOutputs<AwardBatchOutput>,
+    ) -> Result<()> {
+        // The batch's bids, as `settle_batch` named them. A bid closed since
+        // (by the safety net) is skipped; the others still settle.
+        let computation = ctx.accounts.computation_account.key();
+        let auction_key = ctx.accounts.auction.key();
+        let mut bids: Vec<(usize, Bid)> = Vec::with_capacity(BATCH_SIZE);
+        for (k, info) in ctx.remaining_accounts.iter().enumerate().take(BATCH_SIZE) {
+            if info.owner != &crate::ID || info.data_is_empty() {
+                continue;
+            }
+            let bid = {
+                let data = info.try_borrow_data()?;
+                match Bid::try_deserialize(&mut &data[..]) {
+                    Ok(bid) => bid,
+                    Err(_) => continue,
+                }
+            };
+            if bid.auction == auction_key && bid.pending_computation == computation {
+                bids.push((k, bid));
+            }
+        }
+        let Some((_, first)) = bids.first() else {
+            return err!(AuctionError::WrongBidAccounts);
+        };
+        check_callback_computation(
+            &ctx.accounts.computation_account,
+            &first.pending_computation,
+            first.pending_slot,
+            first.pending_slot_counter,
+        )?;
+        let first_index = first.index - first.index % BATCH_SIZE as u32;
+
+        let awards = match output {
+            SignedComputationOutputs::Failure(_) => {
+                for (k, mut bid) in bids {
+                    bid.pending_computation = Pubkey::default();
+                    bid.pending_since = 0;
+                    let info = &ctx.remaining_accounts[k];
+                    bid.try_serialize(&mut &mut info.try_borrow_mut_data()?[..])?;
+                    emit!(ComputationFailed {
+                        auction: auction_key,
+                        bid: Some(info.key()),
+                    });
+                }
+                return Ok(());
+            }
+            other => {
+                let AwardBatchOutput { field_0 } = other.verify_output(
+                    &ctx.accounts.cluster_account,
+                    &ctx.accounts.computation_account,
+                )?;
+                field_0
+            }
+        };
+        let reward = ctx.accounts.auction.crank_rewards.settlement;
+        pay_cranker(&mut ctx.accounts.auction, &ctx.accounts.cranker.to_account_info(), reward)?;
+
+        for (k, mut bid) in bids {
+            let slot = (bid.index - first_index) as usize;
+            require!(slot < BATCH_SIZE, AuctionError::WrongBidAccounts);
+            let info = &ctx.remaining_accounts[k];
+            apply_award(
+                &mut ctx.accounts.auction,
+                &mut bid,
+                info,
+                &ctx.accounts.book,
+                awards.field_0[slot],
+                awards.field_1[slot],
+            )?;
+            bid.try_serialize(&mut &mut info.try_borrow_mut_data()?[..])?;
+        }
+        Ok(())
     }
 
     /// Settles a collection bid at the clearing price once every such bid is
@@ -2170,7 +2307,8 @@ pub mod sealed_auction {
         };
         drop(book);
         let payment = nft_payment(auction, share)?;
-        settle_payment(&mut ctx.accounts.auction, &mut ctx.accounts.bid, OUTCOME_AT, share, payment)
+        let bid_info = ctx.accounts.bid.to_account_info();
+        settle_payment(&mut ctx.accounts.auction, &mut ctx.accounts.bid, &bid_info, OUTCOME_AT, share, payment)
     }
 
     /// Counts the collection bids at the clearing price on one page of a
@@ -3622,14 +3760,15 @@ pub fn share_of(own: u64, earlier: u64, floors: u64, remaining: u64, total: u64)
 /// for `claim_tokens` or `claim_nfts`.
 fn settle_payment<'info>(
     auction: &mut Account<'info, Auction>,
-    bid: &mut Account<'info, Bid>,
+    bid: &mut Bid,
+    bid_info: &AccountInfo<'_>,
     outcome: u8,
     won: u64,
     payment: u64,
 ) -> Result<()> {
     require!(payment <= bid.deposit, AuctionError::Underfunded);
     let refund = bid.deposit - payment;
-    move_lamports(&bid.to_account_info(), &auction.to_account_info(), payment)?;
+    move_lamports(bid_info, &auction.to_account_info(), payment)?;
 
     auction.proceeds = auction
         .proceeds
@@ -3662,7 +3801,7 @@ fn settle_payment<'info>(
     bid.pending_since = 0;
     emit!(BidSettled {
         auction: auction.key(),
-        bid: bid.key(),
+        bid: bid_info.key(),
         bidder: bid.bidder,
         outcome,
         won,
@@ -3670,6 +3809,71 @@ fn settle_payment<'info>(
         refund,
     });
     Ok(())
+}
+
+/// Records what a bid won from its revealed award (`outcome`, and its budget
+/// or NFTs when it won something) and moves its payment to the auction; a
+/// collection bid exactly at the clearing price only records its size in its
+/// page (`book`) and waits for `finalize_share`. The award callbacks of
+/// `settle_bid` and `settle_batch` both end here.
+fn apply_award<'info>(
+    auction: &mut Account<'info, Auction>,
+    bid: &mut Bid,
+    bid_info: &AccountInfo<'_>,
+    book: &AccountLoader<'info, BidBook>,
+    outcome: u8,
+    quantity: u64,
+) -> Result<()> {
+    require!(auction.status == AuctionStatus::Settling, AuctionError::WrongStatus);
+    require!(bid.status == BidStatus::Sealed, AuctionError::BidAlreadySettled);
+
+    if auction.kind == AuctionKind::Token {
+        // The bid's private budget, revealed because it won something; the
+        // check made sure its deposit covers it.
+        let budget = quantity;
+        require!(
+            (outcome == OUTCOME_NONE) == (budget == 0) && budget <= bid.deposit,
+            AuctionError::InvalidAllocation
+        );
+        let (won, payment) = token_award(auction, outcome, budget)?;
+        auction.sold = auction.sold.checked_add(won).ok_or(AuctionError::MathOverflow)?;
+        require!(auction.sold <= auction.supply, AuctionError::Oversold);
+        return settle_payment(auction, bid, bid_info, outcome, won, payment);
+    }
+
+    if outcome == OUTCOME_AT {
+        // The share depends on every other bid at the clearing price, so only
+        // the size is recorded now; `finalize_share` does the rest.
+        let (page, index) = page_slot(bid.index);
+        let size = u32::try_from(quantity).map_err(|_| AuctionError::InvalidAllocation)?;
+        require_keys_eq!(book.key(), page_address(auction, page)?, AuctionError::WrongBookPage);
+        let mut page_book = book.load_mut()?;
+        require!(
+            page_book.clearing_quantities[index] == 0,
+            AuctionError::InvalidAllocation
+        );
+        page_book.clearing_quantities[index] = size;
+        drop(page_book);
+        record_clearing_quantity(auction, quantity)?;
+
+        bid.status = BidStatus::AtClearing;
+        bid.outcome = outcome;
+        bid.pending_computation = Pubkey::default();
+        bid.pending_since = 0;
+        emit!(BidAtClearing {
+            auction: bid.auction,
+            bid: bid_info.key(),
+            bidder: bid.bidder,
+            quantity,
+        });
+        return Ok(());
+    }
+
+    let won = collection_fill(auction, outcome, quantity)?;
+    let payment = nft_payment(auction, won)?;
+    auction.sold = auction.sold.checked_add(won).ok_or(AuctionError::MathOverflow)?;
+    require!(auction.sold <= auction.supply, AuctionError::Oversold);
+    settle_payment(auction, bid, bid_info, outcome, won, payment)
 }
 
 // ---------------------------------------------------------------------------
@@ -3861,13 +4065,16 @@ fn emit_auction_created(auction: &Account<Auction>, listing_fee: u64) {
     });
 }
 
-/// What each bid adds to the crank pool: its share of a batch check and its
-/// own settlement.
+/// What each bid adds to the crank pool: its share of a batch check and of
+/// its batch's settlement (`settle_batch` decides `BATCH_SIZE` bids for one
+/// settlement reward). A bid settled on its own (`settle_bid`) pays its
+/// caller a whole settlement reward; what the pool then runs short of comes
+/// out of the proceeds (`crank_payment`).
 pub fn bid_crank_fee(rewards: &CrankRewards) -> u64 {
     rewards
         .check_batch
-        .div_ceil(BATCH_SIZE as u64)
         .saturating_add(rewards.settlement)
+        .div_ceil(BATCH_SIZE as u64)
 }
 
 /// What a bid on page `page` adds to the crank pool on top of
@@ -3895,8 +4102,9 @@ pub fn room_fee(auction: &Auction, page: u8, rent: &Rent) -> u64 {
 }
 
 /// What the seller puts in the crank pool when the auction opens: the
-/// clearing, one batch check (bids pay for their share of the others, so a
-/// last, partial batch is covered) and, for a collection, the seed draw.
+/// clearing, one batch check and one batch settlement (bids pay for their
+/// share of the others, so a last, partial batch is covered) and, for a
+/// collection, the seed draw.
 pub fn seller_crank_fee(auction: &Auction) -> u64 {
     let rewards = &auction.crank_rewards;
     let draw = if auction.kind == AuctionKind::Collection {
@@ -3907,6 +4115,7 @@ pub fn seller_crank_fee(auction: &Auction) -> u64 {
     rewards
         .clearing
         .saturating_add(rewards.check_batch)
+        .saturating_add(rewards.settlement)
         .saturating_add(draw)
 }
 
@@ -4903,7 +5112,8 @@ pub struct FeeConfig {
 }
 
 /// Lamports paid to whoever runs each MPC step, when its computation
-/// succeeds: a batch check, the clearing, one bid's settlement, and a
+/// succeeds: a batch check, the clearing, one settlement (of a batch of up to
+/// four bids, `settle_batch`, or of one bid, `settle_bid`), and a
 /// collection's seed draw. They cover the fees the caller paid to queue it.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug, Default)]
 pub struct CrankRewards {
@@ -6495,6 +6705,87 @@ pub struct AwardBidV2Callback<'info> {
     pub cranker: UncheckedAccount<'info>,
 }
 
+#[queue_computation_accounts("award_batch", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct SettleBatch<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    /// The page of the book that holds the batch's record, which the cluster
+    /// reads in place; checked in the handler.
+    pub book: AccountLoader<'info, BidBook>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_AWARD_BATCH))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Box<Account<'info, FeePool>>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Box<Account<'info, ClockAccount>>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+/// Custom accounts after `instructions_sysvar` must match the order of the
+/// `CallbackAccount` list built in `settle_batch`; the batch's bids follow as
+/// remaining accounts.
+#[callback_accounts("award_batch")]
+#[derive(Accounts)]
+pub struct AwardBatchCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_AWARD_BATCH))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: computation_account, checked by the arcium program and matched
+    /// against the bids' pending computation.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint.
+    pub instructions_sysvar: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    /// The batch's page, named by `settle_batch`; checked in the handler.
+    #[account(mut)]
+    pub book: AccountLoader<'info, BidBook>,
+    /// CHECK: whoever queued the settlement; named by `settle_batch`, paid its
+    /// reward.
+    #[account(mut)]
+    pub cranker: UncheckedAccount<'info>,
+}
+
 #[queue_computation_accounts("fold_batch_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
@@ -6702,6 +6993,28 @@ pub struct InitClearPriceCompDef<'info> {
 #[init_computation_definition_accounts("award_bid_v2", payer)]
 #[derive(Accounts)]
 pub struct InitAwardBidCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, constraint = config.admin == payer.key() @ AuctionError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by the arcium program.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by the arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
+#[init_computation_definition_accounts("award_batch", payer)]
+#[derive(Accounts)]
+pub struct InitAwardBatchCompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, constraint = config.admin == payer.key() @ AuctionError::Unauthorized)]
@@ -8066,16 +8379,16 @@ mod tests {
             settlement: 4_000_000,
             seed_draw: 3_000_000,
         };
-        // A bid's quarter of a check is rounded up.
-        assert_eq!(bid_crank_fee(&rewards), 1_500_001 + 4_000_000);
+        // A bid's quarter of a check and of a batch settlement, rounded up.
+        assert_eq!(bid_crank_fee(&rewards), (6_000_001 + 4_000_000u64).div_ceil(4));
         let mut auction = blank_auction();
         auction.crank_rewards = rewards;
-        assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001);
+        assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001 + 4_000_000);
         auction.kind = AuctionKind::Collection;
-        assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001 + 3_000_000);
+        assert_eq!(seller_crank_fee(&auction), 25_000_000 + 6_000_001 + 4_000_000 + 3_000_000);
         // With n bids on the pages they need, the pool covers ceil(n / 4)
-        // checks, n settlements, the clearing (one step, or the paged steps)
-        // and the draw.
+        // checks and batch settlements, the clearing (one step, or the paged
+        // steps) and the draw.
         for n in 1..=MAX_BIDS as u64 {
             let pages = n.div_ceil(PAGE_BIDS as u64) as u8;
             let page_fees: u64 = (1..pages).map(|page| page_crank_fee(&rewards, page)).sum();
@@ -8085,8 +8398,7 @@ mod tests {
             } else {
                 fold_total_steps(pages) as u64 * fold_reward(&rewards)
             };
-            let needed = n.div_ceil(BATCH_SIZE as u64) * rewards.check_batch
-                + n * rewards.settlement
+            let needed = n.div_ceil(BATCH_SIZE as u64) * (rewards.check_batch + rewards.settlement)
                 + clearing
                 + rewards.seed_draw;
             assert!(pool >= needed, "{n} bids");

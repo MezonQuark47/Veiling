@@ -17,7 +17,7 @@ import { BID_NONCE_DOMAIN, CLUSTER_OFFSET, MXE_X25519_PUBLIC_KEY, PROGRAM_ID } f
 import { provider } from "./chain";
 
 /** The circuits this program runs; see `encrypted-ixs`. */
-export type Circuit = "check_bids_v2" | "clear_price_v2" | "fold_batch_v2" | "award_bid_v2" | "draw_seed";
+export type Circuit = "check_bids_v2" | "clear_price_v2" | "fold_batch_v2" | "award_bid_v2" | "award_batch" | "draw_seed";
 
 /** Accounts every instruction that queues an MPC computation needs. */
 export function computationAccounts(circuit: Circuit, computationOffset: BN) {

@@ -129,6 +129,10 @@ fn award(record: [(u32, u64); 4], slot: u8, price: u32, filled: bool) -> (u8, u6
     get_instruction("award_bid_v2").eval((record_enc(record), slot, price, filled))
 }
 
+fn award_all(record: [(u32, u64); 4], price: u32, filled: bool) -> ([u8; 4], [u64; 4]) {
+    get_instruction("award_batch").eval((record_enc(record), price, filled))
+}
+
 // ---------------------------------------------------------------------------
 // check_bids
 // ---------------------------------------------------------------------------
@@ -535,4 +539,26 @@ fn seeds_are_drawn_at_random() {
         }
     }
     assert!(seeds.iter().any(|seed| seed >> 64 != 0));
+}
+
+#[test]
+fn a_batch_is_decided_exactly_as_its_bids_one_by_one() {
+    let records = [
+        [(500, 7_000_000), (300, 2_000_000), (200, 1_000_000), (0, 0)],
+        [(300, 2), (300, 5), (299, 1), (0, 0)],
+        [(1, 1), (u32::MAX, u64::MAX), (300, 0), (301, 9)],
+        [(0, 0); 4],
+    ];
+    for record in records {
+        for (price, filled) in [(300, true), (300, false), (1, true), (u32::MAX, true)] {
+            let (outcomes, quantities) = award_all(record, price, filled);
+            for slot in 0..4u8 {
+                assert_eq!(
+                    (outcomes[slot as usize], quantities[slot as usize]),
+                    award(record, slot, price, filled),
+                    "record {record:?}, price {price}, filled {filled}, slot {slot}"
+                );
+            }
+        }
+    }
 }

@@ -66,6 +66,7 @@ const COMPUTE_UNITS: Record<string, number> = {
   clear_price_v2: 1_000_000,
   fold_batch_v2: 1_000_000,
   award_bid_v2: 400_000,
+  award_batch: 400_000,
   draw_seed: 400_000,
 };
 
@@ -213,19 +214,43 @@ async function main() {
         .rpc();
     }
   } else if (variant(auction.status) === "settling") {
+    // The bids checked together settle together, in one computation; a batch
+    // whose bids are not all sealed settles one bid at a time.
     const sealed = (await fetchBids()).filter((b) => variant(b.account.status) === "sealed");
+    const byBatch = new Map<number, typeof sealed>();
+    for (const b of sealed) {
+      const first = b.account.index - (b.account.index % BATCH_SIZE);
+      byBatch.set(first, [...(byBatch.get(first) ?? []), b]);
+    }
+    const jobs: (() => Promise<void>)[] = [];
+    for (const [first, group] of byBatch) {
+      const whole = group.length === Math.min(BATCH_SIZE, auction.bidCount - first);
+      if (whole) {
+        jobs.push(() => {
+          console.log(`Settling bids ${first}-${first + group.length - 1}...`);
+          return compute(
+            "award_batch",
+            (o) => program.methods.settleBatch(o),
+            { auction: auctionAddress, book: book(pageOf(first)) },
+            group.map((b) => ({ pubkey: b.publicKey, isWritable: true, isSigner: false })) as any
+          ).catch((e) => console.log(`Bids ${first}-${first + group.length - 1} did not settle this time: ${e.message ?? e}`));
+        });
+      } else {
+        for (const b of group) {
+          jobs.push(() => {
+            console.log(`Settling bid ${b.account.index}...`);
+            return compute("award_bid_v2", (o) => program.methods.settleBid(o), {
+              auction: auctionAddress,
+              bid: b.publicKey,
+              book: book(pageOf(b.account.index)),
+            }).catch((e) => console.log(`Bid ${b.account.index} did not settle this time: ${e.message ?? e}`));
+          });
+        }
+      }
+    }
     const atOnce = Math.max(1, Number(process.env.SETTLE_AT_ONCE ?? 4));
-    for (let i = 0; i < sealed.length; i += atOnce) {
-      await Promise.all(
-        sealed.slice(i, i + atOnce).map((b) => {
-          console.log(`Settling bid ${b.account.index}...`);
-          return compute("award_bid_v2", (o) => program.methods.settleBid(o), {
-            auction: auctionAddress,
-            bid: b.publicKey,
-            book: book(pageOf(b.account.index)),
-          }).catch((e) => console.log(`Bid ${b.account.index} did not settle this time: ${e.message ?? e}`));
-        })
-      );
+    for (let i = 0; i < jobs.length; i += atOnce) {
+      await Promise.all(jobs.slice(i, i + atOnce).map((job) => job()));
     }
   }
   // Shares are split once every bid at the clearing price is revealed.

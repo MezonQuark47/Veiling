@@ -107,9 +107,14 @@ price, and unused deposits are refunded.
    the same step: `8 × (pages − 1) + 1` steps in all, 9 for two pages, 25
    for four and 313 for a collection's forty (about an hour at the 12 seconds
    a step takes on devnet).
-5. **Bids are settled.** `settle_bid` asks MPC for one bid's outcome (above,
-   at or below the clearing price) from its stored record, and the program
-   works out the rest in the open:
+5. **Bids are settled.** `settle_batch` asks MPC for the outcomes (above, at
+   or below the clearing price) of the bids of one stored batch record, up to
+   four, in one computation (`award_batch`), and its callback settles each of
+   them; `settle_bid` does the same for one bid (`award_bid_v2`), for a batch
+   whose bids cannot all be settled together. Every bid's outcome is revealed
+   when it settles either way, so deciding four at once reveals nothing more,
+   and it takes a quarter of the computations. The program works out the
+   rest in the open:
    - a token bid above the price spends its whole budget at it (if those bids
      alone could buy everything, they share the supply by budget); a token
      bid at the price shares the tokens left by budget, up to what its budget
@@ -162,8 +167,8 @@ of at most 10,000 each, far inside the circuits' 80-bit totals, so its book
 can grow to forty pages with the same circuits; that is enough for a
 10,000-NFT collection to sell out at one NFT per bid. Each page adds checks,
 settlements and 8 clearing steps, and the bids on it pay for them: 10,240
-bids take 2,560 checks, 313 clearing steps and 10,240 settlements, which
-takes hours after bidding ends.
+bids take 2,560 checks, 313 clearing steps and 2,560 batch settlements,
+which takes hours after bidding ends.
 For comparison, Gnosis Auction has no fixed cap but asks sellers to set a
 minimum order size so that its on-chain price calculation stays affordable,
 and Zama's sealed-bid token auction capped each wallet at 10 active bids
@@ -330,8 +335,12 @@ keeps a crank pool in its own account:
   is only partly filled, is paid out of the proceeds collected so far
   (`crank_payment`). A seller who adds pages ahead of time (`add_book_page`) funds their
   clearing steps then (`page_crank_fee`);
-- each bid pays its share of a batch check plus one settlement
-  (`check_batch / 4 + settlement`), not refunded, on top of its deposit;
+- each bid pays its share of a batch check and of a batch settlement
+  (`(check_batch + settlement) / 4`, rounded up), not refunded, on top of
+  its deposit, and the seller one of each when the auction opens, so a last,
+  partial batch is covered. A bid settled on its own (`settle_bid`) pays its
+  caller a whole settlement reward; what that leaves the pool short of comes
+  out of the proceeds (`crank_payment`);
 - each step's callback, once its computation succeeds, pays whoever queued it
   the step's reward from the pool (as far as the pool reaches). A failed
   computation pays nothing, and a stale callback is refused as before, so a
@@ -476,10 +485,11 @@ first. This release's accounts carry their own discriminators (`VAuctn03`,
 for them.
 
 Then call `initialize` once (signed by the upgrade authority), register the
-five circuits (`check_bids_v2`, `clear_price_v2`, `fold_batch_v2`,
-`award_bid_v2` and `draw_seed`) with `init_check_bids_comp_def`,
+six circuits (`check_bids_v2`, `clear_price_v2`, `fold_batch_v2`,
+`award_bid_v2`, `award_batch` and `draw_seed`) with `init_check_bids_comp_def`,
 `init_clear_price_comp_def`, `init_fold_batch_comp_def`,
-`init_award_bid_comp_def` and `init_draw_seed_comp_def`, passing the URL of
+`init_award_bid_comp_def`, `init_award_batch_comp_def` and
+`init_draw_seed_comp_def`, passing the URL of
 each `.arcis` file, set the fees with `set_fees` (`scripts/set-fees.ts`) and
 the crank rewards with `set_crank_rewards` (`scripts/set-crank-rewards.ts`);
 no auction can open before both are set. The end-to-end test does the first
@@ -488,8 +498,8 @@ three if they are missing.
 ### Circuit hosting
 
 The compiled circuits (`build/check_bids_v2.arcis`, `build/clear_price_v2.arcis`
-and `build/fold_batch_v2.arcis`, several MB each, `build/award_bid_v2.arcis` and
-`build/draw_seed.arcis`) are too large
+and `build/fold_batch_v2.arcis`, several MB each, `build/award_bid_v2.arcis`,
+`build/award_batch.arcis` and `build/draw_seed.arcis`) are too large
 to store on chain cheaply, so they are served from a public URL. Upload exactly the files
 produced by the build that compiled the program, and register them with a URL
 that names a commit rather than a branch, such as

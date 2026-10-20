@@ -82,7 +82,8 @@ import {
   buildPlaceBid,
   buildRefundFailedBid,
   buildSetListing,
-  buildSettleBid,
+  buildSettle,
+  settlementBatch,
   findEviction,
   buildIncreaseBid,
   buildJoinAuction,
@@ -888,19 +889,22 @@ function Progress({
           </>
         );
       }
-      await sendTransaction(await buildSettleBid(s.publicKey, auction, bid), s);
+      // The bids checked with this one settle with it, in one computation.
+      const together = settlementBatch(auction, bid, bids).length;
+      await sendTransaction(await buildSettle(s.publicKey, auction, bid, bids), s);
       const after = await waitUntil(
         () => fetchBid(bid.address),
         (b) => !b || b.status !== "sealed" || b.pendingComputation.equals(PublicKey.default)
       );
       refresh();
       if (!after || after.status === "sealed") return "Arcium could not finish this time. Try again.";
+      const others = together > 1 ? ` The ${plural(together - 1, "other bid")} checked with it settled too.` : "";
       if (after.status === "atClearing") {
-        return `Bid ${bid.index + 1} is at the clearing price. Its share is split off once every bid at that price is revealed.`;
+        return `Bid ${bid.index + 1} is at the clearing price. Its share is split off once every bid at that price is revealed.${others}`;
       }
       return after.won > 0n
-        ? `Bid ${bid.index + 1} won ${goodsAmount(after.won, asset)} for ${formatSol(after.payment)} SOL.`
-        : `Bid ${bid.index + 1} did not win; its deposit is ready to collect.`;
+        ? `Bid ${bid.index + 1} won ${goodsAmount(after.won, asset)} for ${formatSol(after.payment)} SOL.${others}`
+        : `Bid ${bid.index + 1} did not win; its deposit is ready to collect.${others}`;
     });
 
   const shuffle = () =>

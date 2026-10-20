@@ -133,7 +133,7 @@ export function Docs({ section }: { section: string }) {
                 <h3>Each bid is settled</h3>
                 <p>
                   Every winner pays the clearing price. Payments move to the auction; the rest of each deposit waits
-                  for its owner.
+                  for its owner. The bids checked together, four at a time, are settled together too.
                 </p>
               </li>
               <li>
@@ -245,7 +245,7 @@ export function Docs({ section }: { section: string }) {
               {formatCount(PAGE_BIDS)} bids at a time, four bits of the price per pass over the pages: 9 steps for 2
               pages, 25 for 4, 313 for a collection's full 40 (about an hour). Each pass reveals only the next four bits
               of the clearing price, which becomes public anyway; the demand added up in between stays encrypted.
-              Every bid is still checked and settled on its own, so the more bids, the longer settling takes after
+              Bids are still checked and settled four at a time, so the more bids, the longer settling takes after
               bidding ends.
             </p>
           </Section>

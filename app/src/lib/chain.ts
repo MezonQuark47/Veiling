@@ -516,7 +516,7 @@ function decodeCrankRewards(r: { checkBatch: BN; clearing: BN; settlement: BN; s
 }
 
 /** What each bid adds to the crank pool: its share of a batch check and its own settlement. Not refunded. */
-export const bidCrankFee = (r: CrankRewards) => (r.checkBatch + BigInt(BATCH_SIZE) - 1n) / BigInt(BATCH_SIZE) + r.settlement;
+export const bidCrankFee = (r: CrankRewards) => (r.checkBatch + r.settlement + BigInt(BATCH_SIZE) - 1n) / BigInt(BATCH_SIZE);
 
 /** Rent of a page of the bid book, the paged clearing's state and the book's index (8,232, 289 and 460 bytes). */
 const PAGE_RENT = (128n + 8_232n) * 6_960n;
@@ -549,7 +549,7 @@ export const nextBidFee = (a: Auction) => bidCrankFee(a.crankRewards) + roomFee(
 
 /** What a seller puts in the crank pool when the auction opens. */
 export const sellerCrankFee = (r: CrankRewards, kind: AuctionKind) =>
-  r.clearing + r.checkBatch + (kind === "collection" ? r.seedDraw : 0n);
+  r.clearing + r.checkBatch + r.settlement + (kind === "collection" ? r.seedDraw : 0n);
 
 export function decodeBid(address: PublicKey, b: RawBid): Bid {
   return {

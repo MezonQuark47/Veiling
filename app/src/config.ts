@@ -137,7 +137,7 @@ export const MAX_PAID_ITEM_BYTES = MAX_ORIGINAL_BYTES + 64 * 1024;
 export const STORAGE_PRICE_MARGIN_PERCENT = 1n;
 
 /** Compute units for the instructions that queue an MPC computation. */
-export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, fold: 1_000_000, settle: 400_000, draw: 400_000 } as const;
+export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, fold: 1_000_000, settle: 400_000, settleBatch: 400_000, draw: 400_000 } as const;
 
 /** Where sellers ask to have an auction featured. */
 export const FEATURE_CONTACT = { label: "@velaryon69", href: "https://x.com/velaryon69" };

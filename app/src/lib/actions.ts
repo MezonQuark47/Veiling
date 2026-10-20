@@ -823,6 +823,44 @@ export async function buildSettleBid(payer: PublicKey, auction: Auction, bid: Bi
 }
 
 /**
+ * Decides the bids of one batch record together (`settle_batch`): one
+ * computation for up to four bids. `batch` must be those bids in index
+ * order, from a multiple of four, all sealed and idle.
+ */
+export async function buildSettleBatch(payer: PublicKey, auction: Auction, batch: Bid[]) {
+  const offset = newComputationOffset();
+  return program.methods
+    .settleBatch(offset)
+    .accountsPartial({
+      payer,
+      auction: auction.address,
+      book: bookAddress(auction.address, pageOf(batch[0].index)),
+      ...computationAccounts("award_batch", offset),
+    })
+    .remainingAccounts(batch.map((b) => ({ pubkey: b.address, isSigner: false, isWritable: true })))
+    .preInstructions([computeLimit(QUEUE_COMPUTE_UNITS.settleBatch)])
+    .transaction();
+}
+
+/**
+ * The bids `bid` settles with: its whole batch (the bids checked with it)
+ * when every one of them is still sealed and idle, else just itself.
+ */
+export function settlementBatch(auction: Auction, bid: Bid, bids: Bid[]): Bid[] {
+  const first = bid.index - (bid.index % BATCH_SIZE);
+  const count = Math.min(BATCH_SIZE, auction.bidCount - first);
+  const batch = Array.from({ length: count }, (_, k) => bids.find((b) => b.index === first + k));
+  const whole = batch.every((b) => b && b.status === "sealed" && b.pendingComputation.equals(PublicKey.default));
+  return whole ? (batch as Bid[]) : [bid];
+}
+
+/** Settles `bid`, with the rest of its batch in one computation when it can (`settlementBatch`). */
+export async function buildSettle(payer: PublicKey, auction: Auction, bid: Bid, bids: Bid[]) {
+  const batch = settlementBatch(auction, bid, bids);
+  return batch.length > 1 ? buildSettleBatch(payer, auction, batch) : buildSettleBid(payer, auction, bid);
+}
+
+/**
  * Has Arcium draw the seed that shuffles a collection's NFTs among its
  * winners. Anyone can send it once every bid is settled.
  */
