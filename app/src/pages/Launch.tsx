@@ -413,7 +413,9 @@ export function Launch() {
   const [minDepositInput, setMinDeposit] = useState<string | null>(null);
   const [duration, setDuration] = useState(DURATIONS[1].secs);
   /** Pages of the bid book: 256 bids each. */
-  const [pages, setPages] = useState(1);
+  // NFT sales start with every page of the bid book, so crowding real buyers
+  // out takes four times as many deposits; token sales start with one.
+  const [pages, setPages] = useState(MAX_PAGES);
   // Auto-liquidity: a Meteora pool at the clearing price (token sales only).
   const [lpOn, setLpOn] = useState(false);
   const [lpPercent, setLpPercent] = useState("30");
@@ -431,6 +433,8 @@ export function Launch() {
   const seedRef = useRef<BN | null>(null);
 
   const collection = kind !== "token";
+  // Each kind starts at its own default room for bids; the seller can change it.
+  useEffect(() => setPages(collection ? MAX_PAGES : 1), [collection]);
   const unit = collection ? "NFT" : "token";
   const linked = kind === "drop" && dropFiles === "link";
   const uploadingCollection = collection && !linked;

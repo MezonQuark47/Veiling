@@ -15,6 +15,8 @@ import {
   NFT_MINT_COST_LAMPORTS,
   PAGE_BIDS,
   REVEAL_DELAY_SECS,
+  MAX_SOFT_CLOSE_EXTENSION_SECS,
+  SOFT_CLOSE_SECS,
   ANTI_SNIPER_FEE_BPS,
   ANTI_SNIPER_MINUTES,
   DAMM_PROTOCOL_FEE_PERCENT,
@@ -200,7 +202,9 @@ export function Docs({ section }: { section: string }) {
               nobody can show demand and then pull it. An auction holds {formatCount(PAGE_BIDS)} bids, or up to{" "}
               {formatCount(MAX_BIDS)} if the seller made room for more; after that, a new bid can replace the one with
               the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more, and the replaced bid gets
-              its whole deposit back.
+              its whole deposit back. A replacement in the last {SOFT_CLOSE_SECS / 60} minutes keeps bidding open{" "}
+              {SOFT_CLOSE_SECS / 60} more minutes, up to {MAX_SOFT_CLOSE_EXTENSION_SECS / 3600} hours past the original
+              end, so nobody can be pushed out at the last second without time to answer.
             </p>
           </Section>
 

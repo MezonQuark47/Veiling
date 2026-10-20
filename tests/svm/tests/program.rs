@@ -51,6 +51,10 @@ const PAGE_BIDS: u64 = 256;
 const MAX_PAGES: u8 = 4;
 const SOL: u64 = 1_000_000_000;
 const EMERGENCY_DELAY_SECS: i64 = 3 * 24 * 60 * 60;
+/// Soft close: a replacement this close to the end pushes it this far, up to
+/// a day past the original end.
+const SOFT_CLOSE_SECS: i64 = 10 * 60;
+const MAX_SOFT_CLOSE_EXTENSION_SECS: i64 = 24 * 60 * 60;
 const MAX_DURATION_SECS: i64 = 14 * 24 * 60 * 60;
 const MAX_START_DELAY_SECS: i64 = 30 * 24 * 60 * 60;
 const REVEAL_DELAY_SECS: i64 = 7 * 24 * 60 * 60;
@@ -685,6 +689,7 @@ impl Env {
             ("page_bumps", 3),
             ("liquidity", 1),
             ("liquidity_floor", 8),
+            ("extended_secs", 4),
         ] {
             if name == field {
                 return at;
@@ -1666,6 +1671,8 @@ fn bids_are_checked_full_auctions_evict_and_the_safety_net_returns_everything() 
     assert_eq!(env.read_u64(&a.auction, "Auction", "total_deposited"), total - 3_000 + 3_300);
     assert_eq!(env.read_u32(&rival_bid_address, "Bid", "index"), 0);
     assert_eq!(env.read_u32(&a.auction, "Auction", "bid_count"), 256);
+    // Far from the end, a replacement does not move it.
+    assert_eq!(env.read_u64(&a.auction, "Auction", "end_time") as i64, a.end_time);
     bids[0] = (rival_bid_address, rival.pubkey(), 3_300);
     // The next smallest is now index 1 (3_001); index 0 is no longer it.
     let ix = rival_bid(&env, 2, 4_000, Some((rival_bid_address, rival.pubkey())));
@@ -3562,4 +3569,70 @@ fn a_pool_opened_by_someone_else_first_leaves_the_sale_paying_out_in_full() {
     assert!(!env.exists(&lp.authority) && !env.exists(&lp.reserve) && !env.exists(&lp.wsol));
     assert_eq!(env.liquidity_state(&a), LIQUIDITY_RELEASED);
     env.send(&[env.seller_ix("claim_proceeds", &a)], &seller, &[]).expect("claim proceeds");
+}
+
+#[test]
+fn a_replacement_near_the_end_gives_the_replaced_bidder_time_to_answer() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let honest = env.funded(10);
+    let attacker = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let a = env.create_auction(&seller, 9, mint, TOKEN_TERMS);
+    let end = |env: &Env| env.read_u64(&a.auction, "Auction", "end_time") as i64;
+    let extended = |env: &Env| {
+        let at = env.auction_tail(&a.auction, "extended_secs");
+        u32::from_le_bytes(env.data(&a.auction)[at..at + 4].try_into().unwrap())
+    };
+    // Every place is taken, the honest bidder's being the smallest.
+    let mut bids = Vec::new();
+    for i in 0..PAGE_BIDS {
+        let key = honest_key(i);
+        let (ix, bid) = env.place_bid_ix(&a, &honest.pubkey(), i, key, edwards_y(&key), 3_000 + i, None);
+        env.send(&[ix], &honest, &[]).unwrap_or_else(|e| panic!("bid {i}: {e:?}"));
+        bids.push(bid);
+    }
+    let mut seed = 100_000u64;
+    let mut replace = |env: &mut Env, by: &Keypair, owner: &Keypair, victim: Address, deposit: u64| {
+        seed += 1;
+        let key = honest_key(seed);
+        // Built against the terms as first seen: the end only ever moves later.
+        let (ix, bid) = env.place_bid_ix(&a, &by.pubkey(), seed, key, edwards_y(&key), deposit, Some((victim, owner.pubkey())));
+        env.send(&[ix], by, &[]).expect("replace");
+        bid
+    };
+
+    // Five minutes before the end, the attacker replaces the smallest bid:
+    // bidding now runs ten more minutes.
+    env.set_time(a.end_time - 300);
+    let now = env.now();
+    let taken = replace(&mut env, &attacker, &honest, bids[0], 3_300);
+    assert_eq!(end(&env), now + SOFT_CLOSE_SECS);
+    assert_eq!(extended(&env) as i64, now + SOFT_CLOSE_SECS - a.end_time);
+
+    // After the original end, the honest bidder answers and takes a place
+    // back, which pushes the end again.
+    env.set_time(a.end_time + 120);
+    let now = env.now();
+    replace(&mut env, &honest, &honest, bids[1], 3_301 * 11 / 10 + 1);
+    assert_eq!(end(&env), now + SOFT_CLOSE_SECS);
+    let _ = taken;
+
+    // However long the duel goes on, a minute before each new end, bidding
+    // ends at most a day after the original end.
+    let cap = a.end_time + MAX_SOFT_CLOSE_EXTENSION_SECS;
+    let mut k = 2;
+    while end(&env) < cap {
+        let current = end(&env);
+        env.set_time(current - 60);
+        replace(&mut env, &attacker, &honest, bids[k], (3_000 + k as u64) * 11 / 10 + 1);
+        assert!(end(&env) > current);
+        k += 1;
+    }
+    assert_eq!(end(&env), cap);
+    assert_eq!(extended(&env) as i64, MAX_SOFT_CLOSE_EXTENSION_SECS);
+    env.set_time(cap);
+    let key = honest_key(999_999);
+    let (ix, _) = env.place_bid_ix(&a, &honest.pubkey(), 999_999, key, edwards_y(&key), 10_000, Some((bids[k], honest.pubkey())));
+    env.expect_error(&[ix], &honest, &[], "BiddingClosed");
 }

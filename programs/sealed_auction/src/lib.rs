@@ -271,6 +271,13 @@ pub const MAX_CRANK_REWARD: u64 = 100_000_000;
 /// refunded in full. Filling every slot to crowd others out therefore costs
 /// more the more other bidders are willing to deposit.
 pub const EVICTION_PREMIUM_PERCENT: u64 = 10;
+/// Soft close: a bid that replaces another this close to the end of bidding
+/// pushes the end to this long after it, so the replaced bidder always has
+/// time to answer.
+pub const SOFT_CLOSE_SECS: i64 = 10 * 60;
+/// Soft close never moves the end of bidding more than this past the end the
+/// auction opened with.
+pub const MAX_SOFT_CLOSE_EXTENSION_SECS: i64 = 24 * 60 * 60;
 /// After this long without a callback, a stuck computation may be re-queued.
 /// Its late callback, if any, is rejected because it no longer matches. Long
 /// enough that a healthy but busy cluster finishes first, so re-queuing at
@@ -1006,6 +1013,7 @@ pub mod sealed_auction {
         require!(deposit >= auction.min_deposit, AuctionError::DepositTooSmall);
 
         let extra = extra_pages(auction, ctx.remaining_accounts)?;
+        let mut replacing = false;
         let index = if auction.bid_count < bid_capacity(auction) {
             require!(
                 ctx.accounts.evicted_bid.is_none(),
@@ -1056,8 +1064,11 @@ pub mod sealed_auction {
                 .total_deposited
                 .checked_sub(refund)
                 .ok_or(AuctionError::MathOverflow)?;
-            // Returns the whole balance (deposit and rent) to its owner.
-            evicted.close(evicted_bidder.to_account_info())?;
+            // The replaced bid is closed, returning its whole balance (deposit
+            // and rent) to its owner, once the new deposit has moved below:
+            // a bidder may replace their own bid, and closing first would
+            // leave that lamport move half seen by the transfers' CPIs.
+            replacing = true;
             emit!(BidEvicted {
                 auction: auction_key,
                 bid: evicted_key,
@@ -1065,6 +1076,13 @@ pub mod sealed_auction {
                 index,
                 refund,
             });
+            if let Some(end_time) = soft_close(auction, now)? {
+                emit!(BiddingExtended {
+                    auction: auction_key,
+                    end_time,
+                    extended_secs: auction.extended_secs,
+                });
+            }
             index
         };
         let (page, slot) = page_slot(index);
@@ -1115,6 +1133,15 @@ pub mod sealed_auction {
             &ctx.accounts.system_program,
             crank_fee,
         )?;
+
+        if replacing {
+            if let (Some(evicted), Some(owner)) = (
+                ctx.accounts.evicted_bid.as_ref(),
+                ctx.accounts.evicted_bidder.as_ref(),
+            ) {
+                evicted.close(owner.to_account_info())?;
+            }
+        }
 
         emit!(BidPlaced {
             auction: ctx.accounts.auction.key(),
@@ -2587,6 +2614,29 @@ fn require_pinned_circuit(comp_def: &ComputationDefinitionAccount, hash: [u8; 32
     }
 }
 
+/// Soft close: a replacement at `now` within `SOFT_CLOSE_SECS` of the end of
+/// bidding moves the end to `now + SOFT_CLOSE_SECS`, but never more than
+/// `MAX_SOFT_CLOSE_EXTENSION_SECS` past the end the auction opened with.
+/// Returns the new end when it moved. Everything timed from the end (checks,
+/// the reveal deadline, the safety net) moves with it.
+pub fn soft_close(auction: &mut Auction, now: i64) -> Result<Option<i64>> {
+    let opened_end = auction
+        .end_time
+        .checked_sub(auction.extended_secs as i64)
+        .ok_or(AuctionError::MathOverflow)?;
+    let latest = opened_end
+        .checked_add(MAX_SOFT_CLOSE_EXTENSION_SECS)
+        .ok_or(AuctionError::MathOverflow)?;
+    let wanted = now.checked_add(SOFT_CLOSE_SECS).ok_or(AuctionError::MathOverflow)?;
+    let end = wanted.min(latest);
+    if end <= auction.end_time {
+        return Ok(None);
+    }
+    auction.end_time = end;
+    auction.extended_secs = u32::try_from(end - opened_end).map_err(|_| AuctionError::MathOverflow)?;
+    Ok(Some(end))
+}
+
 /// Smallest deposit that may evict a bid holding `smallest`.
 pub fn eviction_threshold(smallest: u64) -> Result<u64> {
     let premium = smallest
@@ -3291,6 +3341,7 @@ fn new_auction(
         page_bumps: [0; MAX_EXTRA_PAGES],
         liquidity: LIQUIDITY_NONE,
         liquidity_floor: 0,
+        extended_secs: 0,
     }
 }
 
@@ -4397,6 +4448,9 @@ pub struct Auction {
     /// before auto-liquidity read zero: none.
     pub liquidity: u8,
     pub liquidity_floor: u64,
+    /// Seconds the soft close has added to the end of bidding (see
+    /// `soft_close`); `end_time` already includes them. Older auctions read 0.
+    pub extended_secs: u32,
 }
 
 /// The items of a collection auction named per item. Item `k` covers NFT
@@ -4497,7 +4551,9 @@ impl ExpectedTerms {
             && self.min_price == auction.min_price
             && self.min_deposit == auction.min_deposit
             && self.max_per_bid == auction.max_per_bid
-            && self.end_time == auction.end_time
+            // The soft close can only move the end later, which a bidder
+            // never minds.
+            && auction.end_time >= self.end_time
     }
 }
 
@@ -5877,6 +5933,15 @@ pub struct CrankPaid {
     pub auction: Pubkey,
     pub cranker: Pubkey,
     pub amount: u64,
+}
+
+/// A replacement near the end of bidding moved the end (soft close).
+#[event]
+pub struct BiddingExtended {
+    pub auction: Pubkey,
+    pub end_time: i64,
+    /// Seconds added to the original end so far.
+    pub extended_secs: u32,
 }
 
 #[event]
@@ -7328,6 +7393,28 @@ mod tests {
     }
 
     // -- eviction and terms -------------------------------------------------
+
+    #[test]
+    fn replacements_near_the_end_extend_bidding_up_to_a_day() {
+        let fees = FeeConfig { listing_fee: 0, sale_fee_bps: 0, treasury: Pubkey::default(), bump: 0 };
+        let end = 1_000_000;
+        let mut a = new_auction(AuctionKind::Token, 1, Pubkey::default(), Pubkey::default(), Pubkey::default(), 0, end, [0, 0], &fees, CrankRewards::default());
+        // Early on: nothing moves.
+        assert_eq!(soft_close(&mut a, end - SOFT_CLOSE_SECS - 1).unwrap(), None);
+        assert_eq!(a.end_time, end);
+        // Five minutes before the end: ten minutes from then.
+        assert_eq!(soft_close(&mut a, end - 300).unwrap(), Some(end + 300));
+        assert_eq!(a.extended_secs, 300);
+        // Each later replacement pushes it again...
+        assert_eq!(soft_close(&mut a, end + 200).unwrap(), Some(end + 800));
+        assert_eq!(a.extended_secs, 800);
+        // ...up to a day past the original end, and no further.
+        let cap = end + MAX_SOFT_CLOSE_EXTENSION_SECS;
+        assert_eq!(soft_close(&mut a, cap - 100).unwrap(), Some(cap));
+        assert_eq!(soft_close(&mut a, cap - 1).unwrap(), None);
+        assert_eq!(a.end_time, cap);
+        assert_eq!(a.extended_secs as i64, MAX_SOFT_CLOSE_EXTENSION_SECS);
+    }
 
     #[test]
     fn eviction_needs_a_ten_percent_larger_deposit() {

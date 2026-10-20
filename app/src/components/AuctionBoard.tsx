@@ -163,6 +163,9 @@ export function AuctionBoard({
             <p className="board__value">{formatDuration(auction.endTime - now)}</p>
             <p className="board__sub">
               {formatDateTime(auction.endTime)}. Every price stays sealed until then, and after.
+              {auction.extendedSecs > 0
+                ? ` Extended by ${formatDuration(auction.extendedSecs)}: a bid was replaced near the end, so its owner had time to answer.`
+                : ""}
             </p>
           </>
         ) : cleared ? (

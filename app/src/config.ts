@@ -36,6 +36,10 @@ export const FOLD_PASSES = 8;
 export const FOLD_REWARD_PERCENT = 100n;
 /** A bid into a full auction must out-deposit the smallest bid by this much. */
 export const EVICTION_PREMIUM_PERCENT = 10n;
+/** Soft close: a replacement this close to the end pushes the end this far away... */
+export const SOFT_CLOSE_SECS = 10 * 60;
+/** ...but never more than this past the end the auction opened with. */
+export const MAX_SOFT_CLOSE_EXTENSION_SECS = 24 * 60 * 60;
 export const PENDING_TIMEOUT_SECS = 30 * 60;
 export const EMERGENCY_DELAY_SECS = 3 * 24 * 60 * 60;
 export const BID_NONCE_DOMAIN = "sealed-auction/bid-nonce/v1";

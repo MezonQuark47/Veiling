@@ -230,6 +230,8 @@ export interface Auction {
   liquidity: LiquidityState;
   /** The least SOL the planned pool gets, in lamports. */
   liquidityFloor: bigint;
+  /** Seconds the soft close has added to the end of bidding; `endTime` includes them. */
+  extendedSecs: number;
 }
 
 /**
@@ -358,6 +360,7 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     // ...and those opened before auto-liquidity, as none.
     liquidity: LIQUIDITY_STATES[a.liquidity ?? 0] ?? "none",
     liquidityFloor: a.liquidityFloor ? big(a.liquidityFloor) : 0n,
+    extendedSecs: a.extendedSecs ?? 0,
   };
 }
 

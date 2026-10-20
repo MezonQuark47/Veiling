@@ -6127,6 +6127,19 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "biddingExtended",
+      "discriminator": [
+        204,
+        79,
+        123,
+        215,
+        29,
+        136,
+        71,
+        122
+      ]
+    },
+    {
       "name": "bookPageAdded",
       "discriminator": [
         122,
@@ -7130,6 +7143,14 @@ export type SealedAuction = {
           {
             "name": "liquidityFloor",
             "type": "u64"
+          },
+          {
+            "name": "extendedSecs",
+            "docs": [
+              "Seconds the soft close has added to the end of bidding (see",
+              "`soft_close`); `end_time` already includes them. Older auctions read 0."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -7890,6 +7911,32 @@ export type SealedAuction = {
           },
           {
             "name": "atClearing"
+          }
+        ]
+      }
+    },
+    {
+      "name": "biddingExtended",
+      "docs": [
+        "A replacement near the end of bidding moved the end (soft close)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "endTime",
+            "type": "i64"
+          },
+          {
+            "name": "extendedSecs",
+            "docs": [
+              "Seconds added to the original end so far."
+            ],
+            "type": "u32"
           }
         ]
       }

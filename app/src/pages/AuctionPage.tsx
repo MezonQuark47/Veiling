@@ -3,6 +3,8 @@ import { PublicKey, type Transaction } from "@solana/web3.js";
 import {
   BATCH_SIZE,
   EVICTION_PREMIUM_PERCENT,
+  MAX_SOFT_CLOSE_EXTENSION_SECS,
+  SOFT_CLOSE_SECS,
   MAX_PRICE_TICKS,
   NFT_MINT_COST_LAMPORTS,
   NFT_PRICE_SCALE,
@@ -126,6 +128,9 @@ function useEviction(auction: Auction) {
   return { full, capacity, eviction, minimumDeposit: eviction.data?.minimumDeposit ?? 0n };
 }
 
+/** How the soft close protects a replaced bidder. */
+const SOFT_CLOSE_NOTE = `A replacement in the last ${SOFT_CLOSE_SECS / 60} minutes keeps bidding open ${SOFT_CLOSE_SECS / 60} more minutes, up to ${MAX_SOFT_CLOSE_EXTENSION_SECS / 3600} hours past the original end, so the replaced bidder can always answer.`;
+
 function EvictionHint({
   full,
   capacity,
@@ -138,7 +143,7 @@ function EvictionHint({
     return (
       <p className={`hint${enough ? "" : " hint--error"}`}>
         {eviction.data
-          ? `This auction is full with ${formatCount(capacity)} bids. To get in, deposit at least ${formatSol(minimumDeposit)} SOL, ${EVICTION_PREMIUM_PERCENT}% more than the smallest deposit. That bid is then refunded in full and drops out.`
+          ? `This auction is full with ${formatCount(capacity)} bids. To get in, deposit at least ${formatSol(minimumDeposit)} SOL, ${EVICTION_PREMIUM_PERCENT}% more than the smallest deposit. That bid is then refunded in full and drops out. ${SOFT_CLOSE_NOTE}`
           : eviction.error
             ? `This auction is full and the smallest deposit could not be loaded: ${eviction.error}`
             : "This auction is full. Checking the smallest deposit…"}
@@ -150,7 +155,7 @@ function EvictionHint({
       <p className="hint">
         Once {formatCount(capacity)} bids are in, a new bid can replace the one with the smallest deposit by depositing{" "}
         {EVICTION_PREMIUM_PERCENT}% more; the replaced bid gets its whole deposit back. A larger deposit keeps your
-        place.
+        place. {SOFT_CLOSE_NOTE}
       </p>
     );
   }
@@ -1679,6 +1684,9 @@ export function AuctionPage({ address }: { address: string }) {
         <Notice tone="info">
           {replaced === 1 ? "One of your bids was" : `${replaced} of your bids were`} replaced by a larger deposit
           after the auction filled up. The deposit went back to your wallet in full.
+          {auction.status === "open" && now < auction.endTime
+            ? ` Bidding is open until ${formatDateTime(auction.endTime)}: bid again below with a larger deposit to take a place back.`
+            : ""}
         </Notice>
       ) : null}
 

@@ -53,6 +53,15 @@ price, and unused deposits are refunded.
    deposit on any page; that bid is refunded in full and replaced. The
    auction keeps the total of all deposits.
 
+   Soft close: a replacement within the last 10 minutes of bidding moves the
+   end to 10 minutes after it (`soft_close`), up to 24 hours past the end the
+   auction opened with (`Auction::extended_secs`). Prices are sealed, so the
+   deposit is the only thing a place can be competed for; this keeps that
+   competition open long enough for a replaced bidder to answer, instead of
+   letting someone push honest bids out in the last seconds. Bids built
+   against the earlier end are still accepted. NFT sales open with all four
+   pages by default in the app, so filling every place takes 1,024 deposits.
+
    Until bidding closes, `increase_bid` lets a bidder re-seal their bid (a
    fresh encryption, bound to the same address nonce) and add to its
    deposit. The program cannot see inside the bid, so it only makes sure the
@@ -586,7 +595,10 @@ these services.
 - Devnet only and unaudited.
 - Up to 1,024 bids per auction (256 unless the seller adds pages) and 10,000
   NFTs per collection. In a full auction, the bid with the smallest deposit
-  can be replaced (and refunded) until bidding ends.
+  can be replaced (and refunded) until bidding ends; a replacement near the
+  end extends bidding, by up to 24 hours in all. Someone willing to lock up
+  larger deposits than every real bidder can still take every place, and then
+  wins at the minimum price, which is the seller's floor.
 - Prices are u32 ticks: a token auction usually takes bids up to at least
   40,000 times its minimum price, and a collection auction up to about
   4,295 SOL per NFT.
