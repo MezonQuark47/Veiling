@@ -199,8 +199,10 @@ export function Docs({ section }: { section: string }) {
             <p>
               Until bidding closes you can raise a bid: a higher price or a larger size, sealed again, with more
               deposit if it needs it. A bid can never be lowered or withdrawn, and a deposit never shrinks, so
-              nobody can show demand and then pull it. An auction holds {formatCount(PAGE_BIDS)} bids, or up to{" "}
-              {formatCount(MAX_BIDS)} if the seller made room for more; after that, a new bid can replace the one with
+              nobody can show demand and then pull it. An auction starts with room for {formatCount(PAGE_BIDS)} bids and
+              grows on its own, {formatCount(PAGE_BIDS)} at a time, up to {formatCount(MAX_BIDS)}; the extra room is
+              paid for out of the settlement fund and, only if it was needed, the proceeds. After that, a new bid can
+              replace the one with
               the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more, and the replaced bid gets
               its whole deposit back. A replacement in the last {SOFT_CLOSE_SECS / 60} minutes keeps bidding open{" "}
               {SOFT_CLOSE_SECS / 60} more minutes, up to {MAX_SOFT_CLOSE_EXTENSION_SECS / 3600} hours past the original
@@ -453,7 +455,11 @@ export function Docs({ section }: { section: string }) {
                   </td>
                   <td>
                     The seller when the auction opens, and each bidder when bidding. It pays whoever runs the private
-                    steps that settle the sale. Not refunded to bidders; what is left goes back to the seller.
+                    steps that settle the sale. Not refunded to bidders; what is left goes back to the seller. If
+                    more than {formatCount(PAGE_BIDS)} bids come, it also pays for the extra room and for finding the
+                    price across it: each bid that lands there adds a room fee, its share of that room (about 0.0011
+                    SOL), so full room pays for itself, and what partly filled room leaves short comes out of the
+                    proceeds.
                   </td>
                 </tr>
                 <tr>

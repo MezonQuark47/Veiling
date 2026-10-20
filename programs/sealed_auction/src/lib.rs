@@ -778,6 +778,7 @@ pub mod sealed_auction {
         );
         auction.page_bumps[page as usize - 1] = ctx.bumps.page_book;
         auction.extra_pages = page;
+        auction.prepaid_pages |= 1 << page;
         let mut book = ctx.accounts.page_book.load_init()?;
         book.auction = auction_key;
         drop(book);
@@ -800,6 +801,58 @@ pub mod sealed_auction {
             page,
             max_bids: bid_capacity(&ctx.accounts.auction),
             crank_fee,
+        });
+        Ok(())
+    }
+
+    /// Opens the next page of a full bid book, so the auction grows on its own
+    /// up to `MAX_BIDS` bids and the seller pays nothing up front for room.
+    /// Anyone may call it, but only while bidding is open and only once every
+    /// existing page is full; `page` is the next page's number (1 to 3). The
+    /// app adds it in front of the bid that needs the room.
+    ///
+    /// The caller pays the page's rent (and, with the second page, the paged
+    /// clearing's state) and is paid it straight back out of the auction's
+    /// settlement fund, which by then holds every bid's crank fee. The rent
+    /// goes to the seller when the auction closes. Rewards the fund then runs
+    /// short of, including the steps of the paged clearing, are paid out of
+    /// the proceeds (`crank_payment`).
+    pub fn open_book_page(ctx: Context<OpenBookPage>, page: u8) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let auction_key = ctx.accounts.auction.key();
+        let auction = &mut ctx.accounts.auction;
+        require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
+        require!(now < auction.end_time, AuctionError::BiddingClosed);
+        require!(
+            page as usize == auction.extra_pages as usize + 1 && page < MAX_PAGES,
+            AuctionError::TooManyPages
+        );
+        require!(auction.bid_count >= bid_capacity(auction), AuctionError::BookNotFull);
+        auction.page_bumps[page as usize - 1] = ctx.bumps.page_book;
+        auction.extra_pages = page;
+        let mut book = ctx.accounts.page_book.load_init()?;
+        book.auction = auction_key;
+        drop(book);
+
+        let mut rent = ctx.accounts.page_book.to_account_info().lamports();
+        let fold = &mut ctx.accounts.fold;
+        if fold.auction == Pubkey::default() {
+            fold.auction = auction_key;
+            fold.bump = ctx.bumps.fold;
+            rent = rent.saturating_add(fold.to_account_info().lamports());
+        }
+
+        // The fund advances the rent; the accounts are already made, so no
+        // further CPI follows this lamport move.
+        let auction = &mut ctx.accounts.auction;
+        let advanced = rent.min(auction.crank_pool);
+        auction.crank_pool -= advanced;
+        move_lamports(&auction.to_account_info(), &ctx.accounts.payer.to_account_info(), advanced)?;
+        emit!(BookPageOpened {
+            auction: auction_key,
+            page,
+            max_bids: bid_capacity(auction),
+            rent_advanced: advanced,
         });
         Ok(())
     }
@@ -1125,8 +1178,10 @@ pub mod sealed_auction {
             deposit,
         )?;
         // The bid's share of the crank pool: not refunded, it pays whoever
-        // checks and settles the bids.
-        let crank_fee = bid_crank_fee(&ctx.accounts.auction.crank_rewards);
+        // checks and settles the bids. A bid on a page opened on demand also
+        // pays its share of that page's rent and clearing steps.
+        let crank_fee = bid_crank_fee(&ctx.accounts.auction.crank_rewards)
+            .saturating_add(room_fee(&ctx.accounts.auction, page, &Rent::get()?));
         add_to_crank_pool(
             &mut ctx.accounts.auction,
             &ctx.accounts.bidder.to_account_info(),
@@ -3342,6 +3397,7 @@ fn new_auction(
         liquidity: LIQUIDITY_NONE,
         liquidity_floor: 0,
         extended_secs: 0,
+        prepaid_pages: 0,
     }
 }
 
@@ -3374,6 +3430,27 @@ pub fn bid_crank_fee(rewards: &CrankRewards) -> u64 {
         .check_batch
         .div_ceil(BATCH_SIZE as u64)
         .saturating_add(rewards.settlement)
+}
+
+/// What a bid on page `page` adds to the crank pool on top of
+/// `bid_crank_fee`: nothing on the first page or on a page the seller paid
+/// for (`add_book_page`); on a page opened on demand (`open_book_page`), its
+/// share of what that page costs the pool, the page's rent (the second page
+/// also brings the paged clearing's state) and the clearing steps it adds
+/// (`page_crank_fee`), spread over its `PAGE_BIDS` places and rounded up. A
+/// full page covers itself; the proceeds cover what a partly filled one
+/// does not (`crank_payment`).
+pub fn room_fee(auction: &Auction, page: u8, rent: &Rent) -> u64 {
+    if page == 0 || auction.prepaid_pages & (1 << page) != 0 {
+        return 0;
+    }
+    let mut cost = rent
+        .minimum_balance(8 + std::mem::size_of::<BidBook>())
+        .saturating_add(page_crank_fee(&auction.crank_rewards, page));
+    if page == 1 {
+        cost = cost.saturating_add(rent.minimum_balance(8 + ClearingFold::INIT_SPACE));
+    }
+    cost.div_ceil(PAGE_BIDS as u64)
 }
 
 /// What the seller puts in the crank pool when the auction opens: the
@@ -3431,22 +3508,41 @@ fn fund_crank_pool<'info>(
 /// Pays whoever queued a computation that succeeded its reward, as far as
 /// the crank pool reaches. The pool sits in the auction account on top of its
 /// rent and proceeds, so paying from it never touches anyone else's funds.
+/// How a crank reward of `reward` lamports is paid: from the settlement fund
+/// first, then, for what the fund cannot cover, from the proceeds collected
+/// so far. The fund runs short when it advanced the rent of pages opened on
+/// demand and paid the steps of a paged clearing (`open_book_page`), which
+/// the seller did not pay for up front; so the seller pays for that room only
+/// when the auction needed it, out of what it raised. Returns `(from_fund,
+/// from_proceeds)`.
+pub fn crank_payment(fund: u64, proceeds: u64, reward: u64) -> (u64, u64) {
+    let from_fund = reward.min(fund);
+    let from_proceeds = (reward - from_fund).min(proceeds);
+    (from_fund, from_proceeds)
+}
+
 fn pay_cranker<'info>(
     auction: &mut Account<'info, Auction>,
     cranker: &AccountInfo<'info>,
     reward: u64,
 ) -> Result<()> {
-    let amount = reward.min(auction.crank_pool);
-    if amount == 0 || cranker.key() == auction.key() {
+    if cranker.key() == auction.key() {
         return Ok(());
     }
-    auction.crank_pool -= amount;
+    let (from_fund, from_proceeds) = crank_payment(auction.crank_pool, auction.proceeds, reward);
+    let amount = from_fund + from_proceeds;
+    if amount == 0 {
+        return Ok(());
+    }
+    auction.crank_pool -= from_fund;
+    auction.proceeds -= from_proceeds;
     auction.to_account_info().sub_lamports(amount)?;
     cranker.add_lamports(amount)?;
     emit!(CrankPaid {
         auction: auction.key(),
         cranker: cranker.key(),
         amount,
+        from_proceeds,
     });
     Ok(())
 }
@@ -4451,6 +4547,10 @@ pub struct Auction {
     /// Seconds the soft close has added to the end of bidding (see
     /// `soft_close`); `end_time` already includes them. Older auctions read 0.
     pub extended_secs: u32,
+    /// Pages the seller added and paid for ahead of time (`add_book_page`),
+    /// bit `p` for page `p`. Bids on the other extra pages pay a room fee
+    /// (`room_fee`). Older auctions read 0.
+    pub prepaid_pages: u8,
 }
 
 /// The items of a collection auction named per item. Item `k` covers NFT
@@ -4884,6 +4984,38 @@ pub struct AddBookPage<'info> {
     #[account(
         init_if_needed,
         payer = seller,
+        space = 8 + ClearingFold::INIT_SPACE,
+        seeds = [FOLD_SEED, auction.key().as_ref()],
+        bump,
+    )]
+    pub fold: Box<Account<'info, ClearingFold>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(page: u8)]
+pub struct OpenBookPage<'info> {
+    /// Anyone; pays the rent and is paid it back from the settlement fund.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + std::mem::size_of::<BidBook>(),
+        seeds = [BOOK_SEED, auction.key().as_ref(), &[page]],
+        bump,
+    )]
+    pub page_book: AccountLoader<'info, BidBook>,
+    /// Made with the second page.
+    #[account(
+        init_if_needed,
+        payer = payer,
         space = 8 + ClearingFold::INIT_SPACE,
         seeds = [FOLD_SEED, auction.key().as_ref()],
         bump,
@@ -5933,6 +6065,8 @@ pub struct CrankPaid {
     pub auction: Pubkey,
     pub cranker: Pubkey,
     pub amount: u64,
+    /// The part the settlement fund could not cover, taken from the proceeds.
+    pub from_proceeds: u64,
 }
 
 /// A replacement near the end of bidding moved the end (soft close).
@@ -5965,6 +6099,17 @@ pub struct BatchChecked {
 pub struct ComputationFailed {
     pub auction: Pubkey,
     pub bid: Option<Pubkey>,
+}
+
+/// A page opened on demand (`open_book_page`).
+#[event]
+pub struct BookPageOpened {
+    pub auction: Pubkey,
+    pub page: u8,
+    /// Bids the auction can now hold.
+    pub max_bids: u32,
+    /// Rent paid back to the caller out of the settlement fund.
+    pub rent_advanced: u64,
 }
 
 #[event]
@@ -6260,6 +6405,8 @@ pub enum AuctionError {
     LiquidityStillNeeded,
     #[msg("The pool accounts do not match")]
     WrongPoolAccounts,
+    #[msg("A new page opens only once every page so far is full")]
+    BookNotFull,
 }
 
 // ---------------------------------------------------------------------------
@@ -7414,6 +7561,34 @@ mod tests {
         assert_eq!(soft_close(&mut a, cap - 1).unwrap(), None);
         assert_eq!(a.end_time, cap);
         assert_eq!(a.extended_secs as i64, MAX_SOFT_CLOSE_EXTENSION_SECS);
+    }
+
+    #[test]
+    fn bids_on_pages_opened_on_demand_pay_for_their_room() {
+        let fees = FeeConfig { listing_fee: 0, sale_fee_bps: 0, treasury: Pubkey::default(), bump: 0 };
+        let rewards = CrankRewards { check_batch: 6_000_000, clearing: 25_000_000, settlement: 4_000_000, seed_draw: 0 };
+        let mut a = new_auction(AuctionKind::Token, 1, Pubkey::default(), Pubkey::default(), Pubkey::default(), 0, 1, [0, 0], &fees, rewards);
+        let rent = Rent::default();
+        assert_eq!(room_fee(&a, 0, &rent), 0);
+        let page_rent = rent.minimum_balance(8 + std::mem::size_of::<BidBook>());
+        let fold_rent = rent.minimum_balance(8 + ClearingFold::INIT_SPACE);
+        // The second page: its rent, the clearing's state and nine steps.
+        assert_eq!(room_fee(&a, 1, &rent), (page_rent + fold_rent + 9 * 25_000_000).div_ceil(256));
+        // Further pages: their rent and eight more steps.
+        assert_eq!(room_fee(&a, 2, &rent), (page_rent + 8 * 25_000_000).div_ceil(256));
+        // About 0.0011 SOL a bid with the default rewards.
+        assert!((1_000_000..1_200_000).contains(&room_fee(&a, 1, &rent)));
+        // A page the seller paid for costs bids nothing extra.
+        a.prepaid_pages = 1 << 2;
+        assert_eq!(room_fee(&a, 2, &rent), 0);
+    }
+
+    #[test]
+    fn rewards_come_from_the_fund_then_the_proceeds() {
+        assert_eq!(crank_payment(10, 100, 4), (4, 0));
+        assert_eq!(crank_payment(3, 100, 4), (3, 1));
+        assert_eq!(crank_payment(0, 2, 4), (0, 2));
+        assert_eq!(crank_payment(0, 0, 4), (0, 0));
     }
 
     #[test]

@@ -62,6 +62,7 @@ const base = (seed: number, overrides: Partial<Auction>): Auction => ({
   liquidity: "none",
   liquidityFloor: 0n,
   extendedSecs: 0,
+  prepaidPages: 0,
   ...overrides,
 });
 

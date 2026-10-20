@@ -54,6 +54,7 @@ import {
   bidAddress,
   bidCapacity,
   bookAddress,
+  canGrow,
   collectionAddress,
   configAddress,
   connection,
@@ -499,7 +500,8 @@ export interface Eviction {
 
 /** For a full auction, what a new bid has to beat; `null` while slots are free. */
 export async function findEviction(auction: Auction): Promise<Eviction | null> {
-  if (auction.bidCount < bidCapacity(auction)) return null;
+  // A full book with pages left to open grows instead.
+  if (auction.bidCount < bidCapacity(auction) || canGrow(auction)) return null;
   const [deposits, bids] = await Promise.all([
     fetchBookDeposits(auction),
     fetchBidsForAuction(auction.address),
@@ -550,6 +552,13 @@ export async function buildPlaceBid(
     maxPerBid: auction.maxPerBid,
     endTime: bn(auction.endTime),
   };
+  // A full book that can still grow opens its next page first, in the same
+  // transaction, and the bid lands on it. The settlement fund pays the
+  // page's rent back to the bidder.
+  const growing = auction.bidCount >= bidCapacity(auction) && canGrow(auction);
+  const nextPage = auction.extraPages + 1;
+  const pages = pageAccounts(auction, true);
+  if (growing) pages.push({ pubkey: bookAddress(auction.address, nextPage), isSigner: false, isWritable: true });
   const tx = await program.methods
     .placeBid(
       seed,
@@ -571,7 +580,22 @@ export async function buildPlaceBid(
     })
     // Every further page of the book, so the bid lands wherever the next
     // free place is when it arrives.
-    .remainingAccounts(pageAccounts(auction, true))
+    .remainingAccounts(pages)
+    .preInstructions(
+      growing
+        ? [
+            await program.methods
+              .openBookPage(nextPage)
+              .accountsPartial({
+                payer: bidder,
+                auction: auction.address,
+                pageBook: bookAddress(auction.address, nextPage),
+                fold: foldAddress(auction.address),
+              })
+              .instruction(),
+          ]
+        : []
+    )
     .transaction();
   return { tx, bid, evicted: eviction?.bid ?? null };
 }

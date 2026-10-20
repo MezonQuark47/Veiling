@@ -19,6 +19,7 @@ import {
   FOLD_PASSES,
   FOLD_REWARD_PERCENT,
   FRESH_ARWEAVE_GATEWAY,
+  MAX_PAGES,
   MAX_PRICE_TICKS,
   MPL_CORE_ID,
   PROGRAM_ID,
@@ -232,6 +233,8 @@ export interface Auction {
   liquidityFloor: bigint;
   /** Seconds the soft close has added to the end of bidding; `endTime` includes them. */
   extendedSecs: number;
+  /** Pages the seller paid for ahead of time, bit `p` for page `p`; bids there pay no room fee. */
+  prepaidPages: number;
 }
 
 /**
@@ -361,11 +364,18 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     liquidity: LIQUIDITY_STATES[a.liquidity ?? 0] ?? "none",
     liquidityFloor: a.liquidityFloor ? big(a.liquidityFloor) : 0n,
     extendedSecs: a.extendedSecs ?? 0,
+    prepaidPages: a.prepaidPages ?? 0,
   };
 }
 
 /** Bids the auction can hold before new bids must replace the smallest. */
 export const bidCapacity = (a: Auction) => PAGE_BIDS * (1 + a.extraPages);
+
+/**
+ * Whether the next bid into a full book can open another page instead of
+ * replacing the smallest bid (`open_book_page`).
+ */
+export const canGrow = (a: Auction) => a.extraPages + 1 < MAX_PAGES;
 
 /** Pages of the book that hold bids (at least one). */
 export const pagesInUse = (a: Auction) => Math.max(1, Math.ceil(a.bidCount / PAGE_BIDS));
@@ -451,6 +461,34 @@ function decodeCrankRewards(r: { checkBatch: BN; clearing: BN; settlement: BN; s
 
 /** What each bid adds to the crank pool: its share of a batch check and its own settlement. Not refunded. */
 export const bidCrankFee = (r: CrankRewards) => (r.checkBatch + BigInt(BATCH_SIZE) - 1n) / BigInt(BATCH_SIZE) + r.settlement;
+
+/** Rent of a page of the bid book and of the paged clearing's state (8,232 and 289 bytes). */
+const PAGE_RENT = (128n + 8_232n) * 6_960n;
+const FOLD_RENT = (128n + 289n) * 6_960n;
+
+/**
+ * What a bid on `page` pays on top of `bidCrankFee`: its share of a page
+ * opened on demand, rent and clearing steps over 256 places. Mirrors
+ * `room_fee`.
+ */
+export function roomFee(a: Auction, page: number): bigint {
+  if (page === 0 || (a.prepaidPages & (1 << page)) !== 0) return 0n;
+  let cost = PAGE_RENT + pageCrankFee(a.crankRewards, page);
+  if (page === 1) cost += FOLD_RENT;
+  return (cost + BigInt(PAGE_BIDS) - 1n) / BigInt(PAGE_BIDS);
+}
+
+/**
+ * The page the next bid lands on: the next free place, a page opened for it,
+ * or, once every page is full, the last page (the most a replacement pays).
+ */
+export function nextBidPage(a: Auction): number {
+  if (a.bidCount < bidCapacity(a)) return pageOf(a.bidCount);
+  return canGrow(a) ? a.extraPages + 1 : a.extraPages;
+}
+
+/** What a bid is charged into the crank pool: its steps and, on an extra page, its room fee. */
+export const nextBidFee = (a: Auction) => bidCrankFee(a.crankRewards) + roomFee(a, nextBidPage(a));
 
 /** What a seller puts in the crank pool when the auction opens. */
 export const sellerCrankFee = (r: CrankRewards, kind: AuctionKind) =>

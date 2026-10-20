@@ -690,6 +690,7 @@ impl Env {
             ("liquidity", 1),
             ("liquidity_floor", 8),
             ("extended_secs", 4),
+            ("prepaid_pages", 1),
         ] {
             if name == field {
                 return at;
@@ -3635,4 +3636,68 @@ fn a_replacement_near_the_end_gives_the_replaced_bidder_time_to_answer() {
     let key = honest_key(999_999);
     let (ix, _) = env.place_bid_ix(&a, &honest.pubkey(), 999_999, key, edwards_y(&key), 10_000, Some((bids[k], honest.pubkey())));
     env.expect_error(&[ix], &honest, &[], "BiddingClosed");
+}
+
+impl Env {
+    /// `open_book_page` for page `page` of `a`, paid (and paid back) to `payer`.
+    fn open_page_ix(&self, a: &AuctionInfo, payer: &Address, page: u8) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("open_book_page", &Args::default().u8(page).0),
+            vec![signer(*payer), w(a.auction), w(page_address(a, page)), w(fold_address(a)), r(SYSTEM_PROGRAM)],
+        )
+    }
+}
+
+#[test]
+fn a_full_book_grows_by_itself_at_no_cost_to_the_seller_or_the_bidder() {
+    let mut env = Env::new();
+    let admin = env.admin.insecure_clone();
+    // The default rewards: a batch check, the clearing, one settlement, a seed draw.
+    let ix = env.set_crank_rewards_ix(&admin.pubkey(), [6_000_000, 25_000_000, 4_000_000, 3_000_000]);
+    env.send(&[ix], &admin, &[]).expect("set crank rewards");
+    let seller = env.funded(10);
+    let bidder = env.funded(100);
+    let late = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let a = env.create_auction(&seller, 12, mint, TOKEN_TERMS);
+
+    // Room opens only when it is needed, and only the next page.
+    let ix = env.open_page_ix(&a, &late.pubkey(), 1);
+    env.expect_error(&[ix], &late, &[], "BookNotFull");
+    let ix = env.open_page_ix(&a, &late.pubkey(), 2);
+    env.expect_error(&[ix], &late, &[], "TooManyPages");
+
+    for i in 0..PAGE_BIDS {
+        let key = honest_key(i);
+        let (ix, _) = env.place_bid_ix(&a, &bidder.pubkey(), i, key, edwards_y(&key), 3_000 + i, None);
+        env.send(&[ix], &bidder, &[]).unwrap_or_else(|e| panic!("bid {i}: {e:?}"));
+    }
+    // The 257th bid opens the second page in the same transaction, and lands on it.
+    let seller_before = env.balance(&seller.pubkey());
+    let pool = env.read_crank_pool(&a.auction);
+    let late_before = env.balance(&late.pubkey());
+    let key = honest_key(5_000);
+    let (mut bid_ix, bid) = env.place_bid_ix(&a, &late.pubkey(), 5_000, key, edwards_y(&key), 3_000, None);
+    bid_ix.accounts.push(w(page_address(&a, 1)));
+    let open = env.open_page_ix(&a, &late.pubkey(), 1);
+    env.send_with_limit(&[open, bid_ix], &late, &[], 400_000).expect("open a page and bid");
+    assert_eq!(env.extra_pages(&a), 1);
+    assert_eq!(env.read_u32(&bid, "Bid", "index"), PAGE_BIDS as u32);
+    // The fund advanced the page's and the paged clearing's rent, and the
+    // seller paid nothing. The bid paid what any bid pays plus its room fee:
+    // its share of the page's rent and its nine clearing steps, so a full
+    // page pays for itself.
+    let rent = env.balance(&page_address(&a, 1)) + env.balance(&fold_address(&a));
+    let bid_fee = 6_000_000u64.div_ceil(4) + 4_000_000;
+    let room_fee = (rent + 9 * 25_000_000).div_ceil(PAGE_BIDS);
+    assert!(room_fee > 1_000_000 && room_fee < 1_200_000, "{room_fee}");
+    assert_eq!(env.read_crank_pool(&a.auction), pool - rent + bid_fee + room_fee);
+    assert_eq!(late_before - env.balance(&late.pubkey()), env.balance(&bid) + bid_fee + room_fee + TX_FEE);
+    assert_eq!(env.balance(&seller.pubkey()), seller_before);
+
+    // Once bidding is over, no more room opens.
+    env.set_time(a.end_time + 1);
+    let ix = env.open_page_ix(&a, &late.pubkey(), 2);
+    env.expect_error(&[ix], &late, &[], "BiddingClosed");
 }

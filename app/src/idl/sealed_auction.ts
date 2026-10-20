@@ -4409,6 +4409,111 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "openBookPage",
+      "docs": [
+        "Opens the next page of a full bid book, so the auction grows on its own",
+        "up to `MAX_BIDS` bids and the seller pays nothing up front for room.",
+        "Anyone may call it, but only while bidding is open and only once every",
+        "existing page is full; `page` is the next page's number (1 to 3). The",
+        "app adds it in front of the bid that needs the room.",
+        "",
+        "The caller pays the page's rent (and, with the second page, the paged",
+        "clearing's state) and is paid it straight back out of the auction's",
+        "settlement fund, which by then holds every bid's crank fee. The rent",
+        "goes to the seller when the auction closes. Rewards the fund then runs",
+        "short of, including the steps of the paged clearing, are paid out of",
+        "the proceeds (`crank_payment`)."
+      ],
+      "discriminator": [
+        249,
+        52,
+        145,
+        75,
+        58,
+        81,
+        80,
+        136
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Anyone; pays the rent and is paid it back from the settlement fund."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pageBook",
+          "writable": true
+        },
+        {
+          "name": "fold",
+          "docs": [
+            "Made with the second page."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "page",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "placeBid",
       "docs": [
         "Stores an encrypted bid and escrows its deposit. No MPC runs here, so",
@@ -6153,6 +6258,19 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "bookPageOpened",
+      "discriminator": [
+        80,
+        108,
+        168,
+        144,
+        92,
+        10,
+        98,
+        200
+      ]
+    },
+    {
       "name": "clearingFolded",
       "discriminator": [
         155,
@@ -6751,6 +6869,11 @@ export type SealedAuction = {
       "code": 6077,
       "name": "wrongPoolAccounts",
       "msg": "The pool accounts do not match"
+    },
+    {
+      "code": 6078,
+      "name": "bookNotFull",
+      "msg": "A new page opens only once every page so far is full"
     }
   ],
   "types": [
@@ -7151,6 +7274,15 @@ export type SealedAuction = {
               "`soft_close`); `end_time` already includes them. Older auctions read 0."
             ],
             "type": "u32"
+          },
+          {
+            "name": "prepaidPages",
+            "docs": [
+              "Pages the seller added and paid for ahead of time (`add_book_page`),",
+              "bit `p` for page `p`. Bids on the other extra pages pay a room fee",
+              "(`room_fee`). Older auctions read 0."
+            ],
+            "type": "u8"
           }
         ]
       }
@@ -7972,6 +8104,39 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "bookPageOpened",
+      "docs": [
+        "A page opened on demand (`open_book_page`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "page",
+            "type": "u8"
+          },
+          {
+            "name": "maxBids",
+            "docs": [
+              "Bids the auction can now hold."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "rentAdvanced",
+            "docs": [
+              "Rent paid back to the caller out of the settlement fund."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "checkBidsV2Output",
       "docs": [
         "The output of the callback instruction. Provided as a struct with ordered fields",
@@ -8639,6 +8804,13 @@ export type SealedAuction = {
           },
           {
             "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "fromProceeds",
+            "docs": [
+              "The part the settlement fund could not cover, taken from the proceeds."
+            ],
             "type": "u64"
           }
         ]

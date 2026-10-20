@@ -28,9 +28,13 @@ price, and unused deposits are refunded.
    price is about 10,000 ticks: fine enough for any typed price, with room for
    bids tens of thousands of times higher. For a collection a tick is 1,000
    lamports per NFT. Opening also creates the auction's bid book, one page of
-   room for 256 bids. Until bidding ends the seller can add up to three more
-   pages (`add_book_page`), up to 1,024 bids; each page's rent comes back when
-   the auction is closed.
+   room for 256 bids. The book grows on its own: once every page is full, the
+   next bid opens another (`open_book_page`, sent in front of it by the app),
+   up to four pages and 1,024 bids. The settlement fund, which by then holds
+   every bid's crank fee, pays the caller the page's rent back, so neither the
+   seller nor the bidder pays for room up front; the rent comes back to the
+   seller when the auction is closed. A seller can still add pages ahead of
+   time with `add_book_page`, paying for them as before.
 
    Bidding runs for 1 minute to 14 days. It opens right away, or at a
    `start_time` the seller schedules up to 30 days ahead (a time already past
@@ -59,8 +63,9 @@ price, and unused deposits are refunded.
    deposit is the only thing a place can be competed for; this keeps that
    competition open long enough for a replaced bidder to answer, instead of
    letting someone push honest bids out in the last seconds. Bids built
-   against the earlier end are still accepted. NFT sales open with all four
-   pages by default in the app, so filling every place takes 1,024 deposits.
+   against the earlier end are still accepted. Since the book grows to four
+   pages before any bid can be replaced, crowding real bidders out takes
+   1,024 larger deposits.
 
    Until bidding closes, `increase_bid` lets a bidder re-seal their bid (a
    fresh encryption, bound to the same address nonce) and add to its
@@ -266,10 +271,17 @@ seed). So that anyone can settle a sale without paying for it, every auction
 keeps a crank pool in its own account:
 
 - the seller pays a clearing, one batch check and, for a collection, a seed
-  draw into it when the auction opens, and the clearing steps each added
-  page may need (`page_crank_fee`: 9 steps with the second page, 8 more with
+  draw into it when the auction opens;
+- pages opened on demand are paid for out of the pool, and so are the steps of
+  the paged clearing they need (9 steps with the second page, 8 more with
   each further one; a step pays the clearing reward, as it costs about the
-  same: 0.0232 SOL measured on devnet);
+  same: 0.0232 SOL measured on devnet). Each bid that lands on such a page
+  adds a room fee (`room_fee`): the page's rent and clearing steps spread
+  over its 256 places, about 0.0011 SOL with the default rewards, so a full
+  page pays for itself. Any reward the pool still runs short of, when a page
+  is only partly filled, is paid out of the proceeds collected so far
+  (`crank_payment`). A seller who adds pages ahead of time (`add_book_page`) funds their
+  clearing steps then (`page_crank_fee`);
 - each bid pays its share of a batch check plus one settlement
   (`check_batch / 4 + settlement`), not refunded, on top of its deposit;
 - each step's callback, once its computation succeeds, pays whoever queued it
@@ -593,8 +605,7 @@ these services.
 ## Known limitations
 
 - Devnet only and unaudited.
-- Up to 1,024 bids per auction (256 unless the seller adds pages) and 10,000
-  NFTs per collection. In a full auction, the bid with the smallest deposit
+- Up to 1,024 bids per auction and 10,000 NFTs per collection. In a full auction, the bid with the smallest deposit
   can be replaced (and refunded) until bidding ends; a replacement near the
   end extends bidding, by up to 24 hours in all. Someone willing to lock up
   larger deposits than every real bidder can still take every place, and then

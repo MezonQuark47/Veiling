@@ -56,7 +56,9 @@ import {
   sharesAreFinal,
   ticksOf,
   bidCrankFee,
+  nextBidFee,
   bidCapacity,
+  canGrow,
   fetchClearingFold,
   foldReward,
   foldTotalSteps,
@@ -119,13 +121,15 @@ async function collectBid(signer: WalletSigner, auction: Auction, bid: Bid): Pro
 /** A full auction only takes a bid that out-deposits the smallest one. */
 function useEviction(auction: Auction) {
   const capacity = bidCapacity(auction);
-  const full = auction.bidCount >= capacity;
+  // A full book with pages left grows instead: the next bid opens a page.
+  const growable = canGrow(auction);
+  const full = auction.bidCount >= capacity && !growable;
   const eviction = useLoader(
     () => (full ? findEviction(auction) : Promise.resolve(null)),
     [auction.address.toBase58(), full],
     full ? 15_000 : undefined
   );
-  return { full, capacity, eviction, minimumDeposit: eviction.data?.minimumDeposit ?? 0n };
+  return { full, growable, capacity, eviction, minimumDeposit: eviction.data?.minimumDeposit ?? 0n };
 }
 
 /** How the soft close protects a replaced bidder. */
@@ -133,6 +137,7 @@ const SOFT_CLOSE_NOTE = `A replacement in the last ${SOFT_CLOSE_SECS / 60} minut
 
 function EvictionHint({
   full,
+  growable,
   capacity,
   eviction,
   minimumDeposit,
@@ -150,6 +155,7 @@ function EvictionHint({
       </p>
     );
   }
+  if (growable) return null;
   if (bidCount >= (capacity * 3) / 4) {
     return (
       <p className="hint">
@@ -376,10 +382,17 @@ function CrankNote({ auction }: { auction: Auction }) {
 
 /** The bid's share of the settlement fund, if this auction has one. */
 function SettlementFee({ auction }: { auction: Auction }) {
-  const fee = bidCrankFee(auction.crankRewards);
+  const fee = nextBidFee(auction);
   if (fee === 0n) return null;
+  const room = fee - bidCrankFee(auction.crankRewards);
   return (
-    <div title="Paid to whoever runs the private steps that check and settle the bids. Not refunded.">
+    <div
+      title={`Paid to whoever runs the private steps that check and settle the bids. Not refunded.${
+        room > 0n
+          ? ` Includes ${formatSol(room)} SOL of room fee: this bid lands on extra room opened for more than 256 bids, and pays its share of it.`
+          : ""
+      }`}
+    >
       <dt>Settlement fee</dt>
       <dd>{formatSol(fee)} SOL</dd>
     </div>
