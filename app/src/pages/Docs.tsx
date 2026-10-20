@@ -4,12 +4,13 @@ import {
   EVICTION_PREMIUM_PERCENT,
   FEATURE_CONTACT,
   FREE_UPLOAD_TOTAL_BYTES,
-  MAX_BIDS,
+  MAX_COLLECTION_BIDS,
   MAX_COLLECTION_SIZE,
   MAX_IMAGE_BYTES,
   MAX_ITEMS,
   MAX_NFTS_PER_CLAIM,
   MAX_ORIGINAL_BYTES,
+  MAX_TOKEN_BIDS,
   MAX_ROYALTY_BPS,
   MAX_UPLOADED_ITEMS,
   NFT_MINT_COST_LAMPORTS,
@@ -200,10 +201,11 @@ export function Docs({ section }: { section: string }) {
               Until bidding closes you can raise a bid: a higher price or a larger size, sealed again, with more
               deposit if it needs it. A bid can never be lowered or withdrawn, and a deposit never shrinks, so
               nobody can show demand and then pull it. An auction starts with room for {formatCount(PAGE_BIDS)} bids and
-              grows on its own, {formatCount(PAGE_BIDS)} at a time, up to {formatCount(MAX_BIDS)}; the extra room is
-              paid for out of the settlement fund and, only if it was needed, the proceeds. After that, a new bid can
-              replace the one with
-              the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more, and the replaced bid gets
+              grows on its own, {formatCount(PAGE_BIDS)} at a time, up to {formatCount(MAX_TOKEN_BIDS)} for a token sale
+              and {formatCount(MAX_COLLECTION_BIDS)} for a collection, so even a{" "}
+              {formatCount(MAX_COLLECTION_SIZE)}-NFT collection can sell out at one NFT a bid. However far it grows, it
+              stays one auction with one clearing price. The bids that land on the extra room pay for it (see
+              Fees). After that, a new bid can replace the one with the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more, and the replaced bid gets
               its whole deposit back. A replacement in the last {SOFT_CLOSE_SECS / 60} minutes keeps bidding open{" "}
               {SOFT_CLOSE_SECS / 60} more minutes, up to {MAX_SOFT_CLOSE_EXTENSION_SECS / 3600} hours past the original
               end, so nobody can be pushed out at the last second without time to answer.
@@ -240,8 +242,10 @@ export function Docs({ section }: { section: string }) {
             <p>
               With more than {formatCount(PAGE_BIDS)} bids, Arcium finds the same price a page of{" "}
               {formatCount(PAGE_BIDS)} bids at a time, four bits of the price per pass over the pages: 9 steps for 2
-              pages, 25 for 4. Each pass reveals only the next four bits of the clearing price, which becomes public
-              anyway; the demand added up in between stays encrypted.
+              pages, 25 for 4, 313 for a collection's full 40 (about an hour). Each pass reveals only the next four bits
+              of the clearing price, which becomes public anyway; the demand added up in between stays encrypted.
+              Every bid is still checked and settled on its own, so the more bids, the longer settling takes after
+              bidding ends.
             </p>
           </Section>
 

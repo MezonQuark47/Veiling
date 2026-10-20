@@ -46,9 +46,11 @@ const CP_AMM: Address = Address::from_str_const("cpamdpZCGKUy5JxQXB4dcpGPiikHawv
 const WSOL: Address = Address::from_str_const("So11111111111111111111111111111111111111112");
 const TOKEN_2022: Address = Address::from_str_const("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
-/// Bids one page of the bid book holds; an auction has up to four pages.
+/// Bids one page of the bid book holds; a token auction has up to four
+/// pages, a collection up to forty.
 const PAGE_BIDS: u64 = 256;
 const MAX_PAGES: u8 = 4;
+const MAX_COLLECTION_PAGES: u8 = 40;
 const SOL: u64 = 1_000_000_000;
 const EMERGENCY_DELAY_SECS: i64 = 3 * 24 * 60 * 60;
 /// Soft close: a replacement this close to the end pushes it this far, up to
@@ -745,6 +747,8 @@ impl Env {
                 w(a.auction),
                 w(page_address(a, page)),
                 w(fold_address(a)),
+                r(a.book),
+                w(index_address(a)),
                 r(SYSTEM_PROGRAM),
             ],
         )
@@ -957,7 +961,7 @@ impl Env {
         Instruction::new_with_bytes(
             PROGRAM_ID,
             &self.idl.data("increase_bid", &args.0),
-            vec![signer(*bidder), w(view.auction), w(book), w(bid), r(SYSTEM_PROGRAM)],
+            vec![signer(*bidder), w(view.auction), w(book), self.index_meta(view), w(bid), r(SYSTEM_PROGRAM)],
         )
     }
 
@@ -1167,16 +1171,24 @@ impl Env {
             Some((bid, owner)) => (w(bid), w(owner)),
             None => (r(PROGRAM_ID), r(PROGRAM_ID)),
         };
-        let mut accounts = vec![
+        // The page the bid goes to: the evicted bid's, or the next free one
+        // (the last page of a full book, which then refuses the bid; a test
+        // that opens the next page in the same transaction names it).
+        let page = match evicted {
+            Some((bid, _)) if self.exists(&bid) => self.read_u32(&bid, "Bid", "index") / PAGE_BIDS as u32,
+            _ => (self.read_u32(&view.auction, "Auction", "bid_count") / PAGE_BIDS as u32).min(self.extra_pages(view) as u32),
+        };
+        let book = page_address(view, page as u8);
+        let accounts = vec![
             signer(*bidder),
             w(view.auction),
-            w(view.book),
+            w(book),
+            self.index_meta(view),
             w(bid),
             evicted_bid,
             evicted_bidder,
             r(SYSTEM_PROGRAM),
         ];
-        accounts.extend(self.page_metas(view));
         let ix = Instruction::new_with_bytes(PROGRAM_ID, &self.idl.data("place_bid", &args.0), accounts);
         (ix, bid)
     }
@@ -1197,6 +1209,7 @@ impl Env {
         if closing {
             accounts.push(w(a.book));
             accounts.push(self.fold_meta(a));
+            accounts.push(self.index_meta(a));
         } else {
             accounts.push(w(self.treasury.pubkey()));
         }
@@ -1224,6 +1237,33 @@ impl Env {
         }
     }
 
+    /// The auction's `BookIndex` when it has one, else the program id.
+    fn index_meta(&self, a: &AuctionInfo) -> AccountMeta {
+        if self.exists(&index_address(a)) {
+            w(index_address(a))
+        } else {
+            r(PROGRAM_ID)
+        }
+    }
+
+    /// `tally_clearing_page` for the next page of `a`.
+    fn tally_ix(&self, a: &AuctionInfo, page: u8) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("tally_clearing_page", &[]),
+            vec![r(a.auction), r(page_address(a, page)), w(index_address(a))],
+        )
+    }
+
+    /// `close_book_page` for the last page of `a`.
+    fn close_page_ix(&self, a: &AuctionInfo, page: u8) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("close_book_page", &[]),
+            vec![w(a.auction), w(a.seller), w(page_address(a, page))],
+        )
+    }
+
     /// `cancel_collection_auction`, `claim_collection_proceeds` or
     /// `close_collection_auction`.
     fn collection_seller_ix(&self, name: &str, a: &AuctionInfo) -> Instruction {
@@ -1238,6 +1278,7 @@ impl Env {
                 w(a.auction),
                 w(a.book),
                 self.fold_meta(a),
+                self.index_meta(a),
                 w(a.mint),
                 r(MPL_CORE),
                 r(SYSTEM_PROGRAM),
@@ -1257,8 +1298,13 @@ impl Env {
     }
 
     fn finalize_ix(&self, a: &AuctionInfo, bid: Address) -> Instruction {
-        let mut accounts = vec![w(a.auction), r(a.book), w(bid)];
-        accounts.extend(self.page_metas(a).into_iter().map(|m| r(m.pubkey)));
+        let index = self.read_u32(&bid, "Bid", "index");
+        let book = page_address(a, (index / PAGE_BIDS as u32) as u8);
+        let book_index = match self.index_meta(a) {
+            m if m.pubkey == PROGRAM_ID => m,
+            m => r(m.pubkey),
+        };
+        let accounts = vec![w(a.auction), r(book), w(bid), book_index];
         Instruction::new_with_bytes(PROGRAM_ID, &self.idl.data("finalize_share", &[]), accounts)
     }
 
@@ -1391,6 +1437,11 @@ fn page_address(a: &AuctionInfo, page: u8) -> Address {
 /// The auction's paged clearing state.
 fn fold_address(a: &AuctionInfo) -> Address {
     pda(&[b"fold", a.auction.as_ref()])
+}
+
+/// The index of the auction's book, once it has a second page.
+fn index_address(a: &AuctionInfo) -> Address {
+    pda(&[b"index", a.auction.as_ref()])
 }
 
 /// The note on `bid`.
@@ -1935,7 +1986,7 @@ fn closing_a_cancelled_auction_sweeps_tokens_sent_to_its_vault() {
     // A stranger cannot close it.
     let mut stranger_ix = env.seller_ix("close_auction", &a);
     stranger_ix.accounts[0] = signer(donor.pubkey());
-    stranger_ix.accounts[6] = w(ata(&donor.pubkey(), &mint));
+    stranger_ix.accounts[7] = w(ata(&donor.pubkey(), &mint));
     env.expect_error(&[stranger_ix], &donor, &[], "Unauthorized");
 
     let ix = env.seller_ix("close_auction", &a);
@@ -2940,8 +2991,9 @@ fn sellers_add_pages_for_up_to_1024_bids() {
     let before = env.balance(&seller.pubkey());
     let ix = env.add_page_ix(&a, &seller.pubkey(), 1);
     env.send(&[ix], &seller, &[]).expect("add page 1");
-    // The page's and the fold's rent, and nine steps of the paged clearing.
-    let rent = env.balance(&page_address(&a, 1)) + env.balance(&fold_address(&a));
+    // The page's, the fold's and the index's rent, and nine steps of the
+    // paged clearing.
+    let rent = env.balance(&page_address(&a, 1)) + env.balance(&fold_address(&a)) + env.balance(&index_address(&a));
     assert_eq!(before - env.balance(&seller.pubkey()), rent + 9 * fold_reward + TX_FEE);
     assert_eq!(env.read_crank_pool(&a.auction), pool + 9 * fold_reward);
     for page in 2..MAX_PAGES {
@@ -2961,14 +3013,13 @@ fn sellers_add_pages_for_up_to_1024_bids() {
         let key = honest_key(i);
         let (ix, bid) = env.place_bid_ix(&a, &bidder.pubkey(), i, key, edwards_y(&key), deposit_of(i), None);
         if i == 300 {
-            // Every further page must come along, in order.
-            let mut short = ix.clone();
-            short.accounts.pop();
-            env.expect_error(&[short], &bidder, &[], "WrongBookPage");
-            let mut swapped = ix.clone();
-            let n = swapped.accounts.len();
-            swapped.accounts.swap(n - 1, n - 2);
-            env.expect_error(&[swapped], &bidder, &[], "WrongBookPage");
+            // The bid's own page, and the book's index, must come along.
+            let mut wrong_page = ix.clone();
+            wrong_page.accounts[2] = w(a.book);
+            env.expect_error(&[wrong_page], &bidder, &[], "WrongBookPage");
+            let mut no_index = ix.clone();
+            no_index.accounts[3] = r(PROGRAM_ID);
+            env.expect_error(&[no_index], &bidder, &[], "WrongBookPage");
         }
         env.send(&[ix], &bidder, &[]).unwrap_or_else(|e| panic!("bid {i}: {e:?}"));
         assert_eq!(env.read_u32(&bid, "Bid", "index") as u64, i);
@@ -3019,19 +3070,24 @@ fn sellers_add_pages_for_up_to_1024_bids() {
     let pages: Vec<Address> = (0..MAX_PAGES).map(|page| page_address(&a, page)).collect();
     let held: u64 = env.balance(&a.auction)
         + pages.iter().map(|p| env.balance(p)).sum::<u64>()
-        + env.balance(&fold_address(&a));
-    // Every page and the fold must close with the auction.
+        + env.balance(&fold_address(&a))
+        + env.balance(&index_address(&a));
+    // Every page, the fold and the index must close with the auction.
     let mut ix = env.seller_ix("close_auction", &a);
     ix.accounts.pop();
     env.expect_error(&[ix], &seller, &[], "WrongBookPage");
     let mut ix = env.seller_ix("close_auction", &a);
     ix.accounts[3] = r(PROGRAM_ID);
     env.expect_error(&[ix], &seller, &[], "WrongBookPage");
+    let mut ix = env.seller_ix("close_auction", &a);
+    ix.accounts[4] = r(PROGRAM_ID);
+    env.expect_error(&[ix], &seller, &[], "WrongBookPage");
     let before = env.balance(&seller.pubkey());
     let ix = env.seller_ix("close_auction", &a);
     env.send(&[ix], &seller, &[]).expect("close auction");
     assert_eq!(env.balance(&seller.pubkey()) + TX_FEE - before, held);
     assert!(pages.iter().all(|p| !env.exists(p)) && !env.exists(&fold_address(&a)));
+    assert!(!env.exists(&index_address(&a)));
     println!("most compute units used by one transaction: {}", env.max_compute_units);
 }
 
@@ -3074,12 +3130,25 @@ fn shares_at_the_clearing_price_span_pages() {
     // Four bids of one NFT at the clearing price, two on each page, for
     // three NFTs: the three earliest by index win one each.
     env.simulate_clearing(&a, 1_000, true, 0, 4);
-    for &i in &[257usize, 3, 259, 100] {
+    for &i in &[257usize, 3, 259] {
         env.simulate_at_clearing(&a, &bids[i], 1);
     }
-    // Without the second page the sizes do not add up.
+    // Pages are counted only once every bid at the price is known...
+    env.expect_error(&[env.tally_ix(&a, 0)], &bidder, &[], "SharesNotReady");
+    env.simulate_at_clearing(&a, &bids[100], 1);
+    // ...and shares wait for every page to be counted, in order.
+    env.expect_error(&[env.finalize_ix(&a, bids[3])], &bidder, &[], "SharesNotReady");
+    env.expect_error(&[env.tally_ix(&a, 1)], &bidder, &[], "WrongBookPage");
+    env.send(&[env.tally_ix(&a, 0)], &bidder, &[]).expect("tally page 0");
+    env.expect_error(&[env.finalize_ix(&a, bids[3])], &bidder, &[], "SharesNotReady");
+    env.send(&[env.tally_ix(&a, 1)], &bidder, &[]).expect("tally page 1");
+    env.expect_error(&[env.tally_ix(&a, 1)], &bidder, &[], "AlreadyTallied");
+    // A book with several pages needs its index, and the bid's own page.
     let mut ix = env.finalize_ix(&a, bids[3]);
-    ix.accounts.pop();
+    ix.accounts[3] = r(PROGRAM_ID);
+    env.expect_error(&[ix], &bidder, &[], "WrongBookPage");
+    let mut ix = env.finalize_ix(&a, bids[257]);
+    ix.accounts[1] = r(a.book);
     env.expect_error(&[ix], &bidder, &[], "WrongBookPage");
     for &i in &[259usize, 3, 257, 100] {
         let ix = env.finalize_ix(&a, bids[i]);
@@ -3644,7 +3713,15 @@ impl Env {
         Instruction::new_with_bytes(
             PROGRAM_ID,
             &self.idl.data("open_book_page", &Args::default().u8(page).0),
-            vec![signer(*payer), w(a.auction), w(page_address(a, page)), w(fold_address(a)), r(SYSTEM_PROGRAM)],
+            vec![
+                signer(*payer),
+                w(a.auction),
+                w(page_address(a, page)),
+                w(fold_address(a)),
+                r(a.book),
+                w(index_address(a)),
+                r(SYSTEM_PROGRAM),
+            ],
         )
     }
 }
@@ -3679,16 +3756,18 @@ fn a_full_book_grows_by_itself_at_no_cost_to_the_seller_or_the_bidder() {
     let late_before = env.balance(&late.pubkey());
     let key = honest_key(5_000);
     let (mut bid_ix, bid) = env.place_bid_ix(&a, &late.pubkey(), 5_000, key, edwards_y(&key), 3_000, None);
-    bid_ix.accounts.push(w(page_address(&a, 1)));
+    // The page and the index open in the same transaction.
+    bid_ix.accounts[2] = w(page_address(&a, 1));
+    bid_ix.accounts[3] = w(index_address(&a));
     let open = env.open_page_ix(&a, &late.pubkey(), 1);
     env.send_with_limit(&[open, bid_ix], &late, &[], 400_000).expect("open a page and bid");
     assert_eq!(env.extra_pages(&a), 1);
     assert_eq!(env.read_u32(&bid, "Bid", "index"), PAGE_BIDS as u32);
-    // The fund advanced the page's and the paged clearing's rent, and the
-    // seller paid nothing. The bid paid what any bid pays plus its room fee:
-    // its share of the page's rent and its nine clearing steps, so a full
-    // page pays for itself.
-    let rent = env.balance(&page_address(&a, 1)) + env.balance(&fold_address(&a));
+    // The fund advanced the page's, the paged clearing's and the index's
+    // rent, and the seller paid nothing. The bid paid what any bid pays plus
+    // its room fee: its share of the page's rent and its nine clearing steps,
+    // so a full page pays for itself.
+    let rent = env.balance(&page_address(&a, 1)) + env.balance(&fold_address(&a)) + env.balance(&index_address(&a));
     let bid_fee = 6_000_000u64.div_ceil(4) + 4_000_000;
     let room_fee = (rent + 9 * 25_000_000).div_ceil(PAGE_BIDS);
     assert!(room_fee > 1_000_000 && room_fee < 1_200_000, "{room_fee}");
@@ -3700,4 +3779,120 @@ fn a_full_book_grows_by_itself_at_no_cost_to_the_seller_or_the_bidder() {
     env.set_time(a.end_time + 1);
     let ix = env.open_page_ix(&a, &late.pubkey(), 2);
     env.expect_error(&[ix], &late, &[], "BiddingClosed");
+}
+
+#[test]
+fn a_collection_takes_10240_bids_in_one_sale_and_one_price() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let bidder = env.funded(200);
+    let rival = env.funded(10);
+    let terms = NftTerms {
+        supply: 10_000,
+        min_price: 1_000,
+        max_per_bid: 1,
+        duration_secs: DURATION_SECS,
+        start_time: 0,
+    };
+    let a = env.create_collection(&seller, 40, terms);
+    let base = 1_000 * NFT_PRICE_SCALE;
+    // Bid 9_000 (page 35) has the smallest deposit.
+    let deposit_of = |i: u64| if i == 9_000 { base } else { base + 10 + i };
+    let total = PAGE_BIDS * MAX_COLLECTION_PAGES as u64;
+    let mut bids = Vec::with_capacity(total as usize);
+    for i in 0..total {
+        let key = honest_key(i);
+        let (mut ix, bid) = env.place_bid_ix(&a, &bidder.pubkey(), i, key, edwards_y(&key), deposit_of(i), None);
+        let mut ixs = Vec::new();
+        if i > 0 && i % PAGE_BIDS == 0 {
+            // The book is full: this bid opens the next page, and the index
+            // comes with the second.
+            let page = (i / PAGE_BIDS) as u8;
+            ixs.push(env.open_page_ix(&a, &bidder.pubkey(), page));
+            ix.accounts[2] = w(page_address(&a, page));
+            ix.accounts[3] = w(index_address(&a));
+        }
+        ixs.push(ix);
+        env.send(&ixs, &bidder, &[]).unwrap_or_else(|e| panic!("bid {i}: {e:?}"));
+        bids.push(bid);
+    }
+    assert_eq!(env.read_u32(&a.auction, "Auction", "bid_count") as u64, total);
+    assert_eq!(env.extra_pages(&a), MAX_COLLECTION_PAGES - 1);
+    assert_eq!(env.book_deposit(&a, 10_239), base + 10 + 10_239);
+
+    // Forty pages is the most; then a bid must replace the smallest one,
+    // which the index finds on whichever page it is.
+    let ix = env.open_page_ix(&a, &rival.pubkey(), MAX_COLLECTION_PAGES);
+    env.expect_error(&[ix], &rival, &[], "TooManyPages");
+    let key = honest_key(90_000);
+    let hint = edwards_y(&key);
+    let ix = env.place_bid_ix(&a, &rival.pubkey(), 1, key, hint, base * 2, None).0;
+    env.expect_error(&[ix], &rival, &[], "TooManyBids");
+    let ix = env.place_bid_ix(&a, &rival.pubkey(), 1, key, hint, base * 2, Some((bids[0], bidder.pubkey()))).0;
+    env.expect_error(&[ix], &rival, &[], "NotSmallestBid");
+    let (ix, replacement) = env.place_bid_ix(&a, &rival.pubkey(), 1, key, hint, base * 2, Some((bids[9_000], bidder.pubkey())));
+    env.send(&[ix], &rival, &[]).expect("evict the smallest bid, on page 35");
+    assert_eq!(env.read_u32(&replacement, "Bid", "index"), 9_000);
+    bids[9_000] = replacement;
+    // The next smallest is now bid 0's, on page 0.
+    let key = honest_key(90_001);
+    let deposit = base * 2;
+    let (ix, _) = env.place_bid_ix(&a, &rival.pubkey(), 2, key, edwards_y(&key), deposit, Some((bids[0], bidder.pubkey())));
+    env.send(&[ix], &rival, &[]).expect("evict the next smallest, on page 0");
+
+    // -- One clearing price; the bids at it share across pages --------------
+    let end = env.read_u64(&a.auction, "Auction", "end_time") as i64;
+    env.set_time(end + 1);
+    // Six bids of one NFT at the price, on pages 1, 1, 20, 39, 39, 39, for
+    // the four NFTs the bids above it leave: the four earliest win one each.
+    let at = [300usize, 301, 5_200, 9_999, 10_100, 10_239];
+    env.simulate_clearing(&a, 1_000, true, 9_996, at.len() as u128);
+    for &i in &at {
+        env.simulate_at_clearing(&a, &bids[i], 1);
+    }
+    // Four pages are counted per transaction, as the app does.
+    for first in (0..MAX_COLLECTION_PAGES).step_by(4) {
+        let ixs: Vec<Instruction> = (first..(first + 4).min(MAX_COLLECTION_PAGES)).map(|page| env.tally_ix(&a, page)).collect();
+        let units = env.send(&ixs, &rival, &[]).unwrap_or_else(|e| panic!("tally from {first}: {e:?}"));
+        if first == 0 {
+            println!("counting four pages: {units} compute units");
+        }
+    }
+    for &i in at.iter().rev() {
+        let ix = env.finalize_ix(&a, bids[i]);
+        env.send(&[ix], &rival, &[]).expect("finalize");
+    }
+    let won: Vec<u64> = at.iter().map(|&i| env.bid_u64(&bids[i], "won")).collect();
+    assert_eq!(won, vec![1, 1, 1, 1, 0, 0]);
+
+    // -- Closing: pages a few at a time from the end, the rest with the sale --
+    let finished = env.idl.variant("AuctionStatus", "Finished");
+    env.write(&a.auction, "Auction", &[("status", vec![finished]), ("live_bids", 0u32.to_le_bytes().to_vec())]);
+    let pages: Vec<Address> = (0..MAX_COLLECTION_PAGES).map(|page| page_address(&a, page)).collect();
+    let held: u64 = pages.iter().map(|p| env.balance(p)).sum::<u64>()
+        + env.balance(&fold_address(&a))
+        + env.balance(&index_address(&a));
+    let before = env.balance(&seller.pubkey());
+    // Only the last page, and never below the second.
+    env.expect_error(&[env.close_page_ix(&a, 38)], &rival, &[], "WrongBookPage");
+    let mut page = MAX_COLLECTION_PAGES - 1;
+    while page >= 2 {
+        // Five pages per transaction, as the app does.
+        let ixs: Vec<Instruction> = (0..5).take_while(|k| page >= 2 + k).map(|k| env.close_page_ix(&a, page - k)).collect();
+        let n = ixs.len() as u8;
+        let units = env.send(&ixs, &rival, &[]).expect("close pages");
+        if n == 5 {
+            println!("closing five pages: {units} compute units");
+        }
+        page -= n;
+    }
+    assert_eq!(env.extra_pages(&a), 1);
+    env.expect_error(&[env.close_page_ix(&a, 1)], &rival, &[], "WrongBookPage");
+    let ix = env.collection_seller_ix("close_collection_auction", &a);
+    env.send(&[ix], &seller, &[]).expect("close the auction");
+    assert!(pages.iter().all(|p| !env.exists(p)));
+    assert!(!env.exists(&fold_address(&a)) && !env.exists(&index_address(&a)));
+    // Every page's rent went to the seller, as did the auction's own.
+    assert!(env.balance(&seller.pubkey()) + TX_FEE >= before + held);
+    println!("most compute units used by one transaction: {}", env.max_compute_units);
 }

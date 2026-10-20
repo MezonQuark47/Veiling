@@ -30,11 +30,18 @@ price, and unused deposits are refunded.
    lamports per NFT. Opening also creates the auction's bid book, one page of
    room for 256 bids. The book grows on its own: once every page is full, the
    next bid opens another (`open_book_page`, sent in front of it by the app),
-   up to four pages and 1,024 bids. The settlement fund, which by then holds
+   up to four pages (1,024 bids) for a token auction and forty (10,240 bids)
+   for a collection, so even a 10,000-NFT collection can sell out at one NFT
+   per bid. However many pages it has, it is one auction with one clearing
+   price. The settlement fund, which by then holds
    every bid's crank fee, pays the caller the page's rent back, so neither the
    seller nor the bidder pays for room up front; the rent comes back to the
    seller when the auction is closed. A seller can still add pages ahead of
-   time with `add_book_page`, paying for them as before.
+   time with `add_book_page` (up to page 3), paying for them as before.
+   With its second page a book also gets a `BookIndex`: each page's smallest
+   deposit and, after the clearing, the count of bids at the clearing price
+   on each page. With it no instruction reads more than one page, so a bid,
+   an eviction or a share costs the same on a book of forty pages as of two.
 
    Bidding runs for 1 minute to 14 days. It opens right away, or at a
    `start_time` the seller schedules up to 30 days ahead (a time already past
@@ -52,9 +59,11 @@ price, and unused deposits are refunded.
      counts only if the deposit covers `price × quantity`; deposits may be
      larger to hide the bid.
 
-   An auction holds 256 bids per page of its bid book, up to 1,024. Once every
-   page is full, a new bid must deposit at least 10% more than the smallest
-   deposit on any page; that bid is refunded in full and replaced. The
+   An auction holds 256 bids per page of its bid book, up to 1,024 (tokens)
+   or 10,240 (collections). Once every page is full and no page can be added,
+   a new bid must deposit at least 10% more than the smallest deposit on any
+   page (the `BookIndex` knows which page holds it); that bid is refunded in
+   full and replaced. The
    auction keeps the total of all deposits.
 
    Soft close: a replacement within the last 10 minutes of bidding moves the
@@ -63,9 +72,9 @@ price, and unused deposits are refunded.
    deposit is the only thing a place can be competed for; this keeps that
    competition open long enough for a replaced bidder to answer, instead of
    letting someone push honest bids out in the last seconds. Bids built
-   against the earlier end are still accepted. Since the book grows to four
-   pages before any bid can be replaced, crowding real bidders out takes
-   1,024 larger deposits.
+   against the earlier end are still accepted. Since the book grows to its
+   last page before any bid can be replaced, crowding real bidders out takes
+   1,024 larger deposits (10,240 for a collection).
 
    Until bidding closes, `increase_bid` lets a bidder re-seal their bid (a
    fresh encryption, bound to the same address nonce) and add to its
@@ -95,8 +104,9 @@ price, and unused deposits are refunded.
    those four bits, which are `p`'s own and public at the end anyway. The
    totals in between stay encrypted for the MXE. Pages are visited forwards
    and backwards in turn, so the page that ends one pass starts the next in
-   the same step: `8 × (pages − 1) + 1` steps in all, 9 for two pages and 25
-   for four.
+   the same step: `8 × (pages − 1) + 1` steps in all, 9 for two pages, 25
+   for four and 313 for a collection's forty (about an hour at the 12 seconds
+   a step takes on devnet).
 5. **Bids are settled.** `settle_bid` asks MPC for one bid's outcome (above,
    at or below the clearing price) from its stored record, and the program
    works out the rest in the open:
@@ -109,7 +119,10 @@ price, and unused deposits are refunded.
      price only records its size, and once every such bid is revealed
      `finalize_share` gives each of them `floor(size × left / demand_at)`,
      with the NFTs lost to rounding going one each to the earliest of them
-     (lowest bid index), so every NFT is sold.
+     (lowest bid index), so every NFT is sold. On a book of several pages,
+     `tally_clearing_page` first counts those bids page by page into the
+     `BookIndex` (how many come before each page, and what rounding leaves
+     over), so each share reads only its own page.
 
    Settlement moves the payment to the auction. `claim_tokens` then delivers
    a token bid's tokens and `close_bid` returns the rest of the deposit.
@@ -125,7 +138,10 @@ price, and unused deposits are refunded.
    once all bids are resolved. Once every bid account is closed,
    `close_auction` (or `close_collection_auction`) returns the remaining rent
    to the seller; closing a collection auction also makes the seller the
-   collection's update authority.
+   collection's update authority. A book of many pages first closes them a
+   few at a time from the end (`close_book_page`, which anyone can send; the
+   rent goes to the seller), down to the second, which closes with the
+   auction.
 
 `scripts/crank.ts` takes an ended auction through every step anyone may take
 (steps 3 to 6 and the deliveries), paying only transaction fees and the
@@ -133,16 +149,21 @@ accounts created for winners, and earning the auction's crank rewards. `find_cle
 units, so it is sent with a higher compute limit; so is each `fold_clearing`
 step.
 
-### Why 1,024 bids
+### Why 1,024 bids for tokens and 10,240 for collections
 
 One MPC computation reads one page of the bid book: 64 batch records, about
 6 KB of arguments, which have to fit in a 10 KB cross-program call, and the
 page itself (about 8 KB) has to stay under the 10 KB a program can create in
-one go. Four pages are the most the circuits' arithmetic allows as it is:
-1,024 budgets of up to 2^64 lamports, times the largest price unit (10^16),
-still fit in 128 bits; twice as many would need a smaller price unit. Each
-page also adds checks, settlements and 8 clearing steps, so 1,024 bids
-already take about 256 checks, 25 clearing steps and 1,024 settlements.
+one go. For tokens, four pages are the most the circuits' arithmetic allows
+as it is: 1,024 budgets of up to 2^64 lamports, times the largest price unit
+(10^16), still fit in 128 bits; twice as many would need a smaller price
+unit. A collection's demand is counted in NFTs instead, at most 10,240 bids
+of at most 10,000 each, far inside the circuits' 80-bit totals, so its book
+can grow to forty pages with the same circuits; that is enough for a
+10,000-NFT collection to sell out at one NFT per bid. Each page adds checks,
+settlements and 8 clearing steps, and the bids on it pay for them: 10,240
+bids take 2,560 checks, 313 clearing steps and 10,240 settlements, which
+takes hours after bidding ends.
 For comparison, Gnosis Auction has no fixed cap but asks sellers to set a
 minimum order size so that its on-chain price calculation stays affordable,
 and Zama's sealed-bid token auction capped each wallet at 10 active bids
@@ -605,7 +626,10 @@ these services.
 ## Known limitations
 
 - Devnet only and unaudited.
-- Up to 1,024 bids per auction and 10,000 NFTs per collection. In a full auction, the bid with the smallest deposit
+- Up to 1,024 bids per token auction, 10,240 per collection auction and 10,000
+  NFTs per collection. Checks run one batch of four bids at a time, so a
+  collection with thousands of bids takes hours to settle after bidding ends;
+  winners get their NFTs then. In a full auction, the bid with the smallest deposit
   can be replaced (and refunded) until bidding ends; a replacement near the
   end extends bidding, by up to 24 hours in all. Someone willing to lock up
   larger deposits than every real bidder can still take every place, and then

@@ -1,5 +1,6 @@
-import { AnchorProvider, BN, Program, type IdlAccounts } from "@anchor-lang/core";
+import { AnchorProvider, BN, Program, type IdlAccounts, utils } from "@anchor-lang/core";
 import {
+  type AccountInfo,
   Connection,
   PublicKey,
   type GetProgramAccountsFilter,
@@ -19,7 +20,9 @@ import {
   FOLD_PASSES,
   FOLD_REWARD_PERCENT,
   FRESH_ARWEAVE_GATEWAY,
-  MAX_PAGES,
+  MAX_COLLECTION_PAGES,
+  MAX_PREPAID_PAGES,
+  MAX_TOKEN_PAGES,
   MAX_PRICE_TICKS,
   MPL_CORE_ID,
   PROGRAM_ID,
@@ -79,8 +82,8 @@ export function auctionAddress(seller: PublicKey, auctionSeed: BN): PublicKey {
 
 /**
  * A page of an auction's bid book: batch records and the deposit of each of
- * its `PAGE_BIDS` bids. Every auction has page 0; the seller can add pages
- * 1 to 3.
+ * its `PAGE_BIDS` bids. Every auction has page 0; further pages open as the
+ * book fills (`maxPages`).
  */
 export function bookAddress(auction: PublicKey, page = 0): PublicKey {
   const seeds = [seed("book"), auction.toBytes()];
@@ -94,6 +97,11 @@ export const pageOf = (index: number) => Math.floor(index / PAGE_BIDS);
 /** The state of an auction's clearing across pages. */
 export function foldAddress(auction: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([seed("fold"), auction.toBytes()], PROGRAM_ID)[0];
+}
+
+/** The per-page summaries of a book with more than one page (`BookIndex`). */
+export function bookIndexAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("index"), auction.toBytes()], PROGRAM_ID)[0];
 }
 
 /** A token sale's auto-liquidity plan. */
@@ -375,7 +383,13 @@ export const bidCapacity = (a: Auction) => PAGE_BIDS * (1 + a.extraPages);
  * Whether the next bid into a full book can open another page instead of
  * replacing the smallest bid (`open_book_page`).
  */
-export const canGrow = (a: Auction) => a.extraPages + 1 < MAX_PAGES;
+export const canGrow = (a: Auction) => a.extraPages + 1 < maxPages(a.kind);
+
+/** Most pages an auction's book can have: 4 for tokens, 40 for a collection. */
+export const maxPages = (kind: AuctionKind) => (kind === "collection" ? MAX_COLLECTION_PAGES : MAX_TOKEN_PAGES);
+
+/** Most bids an auction of this kind can hold. */
+export const maxBids = (kind: AuctionKind) => PAGE_BIDS * maxPages(kind);
 
 /** Pages of the book that hold bids (at least one). */
 export const pagesInUse = (a: Auction) => Math.max(1, Math.ceil(a.bidCount / PAGE_BIDS));
@@ -462,9 +476,10 @@ function decodeCrankRewards(r: { checkBatch: BN; clearing: BN; settlement: BN; s
 /** What each bid adds to the crank pool: its share of a batch check and its own settlement. Not refunded. */
 export const bidCrankFee = (r: CrankRewards) => (r.checkBatch + BigInt(BATCH_SIZE) - 1n) / BigInt(BATCH_SIZE) + r.settlement;
 
-/** Rent of a page of the bid book and of the paged clearing's state (8,232 and 289 bytes). */
+/** Rent of a page of the bid book, the paged clearing's state and the book's index (8,232, 289 and 460 bytes). */
 const PAGE_RENT = (128n + 8_232n) * 6_960n;
 const FOLD_RENT = (128n + 289n) * 6_960n;
+const INDEX_RENT = (128n + 460n) * 6_960n;
 
 /**
  * What a bid on `page` pays on top of `bidCrankFee`: its share of a page
@@ -472,9 +487,9 @@ const FOLD_RENT = (128n + 289n) * 6_960n;
  * `room_fee`.
  */
 export function roomFee(a: Auction, page: number): bigint {
-  if (page === 0 || (a.prepaidPages & (1 << page)) !== 0) return 0n;
+  if (page === 0 || (page < MAX_PREPAID_PAGES && (a.prepaidPages & (1 << page)) !== 0)) return 0n;
   let cost = PAGE_RENT + pageCrankFee(a.crankRewards, page);
-  if (page === 1) cost += FOLD_RENT;
+  if (page === 1) cost += FOLD_RENT + INDEX_RENT;
   return (cost + BigInt(PAGE_BIDS) - 1n) / BigInt(PAGE_BIDS);
 }
 
@@ -590,6 +605,7 @@ export function sharesAreFinal(a: Auction): boolean {
 // Byte offsets inside Bid used for server-side filtering.
 const BID_AUCTION_OFFSET = 8 + 32 + 32 + 32 + 16;
 const BID_BIDDER_OFFSET = BID_AUCTION_OFFSET + 32;
+const BID_INDEX_OFFSET = BID_BIDDER_OFFSET + 32;
 
 /**
  * Every account of one type, like `program.account.<name>.all()`, except that
@@ -645,6 +661,18 @@ export async function fetchBidsForAuction(auction: PublicKey): Promise<Bid[]> {
     { memcmp: { offset: BID_AUCTION_OFFSET, bytes: auction.toBase58() } },
   ]);
   return rows.map((r) => decodeBid(r.publicKey, r.account)).sort((x, y) => x.index - y.index);
+}
+
+/** The auction's bid at `index`, without loading every bid. */
+export async function fetchBidAtIndex(auction: PublicKey, index: number): Promise<Bid | null> {
+  if (MOCK) return (await import("./mock")).mockBids(auction, null).find((b) => b.index === index) ?? null;
+  const le = new Uint8Array(4);
+  new DataView(le.buffer).setUint32(0, index, true);
+  const rows = await allAccounts<RawBid>("bid", [
+    { memcmp: { offset: BID_AUCTION_OFFSET, bytes: auction.toBase58() } },
+    { memcmp: { offset: BID_INDEX_OFFSET, bytes: utils.bytes.bs58.encode(le) } },
+  ]);
+  return rows.length > 0 ? decodeBid(rows[0].publicKey, rows[0].account) : null;
 }
 
 export async function fetchBidsForBidder(bidder: PublicKey): Promise<Bid[]> {
@@ -710,26 +738,58 @@ export async function fetchItemList(auction: PublicKey): Promise<ItemList | null
 const BOOK_DEPOSITS_OFFSET = 8 + 64 * 64 + 64 * 16;
 const BOOK_CLEARING_QUANTITIES_OFFSET = BOOK_DEPOSITS_OFFSET + 8 * PAGE_BIDS + 32;
 
-/** Every page of the auction's book, in order: `PAGE_BIDS` slots each. */
-async function fetchBookPages(a: Auction): Promise<DataView[]> {
-  const pages = [bookAddress(a.address), ...extraPageAddresses(a)];
-  const accounts = await connection.getMultipleAccountsInfo(pages);
+/** Pages of the auction's book, in order (all of them by default): `PAGE_BIDS` slots each. */
+async function fetchBookPages(a: Auction, pages = [0, ...extraPageAddresses(a).map((_, k) => k + 1)]): Promise<DataView[]> {
+  const addresses = pages.map((page) => bookAddress(a.address, page));
+  const accounts: (AccountInfo<Buffer> | null)[] = [];
+  // At most 100 accounts per request.
+  for (let i = 0; i < addresses.length; i += 100) {
+    accounts.push(...(await connection.getMultipleAccountsInfo(addresses.slice(i, i + 100))));
+  }
   return accounts.map((account) => {
     if (!account) throw new Error("A page of this auction's bid book is missing");
     return new DataView(account.data.buffer, account.data.byteOffset, account.data.byteLength);
   });
 }
 
-/** The deposit of the bid at each index, as the program sees it, across every page. */
-export async function fetchBookDeposits(a: Auction): Promise<bigint[]> {
+/** The deposits on one page of the book, by slot. */
+export async function fetchPageDeposits(a: Auction, page: number): Promise<bigint[]> {
   if (MOCK) {
     const bids = (await import("./mock")).mockBids(a.address, null);
-    return Array.from({ length: bidCapacity(a) }, (_, i) => bids[i]?.deposit ?? 3_000_000_000n);
+    return Array.from({ length: PAGE_BIDS }, (_, i) => bids[page * PAGE_BIDS + i]?.deposit ?? 3_000_000_000n);
   }
-  const pages = await fetchBookPages(a);
-  return pages.flatMap((view) =>
-    Array.from({ length: PAGE_BIDS }, (_, i) => view.getBigUint64(BOOK_DEPOSITS_OFFSET + 8 * i, true))
-  );
+  const [view] = await fetchBookPages(a, [page]);
+  return Array.from({ length: PAGE_BIDS }, (_, i) => view.getBigUint64(BOOK_DEPOSITS_OFFSET + 8 * i, true));
+}
+
+/** A book's index: the smallest deposit on each page, and how far the count of bids at the clearing price got. */
+export interface BookIndex {
+  smallestDeposits: bigint[];
+  talliedPages: number;
+}
+
+/** The index of a book with more than one page, or null. */
+export async function fetchBookIndex(a: Auction): Promise<BookIndex | null> {
+  if (a.extraPages === 0) return null;
+  if (MOCK) return { smallestDeposits: Array.from({ length: a.extraPages + 1 }, () => 3_000_000_000n), talliedPages: 0 };
+  const index = await program.account.bookIndex.fetchNullable(bookIndexAddress(a.address));
+  if (!index) return null;
+  return {
+    smallestDeposits: (index.smallestDeposits as BN[]).map(big),
+    talliedPages: index.talliedPages,
+  };
+}
+
+/** The page whose smallest deposit is the book's smallest, and that deposit. */
+export async function findSmallestPage(a: Auction): Promise<{ page: number; deposit: bigint }> {
+  const index = await fetchBookIndex(a);
+  if (!index) {
+    const deposits = await fetchPageDeposits(a, 0);
+    return { page: 0, deposit: deposits.slice(0, Math.min(PAGE_BIDS, a.bidCount)).reduce((m, d) => (d < m ? d : m)) };
+  }
+  let page = 0;
+  for (let p = 1; p <= a.extraPages; p++) if (index.smallestDeposits[p] < index.smallestDeposits[page]) page = p;
+  return { page, deposit: index.smallestDeposits[page] };
 }
 
 /** NFTs asked for by each bid revealed at the clearing price, by bid index (0 for the rest). */

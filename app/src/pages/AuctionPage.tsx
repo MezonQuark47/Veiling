@@ -90,7 +90,7 @@ import { forgetClosedBids, forgetNote, noteSize, readNote, saveNote } from "../l
 import { NoteUnlock } from "../components/BidNotes";
 import { formatCount, formatDateTime, formatDuration, formatSol, parseSol, plural } from "../lib/format";
 import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/price";
-import { errorMessage, sendTransaction, waitUntil, type WalletSigner } from "../lib/tx";
+import { errorMessage, sendTransaction, sendTransactions, waitUntil, type WalletSigner } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
 
 // ---------------------------------------------------------------------------
@@ -832,7 +832,8 @@ function Progress({
   const split = () =>
     action.run("split", async () => {
       const s = needSigner();
-      const sig = await sendTransaction(await buildFinalizeShares(auction, atClearing), s);
+      const sigs = await sendTransactions(await buildFinalizeShares(auction, atClearing), s);
+      const sig = sigs[sigs.length - 1];
       refresh();
       return (
         <>
@@ -924,7 +925,8 @@ function Progress({
   const close = () =>
     action.run("close", async () => {
       const s = needSigner();
-      const sig = await sendTransaction(await buildCloseAuction(auction), s);
+      const sigs = await sendTransactions(await buildCloseAuction(auction), s);
+      const sig = sigs[sigs.length - 1];
       refresh();
       return (
         <>

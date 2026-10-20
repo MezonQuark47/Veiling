@@ -9,9 +9,10 @@ import {
   MAX_COLLECTION_NAME_LEN,
   MAX_COLLECTION_SIZE,
   MAX_IMAGE_BYTES,
+  MAX_TOKEN_BIDS,
   MAX_ITEM_NAME_LEN,
   MAX_ITEMS,
-  MAX_PAGES,
+  MAX_COLLECTION_BIDS,
   MAX_PRICE_TICKS,
   MAX_ROYALTY_BPS,
   MAX_UPLOADED_ITEMS,
@@ -226,21 +227,22 @@ function BiddingWindow({
 }
 
 /**
- * How many bids the auction makes room for: 256 per page of its bid book, up
- * to 1,024. Once they are all taken, a new bid must out-deposit the smallest.
+ * Room for bids: it grows on its own, 256 at a time, up to 1,024 bids for a
+ * token sale and 10,240 for a collection, so the seller chooses nothing. Once
+ * it is all taken, a new bid must out-deposit the smallest.
  */
-/** Room for bids: it grows on its own, so the seller chooses nothing. */
-function BidRoom() {
+function BidRoom({ collection }: { collection: boolean }) {
+  const most = collection ? MAX_COLLECTION_BIDS : MAX_TOKEN_BIDS;
   return (
     <div className="field">
       <span className="field__label">Room for bids</span>
       <p className="hint">
-        Up to {formatCount(MAX_PAGES * PAGE_BIDS)} bids, at no cost to you up front. The auction starts with room for{" "}
-        {formatCount(PAGE_BIDS)}; each time that fills, the next bid opens room for {formatCount(PAGE_BIDS)} more, paid
-        for out of the settlement fund the bids themselves fill. Only if more than {formatCount(PAGE_BIDS)} bids come
-        does the extra room, and finding the price across it, cost anything: it is taken from the proceeds, and the
-        room's rent comes back when you close the auction. Once {formatCount(MAX_PAGES * PAGE_BIDS)} bids are in,
-        larger deposits replace the smallest.
+        Up to {formatCount(most)} bids, at no cost to you up front{collection ? ", enough for a 10,000-NFT collection to sell out at one NFT a bid" : ""}.
+        The auction starts with room for {formatCount(PAGE_BIDS)}; each time that fills, the next bid opens room for{" "}
+        {formatCount(PAGE_BIDS)} more. However many bids come, it stays one auction with one price for everyone. Bids
+        on the extra room pay a small room fee for it, and its rent comes back to you when you close the auction; only
+        a last, partly filled stretch of room can cost you something, out of the proceeds. Once{" "}
+        {formatCount(most)} bids are in, larger deposits replace the smallest.
       </p>
     </div>
   );
@@ -1439,7 +1441,7 @@ export function Launch() {
                 </div>
                 <p id="mindeposit-hint" className="hint">
                   The least a bidder can deposit, and the smallest sealed budget a bid can name. The auction takes up
-                  to {formatCount(MAX_PAGES * PAGE_BIDS)} bids (see Room for bids); after that, larger deposits
+                  to {formatCount(MAX_TOKEN_BIDS)} bids (see Room for bids); after that, larger deposits
                   replace the smallest. The suggestion splits the sale's worth at your minimum price across every place, so nobody
                   can take them all for less, and is at least {formatSol(MIN_SUGGESTED_DEPOSIT)} SOL. You can set a
                   lower amount.
@@ -1449,7 +1451,7 @@ export function Launch() {
           </fieldset>
 
           <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration}>
-            <BidRoom />
+            <BidRoom collection={collection} />
           </BiddingWindow>
 
           {collection ? null : (

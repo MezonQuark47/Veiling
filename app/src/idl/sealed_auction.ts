@@ -58,9 +58,11 @@ export type SealedAuction = {
     {
       "name": "addBookPage",
       "docs": [
-        "Adds a page to the auction's bid book, room for `PAGE_BIDS` more bids,",
-        "up to `MAX_PAGES` pages (`MAX_BIDS` bids). Only the seller, while",
-        "bidding is still open; `page` is the next page's number (1 to 3).",
+        "Adds a page to the auction's bid book ahead of time, room for",
+        "`PAGE_BIDS` more bids, up to `MAX_PREPAID_PAGES` pages (and the",
+        "auction's `max_pages`). Only the seller, while bidding is still open;",
+        "`page` is the next page's number (1 to 3). Further pages open on",
+        "demand (`open_book_page`).",
         "",
         "The seller pays the page's rent, which comes back when the auction is",
         "closed, and adds to the crank pool what finding the clearing price",
@@ -136,6 +138,54 @@ export type SealedAuction = {
                   111,
                   108,
                   100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "docs": [
+            "The book's first page, read when its index starts."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  111,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Made with the second page."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
                 ]
               },
               {
@@ -2051,7 +2101,8 @@ export type SealedAuction = {
         "to the seller. Nothing is owed to anyone at that point, so tokens still",
         "in the vault (sent there by someone after the sale) go to the seller.",
         "An auction with more than one page of bid book passes the further",
-        "pages, in order, as remaining accounts, and its `fold`; they close too."
+        "pages it still has (`close_book_page` closes the others), in order, as",
+        "remaining accounts, and its `fold` and `book_index`; they close too."
       ],
       "discriminator": [
         225,
@@ -2139,6 +2190,32 @@ export type SealedAuction = {
                   111,
                   108,
                   100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Only for an auction with more than one page: its book's index."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
                 ]
               },
               {
@@ -2351,13 +2428,80 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "closeBookPage",
+      "docs": [
+        "Closes the last page of a finished or cancelled auction's book, once",
+        "every bid account is closed, and returns its rent to the seller. A",
+        "book with many pages closes this way, a page at a time from the end,",
+        "down to its second page, which closes with the auction",
+        "(`close_auction`, `close_collection_auction`) together with the paged",
+        "clearing and the book's index. Anyone can call it; the rent only goes",
+        "to the seller."
+      ],
+      "discriminator": [
+        90,
+        127,
+        199,
+        245,
+        159,
+        219,
+        42,
+        244
+      ],
+      "accounts": [
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true
+        },
+        {
+          "name": "pageBook",
+          "docs": [
+            "The book's last page; checked in the handler."
+          ],
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "closeCollectionAuction",
       "docs": [
         "Closes a finished or cancelled collection auction once every bid",
         "account is closed, which means every NFT sold has been minted. Makes",
         "the seller the collection's update authority and returns the rent of",
         "the auction, its bid book and its item list to the seller. Further",
-        "pages of the book and the `fold` close too, as in `close_auction`."
+        "pages of the book, the `fold` and the `book_index` close too, as in",
+        "`close_auction`."
       ],
       "discriminator": [
         83,
@@ -2445,6 +2589,32 @@ export type SealedAuction = {
                   111,
                   108,
                   100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Only for an auction with more than one page: its book's index."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
                 ]
               },
               {
@@ -3272,8 +3442,9 @@ export type SealedAuction = {
         "their size and rounded down, and the NFTs lost to rounding go one each",
         "to the earliest of them (lowest bid index), so every NFT is sold.",
         "Anyone can call it; the payment moves to the auction as in any",
-        "settlement. `book` is the first page; pass every further page, in",
-        "order, as remaining accounts."
+        "settlement. `book` is the page that holds the bid. A book with more",
+        "than one page also passes its `book_index`, once `tally_clearing_page`",
+        "has counted every page."
       ],
       "discriminator": [
         60,
@@ -3321,15 +3492,30 @@ export type SealedAuction = {
         },
         {
           "name": "book",
+          "docs": [
+            "The page of the book that holds the bid; checked in the handler."
+          ]
+        },
+        {
+          "name": "bid",
+          "writable": true
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Only for a book with more than one page: its index."
+          ],
+          "optional": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  98,
-                  111,
-                  111,
-                  107
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
                 ]
               },
               {
@@ -3338,10 +3524,6 @@ export type SealedAuction = {
               }
             ]
           }
-        },
-        {
-          "name": "bid",
-          "writable": true
         }
       ],
       "args": []
@@ -3803,7 +3985,8 @@ export type SealedAuction = {
         "or pulled to fake demand; the app only offers raising the price and",
         "size. Only the latest version is checked when bidding closes, against",
         "the whole deposit. `book` is the page of the bid book that holds the",
-        "bid (`page_slot`)."
+        "bid (`page_slot`); a book with more than one page also passes its",
+        "`book_index`."
       ],
       "discriminator": [
         244,
@@ -3863,6 +4046,32 @@ export type SealedAuction = {
             "The page of the book that holds the bid; checked in the handler."
           ],
           "writable": true
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Only for a book with more than one page: its index."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
         },
         {
           "name": "bid",
@@ -4412,13 +4621,15 @@ export type SealedAuction = {
       "name": "openBookPage",
       "docs": [
         "Opens the next page of a full bid book, so the auction grows on its own",
-        "up to `MAX_BIDS` bids and the seller pays nothing up front for room.",
-        "Anyone may call it, but only while bidding is open and only once every",
-        "existing page is full; `page` is the next page's number (1 to 3). The",
-        "app adds it in front of the bid that needs the room.",
+        "up to `max_pages` pages (1,024 bids for a token auction, 10,240 for a",
+        "collection) and the seller pays nothing up front for room. Anyone may",
+        "call it, but only while bidding is open and only once every existing",
+        "page is full; `page` is the next page's number. The app adds it in",
+        "front of the bid that needs the room.",
         "",
         "The caller pays the page's rent (and, with the second page, the paged",
-        "clearing's state) and is paid it straight back out of the auction's",
+        "clearing's state and the book's index) and is paid it straight back",
+        "out of the auction's",
         "settlement fund, which by then holds every bid's crank fee. The rent",
         "goes to the seller when the auction closes. Rewards the fund then runs",
         "short of, including the steps of the paged clearing, are paid out of",
@@ -4502,6 +4713,54 @@ export type SealedAuction = {
           }
         },
         {
+          "name": "book",
+          "docs": [
+            "The book's first page, read when its index starts."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  111,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Made with the second page."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -4531,14 +4790,15 @@ export type SealedAuction = {
         "`is_usable_x25519_key`). `terms` are the auction terms the bidder saw;",
         "the bid is refused if the auction does not have exactly those.",
         "",
-        "Once every page of the auction's bid book is full (`bid_capacity`),",
-        "pass the bid with the smallest deposit as `evicted_bid` (and its owner",
-        "as `evicted_bidder`); the new deposit must exceed it by",
-        "`EVICTION_PREMIUM_PERCENT`. The evicted bid is closed and its owner",
-        "gets the deposit and rent back.",
+        "Once every page of the auction's bid book is full (`bid_capacity`)",
+        "and no page can be added, pass the bid with the smallest deposit as",
+        "`evicted_bid` (and its owner as `evicted_bidder`); the new deposit must",
+        "exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid is closed and",
+        "its owner gets the deposit and rent back.",
         "",
-        "`book` is the first page; pass every further page",
-        "(`add_book_page`), in order, as remaining accounts.",
+        "`book` is the page the bid goes to: the page of index `bid_count`, or",
+        "of the evicted bid. A book with more than one page also passes its",
+        "`book_index`, which knows each page's smallest deposit.",
         "",
         "For a token auction the encrypted quantity is the bid's budget in",
         "lamports: a budget the deposit does not cover, or below",
@@ -4595,16 +4855,28 @@ export type SealedAuction = {
         },
         {
           "name": "book",
+          "docs": [
+            "The page of the book the bid goes to; checked in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Only for a book with more than one page: its index."
+          ],
           "writable": true,
+          "optional": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  98,
-                  111,
-                  111,
-                  107
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
                 ]
               },
               {
@@ -5927,6 +6199,87 @@ export type SealedAuction = {
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "tallyClearingPage",
+      "docs": [
+        "Counts the collection bids at the clearing price on one page of a",
+        "book with more than one page, once every such bid is revealed:",
+        "`finalize_share` needs how many come before each bid and how many",
+        "NFTs rounding leaves over, and reads them from the `BookIndex`",
+        "instead of every page. Pages are counted in order, from 0; anyone can",
+        "call it, and nothing moves."
+      ],
+      "discriminator": [
+        66,
+        166,
+        88,
+        63,
+        198,
+        116,
+        135,
+        173
+      ],
+      "accounts": [
+        {
+          "name": "auction",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "docs": [
+            "The next page to count; checked in the handler."
+          ]
+        },
+        {
+          "name": "bookIndex",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -5991,6 +6344,19 @@ export type SealedAuction = {
         116,
         101,
         95,
+        48,
+        49
+      ]
+    },
+    {
+      "name": "bookIndex",
+      "discriminator": [
+        86,
+        73,
+        110,
+        100,
+        101,
+        120,
         48,
         49
       ]
@@ -6281,6 +6647,19 @@ export type SealedAuction = {
         189,
         118,
         211
+      ]
+    },
+    {
+      "name": "clearingPageTallied",
+      "discriminator": [
+        150,
+        195,
+        160,
+        32,
+        242,
+        73,
+        26,
+        249
       ]
     },
     {
@@ -6874,6 +7253,11 @@ export type SealedAuction = {
       "code": 6078,
       "name": "bookNotFull",
       "msg": "A new page opens only once every page so far is full"
+    },
+    {
+      "code": 6079,
+      "name": "alreadyTallied",
+      "msg": "Every page is already counted"
     }
   ],
   "types": [
@@ -7241,7 +7625,9 @@ export type SealedAuction = {
             "docs": [
               "Pages of the bid book beyond the first (`add_book_page`), each room",
               "for `PAGE_BIDS` more bids, and the bumps of their addresses. Auctions",
-              "opened before pages existed read these as zero: one page."
+              "opened before pages existed read these as zero: one page.",
+              "Only the first `STORED_PAGE_BUMPS` bumps are kept (see",
+              "`page_address`)."
             ],
             "type": "u8"
           },
@@ -8074,6 +8460,77 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "bookIndex",
+      "docs": [
+        "Per-page summaries of a book with more than one page",
+        "(`[INDEX_SEED, auction]`, made with its second page), so that no",
+        "instruction has to read every page."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "smallestDeposits",
+            "docs": [
+              "The smallest deposit on each page, among its slots that hold a bid",
+              "(`u64::MAX` for none): once the book is full, the smallest of these is",
+              "the deposit a new bid must beat."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                40
+              ]
+            }
+          },
+          {
+            "name": "talliedPages",
+            "docs": [
+              "Collections: pages whose bids at the clearing price are counted",
+              "(`tally_clearing_page`), in order from the first."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "atBefore",
+            "docs": [
+              "Bids at the clearing price on the pages before each counted page."
+            ],
+            "type": {
+              "array": [
+                "u16",
+                40
+              ]
+            }
+          },
+          {
+            "name": "atCount",
+            "docs": [
+              "The counted bids at the clearing price, their sizes and the sum of",
+              "their rounded-down shares (see `clearing_share`)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "atTotal",
+            "type": "u64"
+          },
+          {
+            "name": "atFloors",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "bookPageAdded",
       "type": {
         "kind": "struct",
@@ -8342,6 +8799,29 @@ export type SealedAuction = {
               "The digits of the clearing price fixed so far."
             ],
             "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "clearingPageTallied",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "page",
+            "type": "u8"
+          },
+          {
+            "name": "bidsAtPrice",
+            "docs": [
+              "Bids at the clearing price on that page."
+            ],
+            "type": "u16"
           }
         ]
       }

@@ -107,6 +107,10 @@ async function main() {
     )[0];
   const pageOf = (index: number) => Math.floor(index / PAGE_BIDS);
   const fold = PublicKey.findProgramAddressSync([Buffer.from("fold"), auctionAddress.toBuffer()], program.programId)[0];
+  const bookIndex = PublicKey.findProgramAddressSync(
+    [Buffer.from("index"), auctionAddress.toBuffer()],
+    program.programId
+  )[0];
 
   // The IDL is chosen at run time, so its accounts are untyped here.
   const accounts = program.account as any;
@@ -150,12 +154,13 @@ async function main() {
 
   if (variant(auction.status) === "open") {
     // A computation that fails leaves the count where it was; give up after
-    // three tries in a row.
+    // three tries in a row. Bidding is over, so the bids no longer change.
+    const allBids = auction.checkedCount < auction.bidCount ? await fetchBids() : [];
     for (let tries = 0, last = -1; auction.checkedCount < auction.bidCount; ) {
       tries = auction.checkedCount === last ? tries + 1 : 0;
       if (tries >= 3) throw new Error(`Checking keeps failing at bid ${auction.checkedCount}`);
       last = auction.checkedCount;
-      const batch = (await fetchBids())
+      const batch = allBids
         .filter((b) => b.account.index >= auction.checkedCount && b.account.index < auction.checkedCount + BATCH_SIZE)
         .map((b) => ({ pubkey: b.publicKey, isWritable: false, isSigner: false }));
       console.log(`Checking bids ${auction.checkedCount}-${auction.checkedCount + batch.length - 1}...`);
@@ -219,19 +224,35 @@ async function main() {
       );
     }
   }
-  const extraPages = Array.from({ length: auction.extraPages ?? 0 }, (_, k) => ({
-    pubkey: book(k + 1),
-    isWritable: false,
-    isSigner: false,
-  }));
-
-  for (const b of await fetchBids()) {
-    if (variant(b.account.status) !== "atClearing") continue;
+  // Shares are split once every bid at the clearing price is revealed.
+  auction = await fetchAuction();
+  const sharesFinal = auction.atRevealed.eq(auction.weightAt);
+  const atClearing = sharesFinal
+    ? (await fetchBids()).filter((b) => variant(b.account.status) === "atClearing")
+    : [];
+  const paged = (auction.extraPages ?? 0) > 0;
+  if (atClearing.length > 0 && paged) {
+    // A book with several pages counts its bids at the price page by page first.
+    const pages = Math.ceil(auction.bidCount / PAGE_BIDS);
+    const index = await accounts.bookIndex.fetch(bookIndex);
+    for (let page = index.talliedPages; page < pages; page++) {
+      console.log(`Counting the bids at the clearing price on page ${page}...`);
+      await program.methods
+        .tallyClearingPage()
+        .accountsPartial({ auction: auctionAddress, book: book(page), bookIndex })
+        .rpc();
+    }
+  }
+  for (const b of atClearing) {
     console.log(`Finalizing the share of bid ${b.account.index}...`);
     await program.methods
       .finalizeShare()
-      .accountsPartial({ auction: auctionAddress, book: book(), bid: b.publicKey })
-      .remainingAccounts(extraPages)
+      .accountsPartial({
+        auction: auctionAddress,
+        book: book(pageOf(b.account.index)),
+        bid: b.publicKey,
+        bookIndex: paged ? bookIndex : null,
+      })
       .rpc();
   }
 

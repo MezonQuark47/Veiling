@@ -29,8 +29,9 @@ import {
   CP_AMM_ID,
   LP_COMPUTE_UNITS,
   MAX_NFTS_PER_CLAIM,
-  MAX_PAGES,
+  MAX_PREPAID_PAGES,
   MPL_CORE_ID,
+  PAGE_BIDS,
   QUEUE_COMPUTE_UNITS,
   WSOL_MINT,
 } from "../config";
@@ -54,6 +55,7 @@ import {
   bidAddress,
   bidCapacity,
   bookAddress,
+  bookIndexAddress,
   canGrow,
   collectionAddress,
   configAddress,
@@ -61,9 +63,11 @@ import {
   evictionThreshold,
   extraPageAddresses,
   feeConfigAddress,
-  fetchBidsForAuction,
-  fetchBookDeposits,
+  fetchBidAtIndex,
+  fetchBookIndex,
   fetchClearingFold,
+  fetchPageDeposits,
+  findSmallestPage,
   foldAddress,
   itemListAddress,
   nftsReady,
@@ -433,23 +437,34 @@ export async function buildCreateCollectionAuction(
 }
 
 /**
- * Adds pages to an auction's bid book, from page `from` up to `to` (from 1),
- * in one transaction: each holds `PAGE_BIDS` more bids. Only the seller,
- * until bidding ends; the rent comes back when the auction is closed.
+ * Adds pages to an auction's bid book ahead of time, from page `from` up to
+ * `to` (from 1, at most 3), in one transaction: each holds `PAGE_BIDS` more
+ * bids. Only the seller, until bidding ends; the rent comes back when the
+ * auction is closed. Further pages open on their own as the book fills.
  */
 export async function buildAddBookPages(seller: PublicKey, auction: PublicKey, from: number, to: number) {
-  if (from < 1 || to >= MAX_PAGES || from > to) throw new Error("An auction has at most four pages of bids.");
+  if (from < 1 || to >= MAX_PREPAID_PAGES || from > to) throw new Error("A seller can add at most three pages ahead of time.");
   const tx = new Transaction();
   for (let page = from; page <= to; page++) {
     tx.add(
       await program.methods
         .addBookPage(page)
-        .accountsPartial({ seller, auction, pageBook: bookAddress(auction, page), fold: foldAddress(auction) })
+        .accountsPartial({
+          seller,
+          auction,
+          pageBook: bookAddress(auction, page),
+          fold: foldAddress(auction),
+          book: bookAddress(auction),
+          bookIndex: bookIndexAddress(auction),
+        })
         .instruction()
     );
   }
   return tx;
 }
+
+/** The book's index, which a book with more than one page passes along. */
+const indexIfPaged = (auction: Auction) => (auction.extraPages > 0 ? bookIndexAddress(auction.address) : null);
 
 /** The auction's pages after the first, as remaining accounts. */
 const pageAccounts = (auction: Auction, isWritable: boolean) =>
@@ -502,15 +517,17 @@ export interface Eviction {
 export async function findEviction(auction: Auction): Promise<Eviction | null> {
   // A full book with pages left to open grows instead.
   if (auction.bidCount < bidCapacity(auction) || canGrow(auction)) return null;
-  const [deposits, bids] = await Promise.all([
-    fetchBookDeposits(auction),
-    fetchBidsForAuction(auction.address),
-  ]);
-  let index = 0;
-  for (let i = 1; i < deposits.length; i++) if (deposits[i] < deposits[index]) index = i;
-  const bid = bids.find((b) => b.index === index && b.deposit === deposits[index]);
-  if (!bid) throw new Error("Could not find the bid with the smallest deposit. Try again in a moment.");
-  return { bid, minimumDeposit: evictionThreshold(deposits[index]) };
+  // The book's index knows each page's smallest deposit, so only that page is read.
+  const { page } = await findSmallestPage(auction);
+  const deposits = await fetchPageDeposits(auction, page);
+  let slot = 0;
+  for (let i = 1; i < deposits.length; i++) if (deposits[i] < deposits[slot]) slot = i;
+  const index = page * PAGE_BIDS + slot;
+  const bid = await fetchBidAtIndex(auction.address, index);
+  if (!bid || bid.deposit !== deposits[slot]) {
+    throw new Error("Could not find the bid with the smallest deposit. Try again in a moment.");
+  }
+  return { bid, minimumDeposit: evictionThreshold(deposits[slot]) };
 }
 
 /**
@@ -557,8 +574,10 @@ export async function buildPlaceBid(
   // page's rent back to the bidder.
   const growing = auction.bidCount >= bidCapacity(auction) && canGrow(auction);
   const nextPage = auction.extraPages + 1;
-  const pages = pageAccounts(auction, true);
-  if (growing) pages.push({ pubkey: bookAddress(auction.address, nextPage), isSigner: false, isWritable: true });
+  // The page the bid lands on: the next free place (on the page opened for
+  // it, if need be) or the place of the bid it replaces.
+  const index = eviction ? eviction.bid.index : auction.bidCount;
+  const paged = growing || auction.extraPages > 0;
   const tx = await program.methods
     .placeBid(
       seed,
@@ -573,14 +592,12 @@ export async function buildPlaceBid(
     .accountsPartial({
       bidder,
       auction: auction.address,
-      book: bookAddress(auction.address),
+      book: bookAddress(auction.address, pageOf(index)),
+      bookIndex: paged ? bookIndexAddress(auction.address) : null,
       bid,
       evictedBid: eviction ? eviction.bid.address : null,
       evictedBidder: eviction ? eviction.bid.bidder : null,
     })
-    // Every further page of the book, so the bid lands wherever the next
-    // free place is when it arrives.
-    .remainingAccounts(pages)
     .preInstructions(
       growing
         ? [
@@ -591,6 +608,8 @@ export async function buildPlaceBid(
                 auction: auction.address,
                 pageBook: bookAddress(auction.address, nextPage),
                 fold: foldAddress(auction.address),
+                book: bookAddress(auction.address),
+                bookIndex: bookIndexAddress(auction.address),
               })
               .instruction(),
           ]
@@ -635,6 +654,7 @@ export async function buildIncreaseBid(
       bidder,
       auction: auction.address,
       book: bookAddress(auction.address, pageOf(bid.index)),
+      bookIndex: indexIfPaged(auction),
       bid: bid.address,
     })
     .transaction();
@@ -729,21 +749,62 @@ export async function buildDrawSeed(payer: PublicKey, auction: Auction) {
 function finalizeShareInstruction(auction: Auction, bid: Bid) {
   return program.methods
     .finalizeShare()
-    .accountsPartial({ auction: auction.address, book: bookAddress(auction.address), bid: bid.address })
-    .remainingAccounts(pageAccounts(auction, false))
+    .accountsPartial({
+      auction: auction.address,
+      book: bookAddress(auction.address, pageOf(bid.index)),
+      bid: bid.address,
+      bookIndex: indexIfPaged(auction),
+    })
     .instruction();
+}
+
+/** Pages counted per transaction by `tallyTransactions`. */
+const TALLIES_PER_TX = 4;
+
+/**
+ * A book with more than one page counts its bids at the clearing price page
+ * by page first (`tally_clearing_page`), so each share can be worked out
+ * without reading every page. Returns the transactions still needed, in
+ * order; none for a one-page book or once every page is counted.
+ */
+async function tallyTransactions(auction: Auction): Promise<Transaction[]> {
+  const index = await fetchBookIndex(auction);
+  if (!index) return [];
+  const pages = pagesInUse(auction);
+  const txs: Transaction[] = [];
+  for (let page = index.talliedPages; page < pages; page += TALLIES_PER_TX) {
+    const tx = new Transaction();
+    for (let p = page; p < Math.min(pages, page + TALLIES_PER_TX); p++) {
+      tx.add(
+        await program.methods
+          .tallyClearingPage()
+          .accountsPartial({
+            auction: auction.address,
+            book: bookAddress(auction.address, p),
+            bookIndex: bookIndexAddress(auction.address),
+          })
+          .instruction()
+      );
+    }
+    txs.push(tx);
+  }
+  return txs;
 }
 
 /**
  * Splits off the shares of bids at the clearing price, a few per
- * transaction. Anyone can send it once every such bid has been revealed.
+ * transaction, after counting the pages if the book has several. Anyone can
+ * send these once every such bid has been revealed; they must land in order.
  */
-export async function buildFinalizeShares(auction: Auction, bids: Bid[]) {
-  const tx = new Transaction();
-  for (const bid of bids.filter((b) => b.status === "atClearing").slice(0, 8)) {
-    tx.add(await finalizeShareInstruction(auction, bid));
+export async function buildFinalizeShares(auction: Auction, bids: Bid[]): Promise<Transaction[]> {
+  const txs = await tallyTransactions(auction);
+  const waiting = bids.filter((b) => b.status === "atClearing");
+  for (let i = 0; i < waiting.length; i += 8) {
+    const tx = new Transaction();
+    for (const bid of waiting.slice(i, i + 8)) tx.add(await finalizeShareInstruction(auction, bid));
+    txs.push(tx);
   }
-  return tx;
+  return txs;
 }
 
 function claimTokensInstruction(payer: PublicKey, auction: Auction, bid: Bid) {
@@ -819,7 +880,7 @@ export async function buildCollect(payer: PublicKey, auction: Auction, bid: Bid,
   if (bid.status === "atClearing") {
     // Only collection bids wait at the clearing price.
     if (!sharesAreFinal(auction)) throw new Error("Not every bid at the clearing price has been revealed yet.");
-    return [new Transaction().add(await finalizeShareInstruction(auction, bid))];
+    return [...(await tallyTransactions(auction)), new Transaction().add(await finalizeShareInstruction(auction, bid))];
   }
   if (auction.kind === "token") {
     const tx = new Transaction();
@@ -895,7 +956,42 @@ export async function buildClaimProceeds(auction: Auction) {
 /** The clearing state, which closes with an auction that has more than one page. */
 const foldIfPaged = (auction: Auction) => (auction.extraPages > 0 ? foldAddress(auction.address) : null);
 
-async function closeInstruction(auction: Auction) {
+/** Pages closed per transaction by `closePageTransactions`. */
+const PAGE_CLOSES_PER_TX = 5;
+
+/**
+ * A book with many pages closes them a few at a time from the end, down to
+ * its second page, which closes with the auction (`close_book_page`).
+ * Returns those transactions, in order.
+ */
+async function closePageTransactions(auction: Auction): Promise<Transaction[]> {
+  const txs: Transaction[] = [];
+  for (let page = auction.extraPages; page >= 2; page -= PAGE_CLOSES_PER_TX) {
+    const tx = new Transaction();
+    for (let p = page; p >= Math.max(2, page - PAGE_CLOSES_PER_TX + 1); p--) {
+      tx.add(
+        await program.methods
+          .closeBookPage()
+          .accountsPartial({ auction: auction.address, seller: auction.seller, pageBook: bookAddress(auction.address, p) })
+          .instruction()
+      );
+    }
+    txs.push(tx);
+  }
+  return txs;
+}
+
+/** The auction's pages after the first that it still has once `closePageTransactions` ran: just the second, if any. */
+const pagesLeftAtClose = (auction: Auction) =>
+  auction.extraPages > 0 ? [{ pubkey: bookAddress(auction.address, 1), isSigner: false, isWritable: true }] : [];
+
+/**
+ * Closes the auction with its remaining pages: every further page if it has
+ * at most `MAX_PREPAID_PAGES - 1` (a cancelled sale's pages, say), else only
+ * the second, after `closePageTransactions`.
+ */
+async function closeInstruction(auction: Auction, afterPageCloses = false) {
+  const pages = afterPageCloses ? pagesLeftAtClose(auction) : pageAccounts(auction, true);
   if (auction.kind === "collection") {
     return program.methods
       .closeCollectionAuction()
@@ -904,17 +1000,23 @@ async function closeInstruction(auction: Auction) {
         auction: auction.address,
         book: bookAddress(auction.address),
         fold: foldIfPaged(auction),
+        bookIndex: indexIfPaged(auction),
         collection: auction.mint,
         mplCoreProgram: MPL_CORE_ID,
         itemList: auction.namedItems ? itemListAddress(auction.address) : null,
       })
-      .remainingAccounts(pageAccounts(auction, true))
+      .remainingAccounts(pages)
       .instruction();
   }
   return program.methods
     .closeAuction()
-    .accountsPartial({ ...sellerTokenAccounts(auction), book: bookAddress(auction.address), fold: foldIfPaged(auction) })
-    .remainingAccounts(pageAccounts(auction, true))
+    .accountsPartial({
+      ...sellerTokenAccounts(auction),
+      book: bookAddress(auction.address),
+      fold: foldIfPaged(auction),
+      bookIndex: indexIfPaged(auction),
+    })
+    .remainingAccounts(pages)
     .instruction();
 }
 
@@ -940,8 +1042,9 @@ export async function buildCancelAuction(auction: Auction) {
  * returning the rent of the auction and every page of its bid book (and
  * vault) to the seller. A collection's update authority passes to the seller.
  */
-export async function buildCloseAuction(auction: Auction) {
-  return new Transaction().add(await closeInstruction(auction));
+export async function buildCloseAuction(auction: Auction): Promise<Transaction[]> {
+  if (auction.extraPages < 2) return [new Transaction().add(await closeInstruction(auction))];
+  return [...(await closePageTransactions(auction)), new Transaction().add(await closeInstruction(auction, true))];
 }
 
 /**

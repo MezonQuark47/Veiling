@@ -26,10 +26,19 @@ export const EXPLORER_CLUSTER = MAINNET ? "" : "?cluster=devnet";
 export const BATCH_SIZE = 4;
 /** Bids one page of an auction's bid book holds. */
 export const PAGE_BIDS = 256;
-/** Pages a bid book can have; the seller adds them up to the end of bidding. */
-export const MAX_PAGES = 4;
-/** Most bids an auction can hold, with every page added. */
-export const MAX_BIDS = PAGE_BIDS * MAX_PAGES;
+/**
+ * Pages a bid book can have. It opens new ones as it fills: up to 4 for a
+ * token auction (1,024 bids) and 40 for a collection (10,240 bids, so even a
+ * 10,000-NFT collection can sell out at one NFT per bid). Either way it is
+ * one auction with one clearing price.
+ */
+export const MAX_TOKEN_PAGES = 4;
+export const MAX_COLLECTION_PAGES = 40;
+/** Most bids an auction can hold, with every page open. */
+export const MAX_TOKEN_BIDS = PAGE_BIDS * MAX_TOKEN_PAGES;
+export const MAX_COLLECTION_BIDS = PAGE_BIDS * MAX_COLLECTION_PAGES;
+/** Pages a seller can pay for ahead of time (`add_book_page`). */
+export const MAX_PREPAID_PAGES = 4;
 /** Passes of the clearing across pages, each fixing four bits of the price. */
 export const FOLD_PASSES = 8;
 /** What one step of that clearing pays its caller, as a share of the clearing reward. */

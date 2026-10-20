@@ -23,12 +23,17 @@
 //!    An auction can be scheduled: bidding then opens at its `start_time`,
 //!    up to `MAX_START_DELAY_SECS` ahead, and runs for its duration from
 //!    there. Until the first bid, the seller can still cancel it.
-//!    The bid book holds `PAGE_BIDS` (256) bids per page; until bidding
-//!    ends the seller can add pages with `add_book_page`, up to `MAX_PAGES`
-//!    (`MAX_BIDS`, 1,024 bids).
+//!    The bid book holds `PAGE_BIDS` (256) bids per page. Each time it is
+//!    full, the next bid opens another page (`open_book_page`), up to
+//!    `MAX_TOKEN_PAGES` (1,024 bids) for a token auction and `MAX_PAGES`
+//!    (`MAX_BIDS`, 10,240 bids) for a collection. However many pages it has,
+//!    it is one auction with one clearing price. A book with several pages
+//!    keeps a summary of each in its `BookIndex`, so no instruction reads
+//!    more than one page.
 //! 2. `place_bid` stores an encrypted bid and escrows its deposit (no MPC).
-//!    Once every page is full, a new bid must out-deposit the smallest
-//!    one by `EVICTION_PREMIUM_PERCENT`; that bid is refunded and replaced.
+//!    Once the book is full and can grow no further, a new bid must
+//!    out-deposit the smallest one by `EVICTION_PREMIUM_PERCENT`; that bid is
+//!    refunded and replaced.
 //!    `save_bid_note` can keep the bidder's own note of the bid next to it,
 //!    encrypted by their app under a key made from their wallet's signature,
 //!    so they can see what they sealed on any device.
@@ -48,7 +53,8 @@
 //!    what the bid won and moves the payment to the auction. A collection bid
 //!    exactly at the clearing price only records its size, and
 //!    `finalize_share` splits the remaining NFTs between those bids once they
-//!    are all known. Neither touches any other account, so nobody can block
+//!    are all known (after `tally_clearing_page` has counted them page by
+//!    page, when there are several pages). Neither touches any other account, so nobody can block
 //!    their own settlement.
 //! 6. `claim_tokens` (or `claim_nfts`) delivers what a bid won and
 //!    `close_bid` returns the unused deposit; anyone can call both, funds only
@@ -146,6 +152,9 @@ pub const NOTE_SEED: &[u8] = b"note";
 pub const CRANK_SEED: &[u8] = b"crank";
 /// The state of an auction's paged clearing: `[FOLD_SEED, auction]`.
 pub const FOLD_SEED: &[u8] = b"fold";
+/// The per-page summaries of a book with several pages:
+/// `[INDEX_SEED, auction]`.
+pub const INDEX_SEED: &[u8] = b"index";
 
 /// Account discriminators of this version's auction state. They differ from
 /// the first release's, whose accounts had other layouts, so an account of
@@ -156,6 +165,7 @@ pub const BID_DISCRIMINATOR: &[u8] = b"VBid__02";
 pub const ITEM_LIST_DISCRIMINATOR: &[u8] = b"VItems01";
 pub const BID_NOTE_DISCRIMINATOR: &[u8] = b"VNote_01";
 pub const FOLD_DISCRIMINATOR: &[u8] = b"VFold_01";
+pub const INDEX_DISCRIMINATOR: &[u8] = b"VIndex01";
 /// Bytes of a bid note. The program stores them as given: the bidder's app
 /// encrypts the bid's price and size under a key only their wallet can make.
 pub const BID_NOTE_LEN: usize = 32;
@@ -204,14 +214,17 @@ const CORE_UPDATE_COLLECTION_V1: u8 = 16;
 /// Lamports per price tick of a collection auction: prices per NFT are whole
 /// millionths of a SOL, up to about 4,295 SOL.
 pub const NFT_PRICE_SCALE: u64 = 1_000;
-/// Largest `price_unit` of a token auction. With at most `MAX_BIDS` budgets
-/// below 2^64, demand times the unit stays below 2^128 in the circuits:
-/// 2^10 * 2^64 * 10^16 < 2^127.2. This is what caps `MAX_BIDS` at 1,024; twice
-/// as many bids would need a smaller unit.
+/// Largest `price_unit` of a token auction. With at most `MAX_TOKEN_BIDS`
+/// budgets below 2^64, demand times the unit stays below 2^128 in the
+/// circuits: 2^10 * 2^64 * 10^16 < 2^127.2. This is what caps a token
+/// auction at 1,024 bids; twice as many would need a smaller unit.
 pub const MAX_PRICE_UNIT: u64 = 10_000_000_000_000_000;
 const _: () = assert!(
-    (MAX_BIDS as u128) * (u64::MAX as u128) <= u128::MAX / (MAX_PRICE_UNIT as u128)
+    (MAX_TOKEN_BIDS as u128) * (u64::MAX as u128) <= u128::MAX / (MAX_PRICE_UNIT as u128)
 );
+/// A collection auction's demand: at most `MAX_BIDS` bids of at most
+/// `MAX_COLLECTION_SIZE` NFTs each, far inside the circuits' 80-bit totals.
+const _: () = assert!((MAX_BIDS as u128) * (MAX_COLLECTION_SIZE as u128) < 1u128 << 80);
 
 /// Bids checked per computation; must match the circuits' batch width.
 pub const BATCH_SIZE: usize = 4;
@@ -226,14 +239,28 @@ pub const BATCH_RECORD_CIPHERTEXTS: usize = 2;
 pub const BATCH_RECORD_LEN: u32 = 32 * BATCH_RECORD_CIPHERTEXTS as u32;
 
 /// Bids one page of the bid book holds (`BidBook`). Every auction has its
-/// first page; the seller can add up to `MAX_PAGES - 1` more before bidding
-/// ends (`add_book_page`).
+/// first page; more open as the book fills (`open_book_page`), up to
+/// `max_pages`: `MAX_TOKEN_PAGES` for a token auction, `MAX_PAGES` for a
+/// collection.
 pub const PAGE_BIDS: u32 = 256;
 const PAGE_BIDS_USIZE: usize = PAGE_BIDS as usize;
-pub const MAX_PAGES: u8 = 4;
-const MAX_EXTRA_PAGES: usize = MAX_PAGES as usize - 1;
+/// Most pages a collection auction's book can have: 10,240 bids, so even a
+/// 10,000-NFT collection sells out at one NFT per bid. Collection demand is
+/// counted in NFTs, so the circuits' totals stay tiny however many bids
+/// there are.
+pub const MAX_PAGES: u8 = 40;
+/// Most pages a token auction's book can have. Token demand is counted in
+/// lamports of budget, which caps it (see `MAX_PRICE_UNIT`).
+pub const MAX_TOKEN_PAGES: u8 = 4;
+/// Pages after the first whose address bumps `Auction` keeps (its layout is
+/// fixed); further pages' addresses are derived when needed.
+const STORED_PAGE_BUMPS: usize = MAX_TOKEN_PAGES as usize - 1;
 /// Most bids an auction can hold, with every page added.
 pub const MAX_BIDS: u32 = PAGE_BIDS * MAX_PAGES as u32;
+pub const MAX_TOKEN_BIDS: u32 = PAGE_BIDS * MAX_TOKEN_PAGES as u32;
+/// Pages the seller can pay for ahead of time (`add_book_page`); the others
+/// open on demand.
+pub const MAX_PREPAID_PAGES: u8 = MAX_TOKEN_PAGES;
 /// Batch records per page. One computation reads at most one page:
 /// `clear_price` reads the only page of a one-page auction and
 /// `fold_batch` reads one page per step.
@@ -266,9 +293,9 @@ pub const MAX_START_DELAY_SECS: i64 = 30 * 24 * 60 * 60;
 /// Cap on each crank reward, so no admin can make bidding or listing
 /// expensive through them: 0.1 SOL.
 pub const MAX_CRANK_REWARD: u64 = 100_000_000;
-/// Once an auction holds `MAX_BIDS` bids, a new bid must deposit at least this
-/// much more (in percent, rounded up) than the smallest deposit, which is then
-/// refunded in full. Filling every slot to crowd others out therefore costs
+/// Once an auction's book is full and can grow no further, a new bid must
+/// deposit at least this much more (in percent, rounded up) than the smallest
+/// deposit, which is then refunded in full. Filling every slot to crowd others out therefore costs
 /// more the more other bidders are willing to deposit.
 pub const EVICTION_PREMIUM_PERCENT: u64 = 10;
 /// Soft close: a bid that replaces another this close to the end of bidding
@@ -757,9 +784,11 @@ pub mod sealed_auction {
         Ok(())
     }
 
-    /// Adds a page to the auction's bid book, room for `PAGE_BIDS` more bids,
-    /// up to `MAX_PAGES` pages (`MAX_BIDS` bids). Only the seller, while
-    /// bidding is still open; `page` is the next page's number (1 to 3).
+    /// Adds a page to the auction's bid book ahead of time, room for
+    /// `PAGE_BIDS` more bids, up to `MAX_PREPAID_PAGES` pages (and the
+    /// auction's `max_pages`). Only the seller, while bidding is still open;
+    /// `page` is the next page's number (1 to 3). Further pages open on
+    /// demand (`open_book_page`).
     ///
     /// The seller pays the page's rent, which comes back when the auction is
     /// closed, and adds to the crank pool what finding the clearing price
@@ -773,11 +802,12 @@ pub mod sealed_auction {
         require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
         require!(now < auction.end_time, AuctionError::BiddingClosed);
         require!(
-            page as usize == auction.extra_pages as usize + 1 && page < MAX_PAGES,
+            page as usize == auction.extra_pages as usize + 1
+                && page < MAX_PREPAID_PAGES
+                && page < max_pages(auction),
             AuctionError::TooManyPages
         );
-        auction.page_bumps[page as usize - 1] = ctx.bumps.page_book;
-        auction.extra_pages = page;
+        record_page_bump(auction, page, ctx.bumps.page_book);
         auction.prepaid_pages |= 1 << page;
         let mut book = ctx.accounts.page_book.load_init()?;
         book.auction = auction_key;
@@ -787,6 +817,10 @@ pub mod sealed_auction {
         if fold.auction == Pubkey::default() {
             fold.auction = auction_key;
             fold.bump = ctx.bumps.fold;
+        }
+        let index = &mut ctx.accounts.book_index;
+        if index.auction == Pubkey::default() {
+            start_book_index(index, auction_key, ctx.bumps.book_index, &ctx.accounts.book, &ctx.accounts.auction)?;
         }
 
         let crank_fee = page_crank_fee(&ctx.accounts.auction.crank_rewards, page);
@@ -806,13 +840,15 @@ pub mod sealed_auction {
     }
 
     /// Opens the next page of a full bid book, so the auction grows on its own
-    /// up to `MAX_BIDS` bids and the seller pays nothing up front for room.
-    /// Anyone may call it, but only while bidding is open and only once every
-    /// existing page is full; `page` is the next page's number (1 to 3). The
-    /// app adds it in front of the bid that needs the room.
+    /// up to `max_pages` pages (1,024 bids for a token auction, 10,240 for a
+    /// collection) and the seller pays nothing up front for room. Anyone may
+    /// call it, but only while bidding is open and only once every existing
+    /// page is full; `page` is the next page's number. The app adds it in
+    /// front of the bid that needs the room.
     ///
     /// The caller pays the page's rent (and, with the second page, the paged
-    /// clearing's state) and is paid it straight back out of the auction's
+    /// clearing's state and the book's index) and is paid it straight back
+    /// out of the auction's
     /// settlement fund, which by then holds every bid's crank fee. The rent
     /// goes to the seller when the auction closes. Rewards the fund then runs
     /// short of, including the steps of the paged clearing, are paid out of
@@ -824,12 +860,11 @@ pub mod sealed_auction {
         require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
         require!(now < auction.end_time, AuctionError::BiddingClosed);
         require!(
-            page as usize == auction.extra_pages as usize + 1 && page < MAX_PAGES,
+            page as usize == auction.extra_pages as usize + 1 && page < max_pages(auction),
             AuctionError::TooManyPages
         );
         require!(auction.bid_count >= bid_capacity(auction), AuctionError::BookNotFull);
-        auction.page_bumps[page as usize - 1] = ctx.bumps.page_book;
-        auction.extra_pages = page;
+        record_page_bump(auction, page, ctx.bumps.page_book);
         let mut book = ctx.accounts.page_book.load_init()?;
         book.auction = auction_key;
         drop(book);
@@ -840,6 +875,16 @@ pub mod sealed_auction {
             fold.auction = auction_key;
             fold.bump = ctx.bumps.fold;
             rent = rent.saturating_add(fold.to_account_info().lamports());
+        }
+        if ctx.accounts.book_index.auction == Pubkey::default() {
+            start_book_index(
+                &mut ctx.accounts.book_index,
+                auction_key,
+                ctx.bumps.book_index,
+                &ctx.accounts.book,
+                &ctx.accounts.auction,
+            )?;
+            rent = rent.saturating_add(ctx.accounts.book_index.to_account_info().lamports());
         }
 
         // The fund advances the rent; the accounts are already made, so no
@@ -1009,14 +1054,15 @@ pub mod sealed_auction {
     /// `is_usable_x25519_key`). `terms` are the auction terms the bidder saw;
     /// the bid is refused if the auction does not have exactly those.
     ///
-    /// Once every page of the auction's bid book is full (`bid_capacity`),
-    /// pass the bid with the smallest deposit as `evicted_bid` (and its owner
-    /// as `evicted_bidder`); the new deposit must exceed it by
-    /// `EVICTION_PREMIUM_PERCENT`. The evicted bid is closed and its owner
-    /// gets the deposit and rent back.
+    /// Once every page of the auction's bid book is full (`bid_capacity`)
+    /// and no page can be added, pass the bid with the smallest deposit as
+    /// `evicted_bid` (and its owner as `evicted_bidder`); the new deposit must
+    /// exceed it by `EVICTION_PREMIUM_PERCENT`. The evicted bid is closed and
+    /// its owner gets the deposit and rent back.
     ///
-    /// `book` is the first page; pass every further page
-    /// (`add_book_page`), in order, as remaining accounts.
+    /// `book` is the page the bid goes to: the page of index `bid_count`, or
+    /// of the evicted bid. A book with more than one page also passes its
+    /// `book_index`, which knows each page's smallest deposit.
     ///
     /// For a token auction the encrypted quantity is the bid's budget in
     /// lamports: a budget the deposit does not cover, or below
@@ -1065,7 +1111,10 @@ pub mod sealed_auction {
         // Anything less cannot win, so it is refused before it takes a slot.
         require!(deposit >= auction.min_deposit, AuctionError::DepositTooSmall);
 
-        let extra = extra_pages(auction, ctx.remaining_accounts)?;
+        require!(
+            ctx.accounts.book_index.is_some() == (auction.extra_pages > 0),
+            AuctionError::WrongBookPage
+        );
         let mut replacing = false;
         let index = if auction.bid_count < bid_capacity(auction) {
             require!(
@@ -1094,17 +1143,20 @@ pub mod sealed_auction {
             );
             let index = evicted.index;
             let (page, slot) = page_slot(index);
+            require_keys_eq!(
+                ctx.accounts.book.key(),
+                page_address(auction, page)?,
+                AuctionError::WrongBookPage
+            );
             require!(
-                page <= auction.extra_pages
-                    && page_of(&ctx.accounts.book, &extra, page).load()?.deposits[slot] == evicted.deposit,
+                ctx.accounts.book.load()?.deposits[slot] == evicted.deposit,
                 AuctionError::WrongBidAccounts
             );
             // Every page is full, so every deposit counts.
-            let mut smallest = u64::MAX;
-            for page in 0..=auction.extra_pages {
-                let book = page_of(&ctx.accounts.book, &extra, page).load()?;
-                smallest = smallest.min(book.deposits.iter().copied().min().unwrap_or(u64::MAX));
-            }
+            let smallest = match ctx.accounts.book_index.as_ref() {
+                Some(book_index) => smallest_in_book(book_index, auction.extra_pages),
+                None => page_smallest(&*ctx.accounts.book.load()?, PAGE_BIDS_USIZE),
+            };
             require!(evicted.deposit == smallest, AuctionError::NotSmallestBid);
             require!(
                 deposit >= eviction_threshold(smallest)?,
@@ -1139,7 +1191,19 @@ pub mod sealed_auction {
             index
         };
         let (page, slot) = page_slot(index);
-        page_of(&ctx.accounts.book, &extra, page).load_mut()?.deposits[slot] = deposit;
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        {
+            let mut book = ctx.accounts.book.load_mut()?;
+            book.deposits[slot] = deposit;
+            if let Some(book_index) = ctx.accounts.book_index.as_mut() {
+                book_index.smallest_deposits[page as usize] =
+                    page_smallest(&book, page_filled(auction.bid_count, page));
+            }
+        }
         auction.total_deposited = auction
             .total_deposited
             .checked_add(deposit)
@@ -1216,7 +1280,8 @@ pub mod sealed_auction {
     /// or pulled to fake demand; the app only offers raising the price and
     /// size. Only the latest version is checked when bidding closes, against
     /// the whole deposit. `book` is the page of the bid book that holds the
-    /// bid (`page_slot`).
+    /// bid (`page_slot`); a book with more than one page also passes its
+    /// `book_index`.
     #[allow(clippy::too_many_arguments)]
     pub fn increase_bid(
         ctx: Context<IncreaseBid>,
@@ -1262,7 +1327,18 @@ pub mod sealed_auction {
             page_address(auction, page)?,
             AuctionError::WrongBookPage
         );
-        ctx.accounts.book.load_mut()?.deposits[slot] = deposit;
+        require!(
+            ctx.accounts.book_index.is_some() == (auction.extra_pages > 0),
+            AuctionError::WrongBookPage
+        );
+        {
+            let mut book = ctx.accounts.book.load_mut()?;
+            book.deposits[slot] = deposit;
+            if let Some(book_index) = ctx.accounts.book_index.as_mut() {
+                book_index.smallest_deposits[page as usize] =
+                    page_smallest(&book, page_filled(auction.bid_count, page));
+            }
+        }
         auction.total_deposited = auction
             .total_deposited
             .checked_add(extra_deposit)
@@ -1880,26 +1956,98 @@ pub mod sealed_auction {
     /// their size and rounded down, and the NFTs lost to rounding go one each
     /// to the earliest of them (lowest bid index), so every NFT is sold.
     /// Anyone can call it; the payment moves to the auction as in any
-    /// settlement. `book` is the first page; pass every further page, in
-    /// order, as remaining accounts.
-    pub fn finalize_share<'info>(ctx: Context<'info, FinalizeShare<'info>>) -> Result<()> {
+    /// settlement. `book` is the page that holds the bid. A book with more
+    /// than one page also passes its `book_index`, once `tally_clearing_page`
+    /// has counted every page.
+    pub fn finalize_share(ctx: Context<FinalizeShare>) -> Result<()> {
         let auction = &ctx.accounts.auction;
         let bid = &ctx.accounts.bid;
         require!(bid.status == BidStatus::AtClearing, AuctionError::NotAtClearing);
         require!(shares_are_final(auction), AuctionError::SharesNotReady);
         let remaining = clearing_remainder(auction)?;
         let weight_at = u64::try_from(auction.weight_at).map_err(|_| AuctionError::InvalidAllocation)?;
-        let extra = extra_pages(auction, ctx.remaining_accounts)?;
-        let share = {
-            // Sizes by bid index across every page.
-            let mut sizes = Vec::with_capacity(PAGE_BIDS_USIZE * (1 + extra.len()));
-            for page in 0..=auction.extra_pages {
-                sizes.extend_from_slice(&page_of(&ctx.accounts.book, &extra, page).load()?.clearing_quantities);
+        let (page, local) = page_slot(bid.index);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        let book = ctx.accounts.book.load()?;
+        let share = match ctx.accounts.book_index.as_ref() {
+            None => {
+                require!(auction.extra_pages == 0, AuctionError::WrongBookPage);
+                clearing_share(&book.clearing_quantities, bid.index, remaining, weight_at)?
             }
-            clearing_share(&sizes, bid.index, remaining, weight_at)?
+            Some(index) => {
+                require!(
+                    index.tallied_pages == pages_in_use(auction),
+                    AuctionError::SharesNotReady
+                );
+                let own = book.clearing_quantities[local] as u64;
+                let on_page_before = book.clearing_quantities[..local]
+                    .iter()
+                    .filter(|&&size| size > 0)
+                    .count() as u64;
+                let earlier = index.at_before[page as usize] as u64 + on_page_before;
+                share_of(own, earlier, index.at_floors, remaining, weight_at)?
+            }
         };
+        drop(book);
         let payment = nft_payment(auction, share)?;
         settle_payment(&mut ctx.accounts.auction, &mut ctx.accounts.bid, OUTCOME_AT, share, payment)
+    }
+
+    /// Counts the collection bids at the clearing price on one page of a
+    /// book with more than one page, once every such bid is revealed:
+    /// `finalize_share` needs how many come before each bid and how many
+    /// NFTs rounding leaves over, and reads them from the `BookIndex`
+    /// instead of every page. Pages are counted in order, from 0; anyone can
+    /// call it, and nothing moves.
+    pub fn tally_clearing_page(ctx: Context<TallyClearingPage>) -> Result<()> {
+        let auction = &ctx.accounts.auction;
+        require!(shares_are_final(auction), AuctionError::SharesNotReady);
+        let index = &mut ctx.accounts.book_index;
+        let page = index.tallied_pages;
+        require!(page < pages_in_use(auction), AuctionError::AlreadyTallied);
+        require_keys_eq!(
+            ctx.accounts.book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        let remaining = clearing_remainder(auction)?;
+        let weight_at = u64::try_from(auction.weight_at).map_err(|_| AuctionError::InvalidAllocation)?;
+        let book = ctx.accounts.book.load()?;
+        let tally = tally_page(&book.clearing_quantities, remaining, weight_at)?;
+        drop(book);
+        index.at_before[page as usize] = index.at_count;
+        index.at_count = index
+            .at_count
+            .checked_add(tally.count)
+            .ok_or(AuctionError::MathOverflow)?;
+        index.at_total = index
+            .at_total
+            .checked_add(tally.total)
+            .ok_or(AuctionError::MathOverflow)?;
+        index.at_floors = index
+            .at_floors
+            .checked_add(tally.floors)
+            .ok_or(AuctionError::MathOverflow)?;
+        index.tallied_pages = page + 1;
+        if index.tallied_pages == pages_in_use(auction) {
+            // Every size is counted: they must add up to the demand at the
+            // price, and their floors can leave at most one NFT per bid.
+            require!(index.at_total == weight_at, AuctionError::InvalidAllocation);
+            require!(
+                index.at_floors <= remaining && remaining - index.at_floors <= index.at_count as u64,
+                AuctionError::InvalidAllocation
+            );
+        }
+        emit!(ClearingPageTallied {
+            auction: auction.key(),
+            page,
+            bids_at_price: tally.count,
+        });
+        Ok(())
     }
 
     /// Has Arcium draw the seed that decides which NFTs each winner of a
@@ -2473,12 +2621,51 @@ pub mod sealed_auction {
         Ok(())
     }
 
+    /// Closes the last page of a finished or cancelled auction's book, once
+    /// every bid account is closed, and returns its rent to the seller. A
+    /// book with many pages closes this way, a page at a time from the end,
+    /// down to its second page, which closes with the auction
+    /// (`close_auction`, `close_collection_auction`) together with the paged
+    /// clearing and the book's index. Anyone can call it; the rent only goes
+    /// to the seller.
+    pub fn close_book_page(ctx: Context<CloseBookPage>) -> Result<()> {
+        let auction = &ctx.accounts.auction;
+        require!(
+            matches!(
+                auction.status,
+                AuctionStatus::Finished | AuctionStatus::Cancelled
+            ),
+            AuctionError::WrongStatus
+        );
+        require!(auction.live_bids == 0, AuctionError::BidsOutstanding);
+        require!(
+            matches!(
+                auction.liquidity,
+                LIQUIDITY_NONE | LIQUIDITY_POOLED | LIQUIDITY_RELEASED
+            ),
+            AuctionError::LiquidityPending
+        );
+        let page = auction.extra_pages;
+        require!(page >= 2, AuctionError::WrongBookPage);
+        require_keys_eq!(
+            ctx.accounts.page_book.key(),
+            page_address(auction, page)?,
+            AuctionError::WrongBookPage
+        );
+        ctx.accounts
+            .page_book
+            .close(ctx.accounts.seller.to_account_info())?;
+        ctx.accounts.auction.extra_pages = page - 1;
+        Ok(())
+    }
+
     /// Closes a finished or cancelled auction once every bid account is
     /// closed, returning the rent of the auction, its bid book and its vault
     /// to the seller. Nothing is owed to anyone at that point, so tokens still
     /// in the vault (sent there by someone after the sale) go to the seller.
     /// An auction with more than one page of bid book passes the further
-    /// pages, in order, as remaining accounts, and its `fold`; they close too.
+    /// pages it still has (`close_book_page` closes the others), in order, as
+    /// remaining accounts, and its `fold` and `book_index`; they close too.
     pub fn close_auction<'info>(ctx: Context<'info, CloseAuction<'info>>) -> Result<()> {
         let auction = &ctx.accounts.auction;
         require!(
@@ -2496,12 +2683,11 @@ pub mod sealed_auction {
             ),
             AuctionError::LiquidityPending
         );
-        close_extra_pages(
-            auction,
-            ctx.remaining_accounts,
-            ctx.accounts.fold.is_some(),
-            &ctx.accounts.seller.to_account_info(),
-        )?;
+        require!(
+            ctx.accounts.auction.extra_pages == 0
+                || (ctx.accounts.fold.is_some() && ctx.accounts.book_index.is_some()),
+            AuctionError::WrongBookPage
+        );
 
         let vault = ctx.accounts.vault.to_account_info();
         let mut swept = 0u64;
@@ -2556,6 +2742,14 @@ pub mod sealed_auction {
                 signer_seeds,
             ))?;
         }
+        // The further pages close after the token CPIs above, which do not
+        // see them: a lamport move before a CPI must balance inside it.
+        close_extra_pages(
+            &ctx.accounts.auction,
+            ctx.remaining_accounts,
+            ctx.accounts.fold.is_some() && ctx.accounts.book_index.is_some(),
+            &ctx.accounts.seller.to_account_info(),
+        )?;
         // The `close = seller` constraints return the auction's and the
         // book's lamports (rent and anything sent there) when this ends.
         emit!(AuctionClosed {
@@ -2570,7 +2764,8 @@ pub mod sealed_auction {
     /// account is closed, which means every NFT sold has been minted. Makes
     /// the seller the collection's update authority and returns the rent of
     /// the auction, its bid book and its item list to the seller. Further
-    /// pages of the book and the `fold` close too, as in `close_auction`.
+    /// pages of the book, the `fold` and the `book_index` close too, as in
+    /// `close_auction`.
     pub fn close_collection_auction<'info>(
         ctx: Context<'info, CloseCollectionAuction<'info>>,
     ) -> Result<()> {
@@ -2583,12 +2778,6 @@ pub mod sealed_auction {
             AuctionError::WrongStatus
         );
         require!(auction.live_bids == 0, AuctionError::BidsOutstanding);
-        close_extra_pages(
-            auction,
-            ctx.remaining_accounts,
-            ctx.accounts.fold.is_some(),
-            &ctx.accounts.seller.to_account_info(),
-        )?;
         // The item list, if any, closes with the auction (`close = seller`).
         require!(
             !auction.named_items || ctx.accounts.item_list.is_some(),
@@ -2628,6 +2817,14 @@ pub mod sealed_auction {
                 ctx.accounts.mpl_core_program.to_account_info(),
             ],
             &[auction_seeds],
+        )?;
+        // The further pages close after the Core CPI above, which does not
+        // see them: a lamport move before a CPI must balance inside it.
+        close_extra_pages(
+            &ctx.accounts.auction,
+            ctx.remaining_accounts,
+            ctx.accounts.fold.is_some() && ctx.accounts.book_index.is_some(),
+            &ctx.accounts.seller.to_account_info(),
         )?;
         // The `close = seller` constraints return the auction's and the
         // book's lamports when this ends.
@@ -3153,31 +3350,65 @@ pub fn clearing_share(
         remaining > 0 && remaining <= total,
         AuctionError::InvalidAllocation
     );
+    let tally = tally_page(sizes, remaining, total)?;
+    require!(tally.total == total, AuctionError::SharesNotReady);
+    let earlier = sizes[..index as usize].iter().filter(|&&size| size > 0).count() as u64;
+    share_of(own, earlier, tally.floors, remaining, total)
+}
+
+/// What `tally_page` counts on a page: its bids at the clearing price, their
+/// sizes and the sum of their rounded-down shares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageTally {
+    pub count: u16,
+    pub total: u64,
+    pub floors: u64,
+}
+
+/// Counts the bids at the clearing price among `sizes` (see
+/// `clearing_share`).
+pub fn tally_page(sizes: &[u32], remaining: u64, total: u64) -> Result<PageTally> {
+    require!(
+        remaining > 0 && remaining <= total,
+        AuctionError::InvalidAllocation
+    );
     // Sizes are at most MAX_COLLECTION_SIZE, so no product here comes near
     // u64's limit.
-    let mut sum = 0u64;
-    let mut floors = 0u64;
-    let mut earlier = 0u64;
-    for (j, &size) in sizes.iter().enumerate() {
-        if size == 0 {
-            continue;
-        }
+    let mut tally = PageTally {
+        count: 0,
+        total: 0,
+        floors: 0,
+    };
+    for &size in sizes.iter().filter(|&&size| size > 0) {
         let size = size as u64;
-        sum = sum.checked_add(size).ok_or(AuctionError::MathOverflow)?;
+        tally.count = tally.count.checked_add(1).ok_or(AuctionError::MathOverflow)?;
+        tally.total = tally.total.checked_add(size).ok_or(AuctionError::MathOverflow)?;
         let floor = size
             .checked_mul(remaining)
             .ok_or(AuctionError::MathOverflow)?
             / total;
-        floors = floors.checked_add(floor).ok_or(AuctionError::MathOverflow)?;
-        if (j as u32) < index {
-            earlier += 1;
-        }
+        tally.floors = tally.floors.checked_add(floor).ok_or(AuctionError::MathOverflow)?;
     }
-    require!(sum == total, AuctionError::SharesNotReady);
+    Ok(tally)
+}
+
+/// The share of a bid of `own` NFTs at the clearing price, with `earlier`
+/// such bids before it (by index) and `floors` the sum of every such bid's
+/// rounded-down share (see `clearing_share`).
+pub fn share_of(own: u64, earlier: u64, floors: u64, remaining: u64, total: u64) -> Result<u64> {
+    require!(own > 0, AuctionError::NotAtClearing);
+    require!(
+        remaining > 0 && remaining <= total,
+        AuctionError::InvalidAllocation
+    );
     let leftover = remaining
         .checked_sub(floors)
         .ok_or(AuctionError::InvalidAllocation)?;
-    let share = own * remaining / total + u64::from(earlier < leftover);
+    let base = own
+        .checked_mul(remaining)
+        .ok_or(AuctionError::MathOverflow)?
+        / total;
+    let share = base + u64::from(earlier < leftover);
     require!(share <= own, AuctionError::InvalidAllocation);
     Ok(share)
 }
@@ -3393,7 +3624,7 @@ fn new_auction(
         crank_rewards,
         crank_pool: 0,
         extra_pages: 0,
-        page_bumps: [0; MAX_EXTRA_PAGES],
+        page_bumps: [0; STORED_PAGE_BUMPS],
         liquidity: LIQUIDITY_NONE,
         liquidity_floor: 0,
         extended_secs: 0,
@@ -3436,19 +3667,22 @@ pub fn bid_crank_fee(rewards: &CrankRewards) -> u64 {
 /// `bid_crank_fee`: nothing on the first page or on a page the seller paid
 /// for (`add_book_page`); on a page opened on demand (`open_book_page`), its
 /// share of what that page costs the pool, the page's rent (the second page
-/// also brings the paged clearing's state) and the clearing steps it adds
+/// also brings the paged clearing's state and the book's index) and the
+/// clearing steps it adds
 /// (`page_crank_fee`), spread over its `PAGE_BIDS` places and rounded up. A
 /// full page covers itself; the proceeds cover what a partly filled one
 /// does not (`crank_payment`).
 pub fn room_fee(auction: &Auction, page: u8, rent: &Rent) -> u64 {
-    if page == 0 || auction.prepaid_pages & (1 << page) != 0 {
+    if page == 0 || (page < MAX_PREPAID_PAGES && auction.prepaid_pages & (1 << page) != 0) {
         return 0;
     }
     let mut cost = rent
         .minimum_balance(8 + std::mem::size_of::<BidBook>())
         .saturating_add(page_crank_fee(&auction.crank_rewards, page));
     if page == 1 {
-        cost = cost.saturating_add(rent.minimum_balance(8 + ClearingFold::INIT_SPACE));
+        cost = cost
+            .saturating_add(rent.minimum_balance(8 + ClearingFold::INIT_SPACE))
+            .saturating_add(rent.minimum_balance(8 + BookIndex::INIT_SPACE));
     }
     cost.div_ceil(PAGE_BIDS as u64)
 }
@@ -3916,6 +4150,66 @@ pub fn bid_capacity(auction: &Auction) -> u32 {
     PAGE_BIDS * (1 + auction.extra_pages as u32)
 }
 
+/// Most pages the auction's book can have.
+pub fn max_pages(auction: &Auction) -> u8 {
+    match auction.kind {
+        AuctionKind::Token => MAX_TOKEN_PAGES,
+        AuctionKind::Collection => MAX_PAGES,
+    }
+}
+
+/// Makes `page` the auction's last page, keeping its bump if `Auction` has
+/// room for it.
+fn record_page_bump(auction: &mut Auction, page: u8, bump: u8) {
+    if (page as usize) <= STORED_PAGE_BUMPS {
+        auction.page_bumps[page as usize - 1] = bump;
+    }
+    auction.extra_pages = page;
+}
+
+/// Slots of `page` that hold bids, of an auction with `bid_count` bids.
+pub fn page_filled(bid_count: u32, page: u8) -> usize {
+    bid_count
+        .saturating_sub(page as u32 * PAGE_BIDS)
+        .min(PAGE_BIDS) as usize
+}
+
+/// The smallest deposit among a page's first `filled` slots (`u64::MAX` for
+/// none).
+pub fn page_smallest(book: &BidBook, filled: usize) -> u64 {
+    book.deposits[..filled.min(PAGE_BIDS_USIZE)]
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(u64::MAX)
+}
+
+/// The smallest deposit in a book whose pages, up to `last_page`, are all
+/// full.
+pub fn smallest_in_book(index: &BookIndex, last_page: u8) -> u64 {
+    index.smallest_deposits[..=last_page as usize]
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(u64::MAX)
+}
+
+/// Starts the index of a book that is getting its second page, from its
+/// first page as it stands.
+fn start_book_index(
+    index: &mut BookIndex,
+    auction_key: Pubkey,
+    bump: u8,
+    first_page: &AccountLoader<BidBook>,
+    auction: &Auction,
+) -> Result<()> {
+    index.auction = auction_key;
+    index.bump = bump;
+    index.smallest_deposits = [u64::MAX; MAX_PAGES as usize];
+    index.smallest_deposits[0] = page_smallest(&*first_page.load()?, page_filled(auction.bid_count, 0));
+    Ok(())
+}
+
 /// The page of the bid book that holds bid `index`, and its slot there.
 pub fn page_slot(index: u32) -> (u8, usize) {
     (
@@ -3938,17 +4232,23 @@ pub fn page_active_batches(bid_count: u32, page: u8) -> u8 {
 }
 
 /// Address of page `page` of the auction's book: `[BOOK_SEED, auction]` for
-/// the first, `[BOOK_SEED, auction, [page]]` for the others.
+/// the first, `[BOOK_SEED, auction, [page]]` for the others. `Auction` keeps
+/// the bumps of the first few; later pages' addresses are derived here, which
+/// is fine since no instruction reads more than one page.
 fn page_address(auction: &Account<Auction>, page: u8) -> Result<Pubkey> {
     let key = auction.key();
     let address = if page == 0 {
         Pubkey::create_program_address(&[BOOK_SEED, key.as_ref(), &[auction.book_bump]], &crate::ID)
     } else {
         require!(page <= auction.extra_pages, AuctionError::WrongBookPage);
-        Pubkey::create_program_address(
-            &[BOOK_SEED, key.as_ref(), &[page], &[auction.page_bumps[page as usize - 1]]],
-            &crate::ID,
-        )
+        if page as usize <= STORED_PAGE_BUMPS {
+            Pubkey::create_program_address(
+                &[BOOK_SEED, key.as_ref(), &[page], &[auction.page_bumps[page as usize - 1]]],
+                &crate::ID,
+            )
+        } else {
+            Ok(Pubkey::find_program_address(&[BOOK_SEED, key.as_ref(), &[page]], &crate::ID).0)
+        }
     };
     address.map_err(|_| AuctionError::WrongBookPage.into())
 }
@@ -3977,21 +4277,9 @@ fn extra_pages<'info>(
         .collect()
 }
 
-fn page_of<'a, 'info>(
-    first: &'a AccountLoader<'info, BidBook>,
-    extra: &'a [AccountLoader<'info, BidBook>],
-    page: u8,
-) -> &'a AccountLoader<'info, BidBook> {
-    if page == 0 {
-        first
-    } else {
-        &extra[page as usize - 1]
-    }
-}
-
 /// Closes the auction's further pages, passed in order as `remaining`, and
-/// requires its `ClearingFold` to be closing too (`has_fold`) when it has
-/// any; the rent goes to the seller.
+/// requires its `ClearingFold` and `BookIndex` to be closing too
+/// (`has_fold`) when it has any; the rent goes to the seller.
 fn close_extra_pages<'info>(
     auction: &Account<'info, Auction>,
     remaining: &'info [AccountInfo<'info>],
@@ -4537,8 +4825,10 @@ pub struct Auction {
     /// Pages of the bid book beyond the first (`add_book_page`), each room
     /// for `PAGE_BIDS` more bids, and the bumps of their addresses. Auctions
     /// opened before pages existed read these as zero: one page.
+    /// Only the first `STORED_PAGE_BUMPS` bumps are kept (see
+    /// `page_address`).
     pub extra_pages: u8,
-    pub page_bumps: [u8; MAX_EXTRA_PAGES],
+    pub page_bumps: [u8; STORED_PAGE_BUMPS],
     /// Token auctions: auto-liquidity state (`LIQUIDITY_*`, see
     /// `liquidity`) and the least SOL its pool must get. Auctions opened
     /// before auto-liquidity read zero: none.
@@ -4624,6 +4914,30 @@ pub struct ClearingFold {
     pub steps: u16,
     /// The digits of the clearing price fixed so far.
     pub prefix: u32,
+    pub bump: u8,
+}
+
+/// Per-page summaries of a book with more than one page
+/// (`[INDEX_SEED, auction]`, made with its second page), so that no
+/// instruction has to read every page.
+#[account(discriminator = INDEX_DISCRIMINATOR)]
+#[derive(InitSpace)]
+pub struct BookIndex {
+    pub auction: Pubkey,
+    /// The smallest deposit on each page, among its slots that hold a bid
+    /// (`u64::MAX` for none): once the book is full, the smallest of these is
+    /// the deposit a new bid must beat.
+    pub smallest_deposits: [u64; MAX_PAGES as usize],
+    /// Collections: pages whose bids at the clearing price are counted
+    /// (`tally_clearing_page`), in order from the first.
+    pub tallied_pages: u8,
+    /// Bids at the clearing price on the pages before each counted page.
+    pub at_before: [u16; MAX_PAGES as usize],
+    /// The counted bids at the clearing price, their sizes and the sum of
+    /// their rounded-down shares (see `clearing_share`).
+    pub at_count: u16,
+    pub at_total: u64,
+    pub at_floors: u64,
     pub bump: u8,
 }
 
@@ -4989,6 +5303,21 @@ pub struct AddBookPage<'info> {
         bump,
     )]
     pub fold: Box<Account<'info, ClearingFold>>,
+    /// The book's first page, read when its index starts.
+    #[account(
+        seeds = [BOOK_SEED, auction.key().as_ref()],
+        bump = auction.book_bump,
+    )]
+    pub book: AccountLoader<'info, BidBook>,
+    /// Made with the second page.
+    #[account(
+        init_if_needed,
+        payer = seller,
+        space = 8 + BookIndex::INIT_SPACE,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump,
+    )]
+    pub book_index: Box<Account<'info, BookIndex>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -5021,6 +5350,21 @@ pub struct OpenBookPage<'info> {
         bump,
     )]
     pub fold: Box<Account<'info, ClearingFold>>,
+    /// The book's first page, read when its index starts.
+    #[account(
+        seeds = [BOOK_SEED, auction.key().as_ref()],
+        bump = auction.book_bump,
+    )]
+    pub book: AccountLoader<'info, BidBook>,
+    /// Made with the second page.
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + BookIndex::INIT_SPACE,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump,
+    )]
+    pub book_index: Box<Account<'info, BookIndex>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -5184,6 +5528,14 @@ pub struct CloseCollectionAuction<'info> {
         bump = fold.bump,
     )]
     pub fold: Option<Box<Account<'info, ClearingFold>>>,
+    /// Only for an auction with more than one page: its book's index.
+    #[account(
+        mut,
+        close = seller,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump = book_index.bump,
+    )]
+    pub book_index: Option<Box<Account<'info, BookIndex>>>,
     /// CHECK: the auction's collection, created with it.
     #[account(mut, address = auction.mint @ AuctionError::WrongAssetAccounts)]
     pub collection: UncheckedAccount<'info>,
@@ -5241,13 +5593,51 @@ pub struct FinalizeShare<'info> {
         bump = auction.bump,
     )]
     pub auction: Box<Account<'info, Auction>>,
-    #[account(
-        seeds = [BOOK_SEED, auction.key().as_ref()],
-        bump = auction.book_bump,
-    )]
+    /// The page of the book that holds the bid; checked in the handler.
     pub book: AccountLoader<'info, BidBook>,
     #[account(mut, has_one = auction @ AuctionError::WrongBidAccounts)]
     pub bid: Box<Account<'info, Bid>>,
+    /// Only for a book with more than one page: its index.
+    #[account(
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump = book_index.bump,
+    )]
+    pub book_index: Option<Box<Account<'info, BookIndex>>>,
+}
+
+/// Permissionless: only counts.
+#[derive(Accounts)]
+pub struct TallyClearingPage<'info> {
+    #[account(
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    /// The next page to count; checked in the handler.
+    pub book: AccountLoader<'info, BidBook>,
+    #[account(
+        mut,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump = book_index.bump,
+    )]
+    pub book_index: Box<Account<'info, BookIndex>>,
+}
+
+/// Permissionless: the rent only goes to the seller.
+#[derive(Accounts)]
+pub struct CloseBookPage<'info> {
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    /// CHECK: the auction's seller, who gets the rent.
+    #[account(mut, address = auction.seller @ AuctionError::Unauthorized)]
+    pub seller: UncheckedAccount<'info>,
+    /// The book's last page; checked in the handler.
+    #[account(mut)]
+    pub page_book: AccountLoader<'info, BidBook>,
 }
 
 #[derive(Accounts)]
@@ -5261,12 +5651,16 @@ pub struct PlaceBid<'info> {
         bump = auction.bump,
     )]
     pub auction: Box<Account<'info, Auction>>,
+    /// The page of the book the bid goes to; checked in the handler.
+    #[account(mut)]
+    pub book: AccountLoader<'info, BidBook>,
+    /// Only for a book with more than one page: its index.
     #[account(
         mut,
-        seeds = [BOOK_SEED, auction.key().as_ref()],
-        bump = auction.book_bump,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump = book_index.bump,
     )]
-    pub book: AccountLoader<'info, BidBook>,
+    pub book_index: Option<Box<Account<'info, BookIndex>>>,
     #[account(
         init,
         payer = bidder,
@@ -5299,6 +5693,13 @@ pub struct IncreaseBid<'info> {
     /// The page of the book that holds the bid; checked in the handler.
     #[account(mut)]
     pub book: AccountLoader<'info, BidBook>,
+    /// Only for a book with more than one page: its index.
+    #[account(
+        mut,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump = book_index.bump,
+    )]
+    pub book_index: Option<Box<Account<'info, BookIndex>>>,
     #[account(
         mut,
         has_one = bidder @ AuctionError::Unauthorized,
@@ -5416,6 +5817,14 @@ pub struct CloseAuction<'info> {
         bump = fold.bump,
     )]
     pub fold: Option<Box<Account<'info, ClearingFold>>>,
+    /// Only for an auction with more than one page: its book's index.
+    #[account(
+        mut,
+        close = seller,
+        seeds = [INDEX_SEED, auction.key().as_ref()],
+        bump = book_index.bump,
+    )]
+    pub book_index: Option<Box<Account<'info, BookIndex>>>,
     pub mint: Box<InterfaceAccount<'info, Mint>>,
     /// CHECK: the auction's vault, which may already be closed; inspected in
     /// the handler.
@@ -6113,6 +6522,14 @@ pub struct BookPageOpened {
 }
 
 #[event]
+pub struct ClearingPageTallied {
+    pub auction: Pubkey,
+    pub page: u8,
+    /// Bids at the clearing price on that page.
+    pub bids_at_price: u16,
+}
+
+#[event]
 pub struct BookPageAdded {
     pub auction: Pubkey,
     pub page: u8,
@@ -6407,6 +6824,8 @@ pub enum AuctionError {
     WrongPoolAccounts,
     #[msg("A new page opens only once every page so far is full")]
     BookNotFull,
+    #[msg("Every page is already counted")]
+    AlreadyTallied,
 }
 
 // ---------------------------------------------------------------------------
@@ -6543,6 +6962,7 @@ mod tests {
         }
         assert_eq!(fold_total_steps(2), 9);
         assert_eq!(fold_total_steps(4), 25);
+        assert_eq!(fold_total_steps(MAX_PAGES), 313);
     }
 
     #[test]
@@ -6550,7 +6970,8 @@ mod tests {
         assert_eq!(page_slot(0), (0, 0));
         assert_eq!(page_slot(255), (0, 255));
         assert_eq!(page_slot(256), (1, 0));
-        assert_eq!(page_slot(MAX_BIDS - 1), (3, 255));
+        assert_eq!(page_slot(MAX_TOKEN_BIDS - 1), (3, 255));
+        assert_eq!(page_slot(MAX_BIDS - 1), (39, 255));
         assert_eq!(page_active_batches(1, 0), 1);
         assert_eq!(page_active_batches(256, 0), 64);
         assert_eq!(page_active_batches(256, 1), 0);
@@ -6561,8 +6982,58 @@ mod tests {
         assert_eq!(pages_in_use(&auction), 1);
         auction.extra_pages = 3;
         auction.bid_count = 257;
-        assert_eq!(bid_capacity(&auction), MAX_BIDS);
+        assert_eq!(bid_capacity(&auction), MAX_TOKEN_BIDS);
         assert_eq!(pages_in_use(&auction), 2);
+        // A token auction stops at four pages, a collection at forty.
+        assert_eq!(max_pages(&auction), MAX_TOKEN_PAGES);
+        auction.kind = AuctionKind::Collection;
+        assert_eq!(max_pages(&auction), MAX_PAGES);
+        auction.extra_pages = MAX_PAGES - 1;
+        auction.bid_count = MAX_BIDS;
+        assert_eq!(bid_capacity(&auction), 10_240);
+        assert_eq!(pages_in_use(&auction), 40);
+        assert_eq!(page_filled(MAX_BIDS, 39), 256);
+        assert_eq!(page_filled(MAX_BIDS - 10, 39), 246);
+        assert_eq!(page_filled(300, 2), 0);
+        // Only the first pages' bumps are kept; the last one is still known.
+        let mut auction = blank_auction();
+        record_page_bump(&mut auction, 1, 254);
+        record_page_bump(&mut auction, 3, 253);
+        record_page_bump(&mut auction, 4, 252);
+        assert_eq!(auction.page_bumps, [254, 0, 253]);
+        assert_eq!(auction.extra_pages, 4);
+    }
+
+    #[test]
+    fn the_book_index_finds_the_smallest_deposit() {
+        let mut book: BidBook = bytemuck::Zeroable::zeroed();
+        // Empty slots do not count.
+        assert_eq!(page_smallest(&book, 0), u64::MAX);
+        book.deposits[0] = 50;
+        book.deposits[1] = 20;
+        book.deposits[2] = 30;
+        assert_eq!(page_smallest(&book, 1), 50);
+        assert_eq!(page_smallest(&book, 3), 20);
+        let mut index: BookIndex = BookIndex {
+            auction: Pubkey::default(),
+            smallest_deposits: [u64::MAX; MAX_PAGES as usize],
+            tallied_pages: 0,
+            at_before: [0; MAX_PAGES as usize],
+            at_count: 0,
+            at_total: 0,
+            at_floors: 0,
+            bump: 0,
+        };
+        index.smallest_deposits[0] = 40;
+        index.smallest_deposits[1] = 7;
+        index.smallest_deposits[2] = 9;
+        assert_eq!(smallest_in_book(&index, 2), 7);
+        // Pages past the last one are ignored.
+        index.smallest_deposits[3] = 1;
+        assert_eq!(smallest_in_book(&index, 2), 7);
+        assert_eq!(smallest_in_book(&index, 3), 1);
+        // The index stays small: about 0.004 SOL of rent.
+        assert!(8 + BookIndex::INIT_SPACE < 600);
     }
 
     /// `clearing_arguments` must list exactly what `ArgBuilder` would, in the
@@ -6892,7 +7363,7 @@ mod tests {
         let a = Auction {
             filled: true,
             clearing_price: u32::MAX,
-            weight_above: u64::MAX as u128 * MAX_BIDS as u128,
+            weight_above: u64::MAX as u128 * MAX_TOKEN_BIDS as u128,
             ..token_auction(u64::MAX, MAX_PRICE_UNIT, 1)
         };
         assert!(token_award(&a, OUTCOME_ABOVE, u64::MAX).is_ok());
@@ -7030,6 +7501,51 @@ mod tests {
                 sum += share;
             }
             assert_eq!(sum, remaining);
+        }
+    }
+
+    #[test]
+    fn shares_counted_page_by_page_match_the_whole_book() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..300 {
+            let mut sizes = vec![0u32; MAX_BIDS as usize];
+            let mut total = 0u64;
+            for _ in 0..(next() % 60 + 1) {
+                let index = (next() % MAX_BIDS as u64) as usize;
+                if sizes[index] == 0 {
+                    sizes[index] = (next() % 10 + 1) as u32;
+                    total += sizes[index] as u64;
+                }
+            }
+            let remaining = next() % total + 1;
+            // What `tally_clearing_page` keeps, page by page.
+            let mut at_before = [0u16; MAX_PAGES as usize];
+            let (mut count, mut sum, mut floors) = (0u16, 0u64, 0u64);
+            for (page, chunk) in sizes.chunks(PAGE_BIDS_USIZE).enumerate() {
+                let tally = tally_page(chunk, remaining, total).unwrap();
+                at_before[page] = count;
+                count += tally.count;
+                sum += tally.total;
+                floors += tally.floors;
+            }
+            assert_eq!(sum, total);
+            for (index, &size) in sizes.iter().enumerate() {
+                if size == 0 {
+                    continue;
+                }
+                let (page, local) = page_slot(index as u32);
+                let start = page as usize * PAGE_BIDS_USIZE;
+                let before = sizes[start..start + local].iter().filter(|&&s| s > 0).count() as u64;
+                let paged = share_of(size as u64, at_before[page as usize] as u64 + before, floors, remaining, total)
+                    .unwrap();
+                assert_eq!(paged, clearing_share(&sizes, index as u32, remaining, total).unwrap());
+            }
         }
     }
 
@@ -7572,8 +8088,13 @@ mod tests {
         assert_eq!(room_fee(&a, 0, &rent), 0);
         let page_rent = rent.minimum_balance(8 + std::mem::size_of::<BidBook>());
         let fold_rent = rent.minimum_balance(8 + ClearingFold::INIT_SPACE);
-        // The second page: its rent, the clearing's state and nine steps.
-        assert_eq!(room_fee(&a, 1, &rent), (page_rent + fold_rent + 9 * 25_000_000).div_ceil(256));
+        let index_rent = rent.minimum_balance(8 + BookIndex::INIT_SPACE);
+        // The second page: its rent, the clearing's state, the book's index
+        // and nine steps.
+        assert_eq!(
+            room_fee(&a, 1, &rent),
+            (page_rent + fold_rent + index_rent + 9 * 25_000_000).div_ceil(256)
+        );
         // Further pages: their rent and eight more steps.
         assert_eq!(room_fee(&a, 2, &rent), (page_rent + 8 * 25_000_000).div_ceil(256));
         // About 0.0011 SOL a bid with the default rewards.
@@ -7581,6 +8102,11 @@ mod tests {
         // A page the seller paid for costs bids nothing extra.
         a.prepaid_pages = 1 << 2;
         assert_eq!(room_fee(&a, 2, &rent), 0);
+        // The last pages of a collection's book cost the same as any other.
+        a.prepaid_pages = u8::MAX;
+        for page in [8, 20, MAX_PAGES - 1] {
+            assert_eq!(room_fee(&a, page, &rent), (page_rent + 8 * 25_000_000).div_ceil(256));
+        }
     }
 
     #[test]
