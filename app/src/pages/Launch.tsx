@@ -53,11 +53,15 @@ import { Button, Notice, useAction, useLoader, useMetadataImage, useNow } from "
 import {
   buildCreateAuction,
   type LiquidityTerms,
+  type SaleRules,
+  NO_RULES,
+  buildSetAllowlist,
   buildCreateCollectionAuction,
   buildCreateToken,
   buildItemList,
 } from "../lib/actions";
 import { UploadError, freeTarget, paidTarget } from "../lib/arweave";
+import { MAX_ALLOWLIST, allowlistRoot, parseWallets, publishAllowlist } from "../lib/allowlist";
 import {
   type TokenInfo,
   auctionAddress,
@@ -415,6 +419,11 @@ export function Launch() {
   const [lpPercent, setLpPercent] = useState("30");
   const [lpFloor, setLpFloor] = useState("1");
   const [lpFee, setLpFee] = useState<number>(100);
+  // Sale rules (token sales only): a minimum raise, an allowlist and a cap per wallet.
+  const [minRaiseInput, setMinRaiseInput] = useState("");
+  const [allowOn, setAllowOn] = useState(false);
+  const [allowText, setAllowText] = useState("");
+  const [capInput, setCapInput] = useState("");
   /** When bidding opens, as a `datetime-local` value; null for right away. */
   const [startAt, setStartAt] = useState<string | null>(null);
   const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "token" | "auction">("form");
@@ -839,6 +848,41 @@ export function Launch() {
     return { problems, terms, atMin };
   }, [collection, lpOn, lpPercent, lpFloor, lpFee, plan.sellAmount, plan.saleValue, tokenDecimals, source, supply, existingBalance, fees.data]);
 
+  const rules = useMemo(() => {
+    const problems: string[] = [];
+    if (collection) return { problems, value: NO_RULES, wallets: null, invalid: [] as string[] };
+    let minRaise = 0n;
+    if (minRaiseInput.trim() !== "") {
+      const typed = parseSol(minRaiseInput);
+      if (!typed || typed <= 0n) problems.push("Enter the minimum raise in SOL, above zero, or leave it empty.");
+      else minRaise = typed;
+    }
+    let walletCap = 0n;
+    let wallets = null;
+    let invalid: string[] = [];
+    if (allowOn) {
+      const parsed = parseWallets(allowText);
+      wallets = parsed.wallets;
+      invalid = parsed.invalid;
+      if (wallets.length === 0) problems.push("Add the wallets that may bid to the allowlist.");
+      if (wallets.length > MAX_ALLOWLIST) problems.push(`An allowlist holds at most ${formatCount(MAX_ALLOWLIST)} wallets.`);
+      if (invalid.length > 0)
+        problems.push(
+          invalid.length === 1
+            ? "One entry in the allowlist is not a wallet address."
+            : `${formatCount(invalid.length)} entries in the allowlist are not wallet addresses.`
+        );
+      if (capInput.trim() !== "") {
+        const typed = parseSol(capInput);
+        if (!typed || typed <= 0n) problems.push("Enter the most a wallet may deposit in SOL, above zero, or leave it empty.");
+        else if (plan.minDeposit && typed < plan.minDeposit) problems.push("The most per wallet must allow at least the smallest bid.");
+        else walletCap = typed;
+      }
+    }
+    const value: SaleRules = { minRaise, walletCap, allowlist: allowOn };
+    return { problems, value, wallets, invalid };
+  }, [collection, minRaiseInput, allowOn, allowText, capInput, plan.minDeposit]);
+
   const onUploadProgress = (done: number, total: number) => setUploadProgress([done, total]);
 
   /** A fresh auction address for this wallet, kept until a launch goes through. */
@@ -855,6 +899,7 @@ export function Launch() {
   const problems = [
     ...plan.problems,
     ...lp.problems,
+    ...rules.problems,
     ...(startIssue ? [startIssue] : []),
     ...(crankIssue ? [crankIssue] : []),
   ];
@@ -943,6 +988,13 @@ export function Launch() {
       } else {
         let mint: PublicKey;
         let tokenProgram: PublicKey;
+        // The allowlist is published first, so a failed upload never leaves
+        // a sale that nobody can join.
+        let list: { root: Uint8Array; uri: string } | null = null;
+        if (rules.value.allowlist && rules.wallets) {
+          setStepState("upload");
+          list = { root: allowlistRoot(rules.wallets), uri: await publishAllowlist(rules.wallets, freeTarget()) };
+        }
         if (source === "new") {
           let metadataUri = tokenFiles === "link" ? uri.trim() : "";
           if (uploadingToken && tokenHasMetadata) {
@@ -988,9 +1040,16 @@ export function Launch() {
             startTime: chosenStart(),
           },
           fees.data,
-          lp.terms
+          lp.terms,
+          rules.value
         );
-        await sendTransaction(built.tx, signer);
+        if (list) {
+          // The sale and then its list; until the list is set nobody can bid.
+          const setList = await buildSetAllowlist(signer.publicKey, built.auction, list.root, list.uri);
+          await sendTransactions([built.tx, setList], signer);
+        } else {
+          await sendTransaction(built.tx, signer);
+        }
         auction = built.auction;
       }
       window.location.hash = `#/auction/${auction.toBase58()}`;
@@ -1522,6 +1581,87 @@ export function Launch() {
                     and {formatSol(LP_RENT_DEPOSIT)} SOL for its rent. The pool takes only the tokens its SOL buys at
                     the clearing price; the rest, and the rent it does not use, come back to you.
                   </p>
+                </>
+              ) : null}
+            </fieldset>
+          )}
+
+          {collection ? null : (
+            <fieldset className="group">
+              <legend className="group__title">Sale rules</legend>
+              <div className="field">
+                <label htmlFor="minraise">Minimum raise (SOL, optional)</label>
+                <input
+                  id="minraise"
+                  className="field__short"
+                  inputMode="decimal"
+                  value={minRaiseInput}
+                  placeholder="None"
+                  onChange={(e) => setMinRaiseInput(e.target.value.replace(/[^0-9.]/g, ""))}
+                  aria-describedby="minraise-hint"
+                />
+                <p id="minraise-hint" className="hint">
+                  The least the winners must pay in all. If the bids would raise less, the sale does not go ahead:
+                  every bidder gets their whole deposit back and you keep your {symbolText}.
+                </p>
+              </div>
+              <label className="check">
+                <input type="checkbox" checked={allowOn} onChange={(e) => setAllowOn(e.target.checked)} />
+                <span>
+                  <span className="check__title">Only wallets on an allowlist can bid</span>
+                  <span className="check__text">
+                    The list is published with the sale and cannot change; each wallet proves it is on it the first
+                    time it bids.
+                  </span>
+                </span>
+              </label>
+              {allowOn ? (
+                <>
+                  <div className="field">
+                    <label htmlFor="allowlist">Wallets (one per line, or separated by commas)</label>
+                    <textarea
+                      id="allowlist"
+                      rows={6}
+                      value={allowText}
+                      onChange={(e) => setAllowText(e.target.value)}
+                      aria-describedby="allowlist-hint"
+                      spellCheck={false}
+                    />
+                    <input
+                      type="file"
+                      accept=".csv,.txt,text/csv,text/plain"
+                      aria-label="Load wallets from a file"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (file) setAllowText(await file.text());
+                        e.target.value = "";
+                      }}
+                    />
+                    <p id="allowlist-hint" className={`hint${rules.invalid.length > 0 ? " hint--error" : ""}`}>
+                      {rules.wallets && rules.wallets.length > 0
+                        ? `${plural(rules.wallets.length, "wallet")} on the list.`
+                        : `Up to ${formatCount(MAX_ALLOWLIST)} wallets; repeats count once.`}
+                      {rules.invalid.length > 0
+                        ? ` Not wallet addresses: ${rules.invalid.slice(0, 3).join(", ")}${rules.invalid.length > 3 ? ", …" : ""}.`
+                        : ""}
+                    </p>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="walletcap">Most a wallet may deposit (SOL, optional)</label>
+                    <input
+                      id="walletcap"
+                      className="field__short"
+                      inputMode="decimal"
+                      value={capInput}
+                      placeholder="No cap"
+                      onChange={(e) => setCapInput(e.target.value.replace(/[^0-9.]/g, ""))}
+                      aria-describedby="walletcap-hint"
+                    />
+                    <p id="walletcap-hint" className="hint">
+                      Counted across all of a wallet's bids, so no single buyer can take most of the sale. A budget
+                      can never be larger than its deposit.
+                    </p>
+                  </div>
                 </>
               ) : null}
             </fieldset>

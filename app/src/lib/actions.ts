@@ -77,7 +77,12 @@ import {
   randomU64,
   revealMissed,
   sharesAreFinal,
+  allowlistAddress,
+  fetchAllowlistInfo,
+  fetchParticipant,
+  participantAddress,
 } from "./chain";
+import { allowlistProof, fetchAllowlist } from "./allowlist";
 import { type ListedItem, itemBatches } from "./items";
 
 // ---------------------------------------------------------------------------
@@ -206,13 +211,27 @@ const bn = (v: bigint | number) => new BN(v.toString());
 /** The seller accepts exactly the fees the page showed; higher fees make opening fail. */
 const acceptedFees = (fees: FeeConfig) => ({ listingFee: bn(fees.listingFee), saleFeeBps: fees.saleFeeBps });
 
+/**
+ * A token sale's optional rules: a minimum raise (lamports the winners must
+ * pay in all), an allowlist and, with an allowlist, a cap on each wallet's
+ * deposits (lamports). Fixed when the sale opens.
+ */
+export interface SaleRules {
+  minRaise: bigint;
+  walletCap: bigint;
+  allowlist: boolean;
+}
+
+export const NO_RULES: SaleRules = { minRaise: 0n, walletCap: 0n, allowlist: false };
+
 export async function buildCreateAuction(
   seller: PublicKey,
   mint: PublicKey,
   tokenProgram: PublicKey,
   terms: TokenSaleTerms,
   fees: FeeConfig,
-  liquidity: LiquidityTerms | null = null
+  liquidity: LiquidityTerms | null = null,
+  rules: SaleRules = NO_RULES
 ) {
   const seed = randomU64();
   const auction = auctionAddress(seller, seed);
@@ -227,7 +246,8 @@ export async function buildCreateAuction(
         durationSecs: bn(terms.durationSecs),
         startTime: bn(terms.startTime),
       },
-      acceptedFees(fees)
+      acceptedFees(fees),
+      { minRaise: bn(rules.minRaise), walletCap: bn(rules.walletCap), allowlist: rules.allowlist }
     )
     .accountsPartial({
       seller,
@@ -245,6 +265,64 @@ export async function buildCreateAuction(
   if (liquidity) tx.add(await planLiquidityInstruction(seller, auction, mint, tokenProgram, liquidity));
   return { tx, auction };
 }
+
+/**
+ * Records a sale's allowlist: the root of its wallets' tree and the link to
+ * the published list (`publishAllowlist`). Only the seller, once, before the
+ * first bid; until then nobody can bid.
+ */
+export function buildSetAllowlist(seller: PublicKey, auction: PublicKey, root: Uint8Array, uri: string) {
+  return program.methods
+    .setAllowlist(Array.from(root), uri)
+    .accountsPartial({ seller, auction, list: allowlistAddress(auction) })
+    .transaction();
+}
+
+/**
+ * Where a wallet stands in a sale with an allowlist: whether the list holds
+ * it, whether it has joined, and what it has deposited so far.
+ */
+export interface Admission {
+  listed: boolean;
+  joined: boolean;
+  deposited: bigint;
+}
+
+export async function fetchAdmission(auction: Auction, wallet: PublicKey): Promise<Admission> {
+  const participant = await fetchParticipant(auction.address, wallet);
+  if (participant) return { listed: true, joined: true, deposited: participant.deposited };
+  const info = await fetchAllowlistInfo(auction.address);
+  if (!info) return { listed: false, joined: false, deposited: 0n };
+  const wallets = await fetchAllowlist(info.uri, info.root);
+  return { listed: wallets.some((w) => w.equals(wallet)), joined: false, deposited: 0n };
+}
+
+/**
+ * Admits `wallet` to a sale with an allowlist, with its proof from the
+ * published list. Sent once, before the wallet's first bid; null when the
+ * sale has no allowlist or the wallet already joined.
+ */
+export async function buildJoinAuction(wallet: PublicKey, auction: Auction): Promise<Transaction | null> {
+  if (!auction.allowlist) return null;
+  if (await fetchParticipant(auction.address, wallet)) return null;
+  const info = await fetchAllowlistInfo(auction.address);
+  if (!info) throw new Error("The seller has not published this sale's allowlist yet.");
+  const proof = allowlistProof(await fetchAllowlist(info.uri, info.root), wallet);
+  if (!proof) throw new Error("This wallet is not on the sale's allowlist.");
+  return program.methods
+    .joinAuction(proof.map((node) => Array.from(node)))
+    .accountsPartial({
+      wallet,
+      auction: auction.address,
+      list: allowlistAddress(auction.address),
+      participant: participantAddress(auction.address, wallet),
+    })
+    .transaction();
+}
+
+/** A wallet's admission, which its bids in a sale with an allowlist pass. */
+const participantIfListed = (auction: Auction, wallet: PublicKey) =>
+  auction.allowlist ? participantAddress(auction.address, wallet) : null;
 
 // ---------------------------------------------------------------------------
 // Auto-liquidity
@@ -393,7 +471,11 @@ export async function buildRefundFailedBid(payer: PublicKey, bid: Bid) {
     .refundFailedBid()
     .accountsPartial({ bidder: bid.bidder, auction: bid.auction, bid: bid.address })
     .instruction();
-  return new Transaction().add(refund, ...(await noteCloseAfter(payer, bid)));
+  return new Transaction().add(
+    refund,
+    ...(await noteCloseAfter(payer, bid)),
+    ...(await participantCloseAfter(bid.auction, bid.bidder))
+  );
 }
 
 /**
@@ -552,6 +634,11 @@ export async function buildPlaceBid(
   if (eviction && deposit < eviction.minimumDeposit) {
     throw new Error("This auction is full. Raise your deposit to replace the smallest bid.");
   }
+  if (auction.allowlist) {
+    const admission = await fetchParticipant(auction.address, bidder);
+    // The program checks the cap; the form shows what is left of it.
+    if (!admission) throw new Error("This wallet is not on the sale's allowlist, or has not joined the sale yet.");
+  }
   const seed = randomU64();
   const bid = bidAddress(auction.address, bidder, seed);
   // The program only accepts a ciphertext encrypted under this bid's own
@@ -568,6 +655,7 @@ export async function buildPlaceBid(
     minDeposit: bn(auction.minDeposit),
     maxPerBid: auction.maxPerBid,
     endTime: bn(auction.endTime),
+    minRaise: bn(auction.minRaise),
   };
   // A full book that can still grow opens its next page first, in the same
   // transaction, and the bid lands on it. The settlement fund pays the
@@ -597,6 +685,10 @@ export async function buildPlaceBid(
       bid,
       evictedBid: eviction ? eviction.bid.address : null,
       evictedBidder: eviction ? eviction.bid.bidder : null,
+      participant: participantIfListed(auction, bidder),
+      // A wallet replacing its own bid passes its admission once.
+      evictedParticipant:
+        eviction && !eviction.bid.bidder.equals(bidder) ? participantIfListed(auction, eviction.bid.bidder) : null,
     })
     .preInstructions(
       growing
@@ -656,6 +748,7 @@ export async function buildIncreaseBid(
       book: bookAddress(auction.address, pageOf(bid.index)),
       bookIndex: indexIfPaged(auction),
       bid: bid.address,
+      participant: participantIfListed(auction, bidder),
     })
     .transaction();
 }
@@ -842,6 +935,22 @@ async function closeBidInstructions(payer: PublicKey, bid: Bid): Promise<Transac
   return [await closeBidInstruction(bid), ...(await noteCloseAfter(payer, bid))];
 }
 
+/**
+ * Once bidding is over, a wallet's admission to a sale with an allowlist is
+ * no longer needed: closing it returns its rent to the wallet. Added after a
+ * bid's own close; nothing when the wallet has none.
+ */
+async function participantCloseAfter(auction: PublicKey, wallet: PublicKey): Promise<TransactionInstruction[]> {
+  const participant = participantAddress(auction, wallet);
+  if (!(await connection.getAccountInfo(participant))) return [];
+  return [
+    await program.methods
+      .closeParticipant()
+      .accountsPartial({ wallet, auction, participant })
+      .instruction(),
+  ];
+}
+
 /** Mints up to `MAX_NFTS_PER_CLAIM` of a winner's NFTs: the ones for its places from `firstPosition` on. */
 function claimNftsInstruction(payer: PublicKey, auction: Auction, bid: Bid, firstPosition: number, count: number) {
   return program.methods
@@ -886,6 +995,7 @@ export async function buildCollect(payer: PublicKey, auction: Auction, bid: Bid,
     const tx = new Transaction();
     if (bid.won > 0n && !bid.delivered) tx.add(await claimTokensInstruction(payer, auction, bid));
     tx.add(...(await closeBidInstructions(payer, bid)));
+    if (auction.allowlist) tx.add(...(await participantCloseAfter(auction.address, bid.bidder)));
     return [tx];
   }
   let owed = bid.delivered ? 0 : Number(bid.won) - bid.nftsClaimed;
@@ -1008,6 +1118,9 @@ async function closeInstruction(auction: Auction, afterPageCloses = false) {
       .remainingAccounts(pages)
       .instruction();
   }
+  // A sale's allowlist closes with it, once the seller set it.
+  const list =
+    auction.allowlist && (await connection.getAccountInfo(allowlistAddress(auction.address))) ? allowlistAddress(auction.address) : null;
   return program.methods
     .closeAuction()
     .accountsPartial({
@@ -1015,6 +1128,7 @@ async function closeInstruction(auction: Auction, afterPageCloses = false) {
       book: bookAddress(auction.address),
       fold: foldIfPaged(auction),
       bookIndex: indexIfPaged(auction),
+      list,
     })
     .remainingAccounts(pages)
     .instruction();

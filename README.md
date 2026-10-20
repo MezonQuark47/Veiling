@@ -185,6 +185,33 @@ bidding (`EMERGENCY_DELAY_SECS`):
   still finish until the seller claims, except the NFT shuffle: if its seed
   is not drawn by then, each winner's places are their own NFT numbers.
 
+### Sale rules
+
+A token sale can open with rules (`SaleRules`, fixed in `create_auction`):
+
+- **Minimum raise** (`min_raise`, lamports): when the price is found,
+  `apply_clearing` compares what the winners would pay in all
+  (`expected_gross_proceeds`) with it. A sale below it sets `raise_missed`
+  and does not go ahead: `settle_bid` is refused, every bid is refunded in
+  full by `refund_failed_bid` (no MPC), the seller takes all the tokens back
+  with `claim_proceeds`, and a planned pool is released. The minimum is part
+  of `ExpectedTerms`, so a bid commits to it.
+- **Allowlist** (`allowlist`): only listed wallets can bid. The seller
+  records the root of a Merkle tree of the wallets and a link to the list
+  with `set_allowlist`, once, before any bid; until then nobody can join.
+  Leaves are `sha256(0x00 || wallet)` and nodes `sha256(0x01 || low ||
+  high)` with the children in byte order, so proofs need no direction bits
+  and a node cannot pass for a leaf. A wallet joins once with its proof
+  (`join_auction`, at most 24 hashes), which makes its `Participant`; its
+  bids and raises pass it. `close_participant` returns its rent once bidding
+  is over, and the list's account closes with the auction. The app publishes
+  the list on Arweave as chunks of 2,000 addresses plus an index naming the
+  root, and checks a downloaded list against the root before using it.
+- **Most per wallet** (`wallet_cap`, lamports, only with an allowlist): the
+  most one wallet may deposit across its bids, counted in its `Participant`.
+  A replaced bid's deposit comes off its wallet's count. Since a budget never
+  exceeds its deposit, this caps what one wallet can buy.
+
 ### Auto-liquidity
 
 A token sale can open a Meteora DAMM v2 pool the moment it settles, at

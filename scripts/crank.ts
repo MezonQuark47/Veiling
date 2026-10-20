@@ -199,8 +199,12 @@ async function main() {
     }
   }
 
-  if (variant(auction.status) === "settling" && (auction.liquidity ?? 0) === LIQUIDITY_FAILED) {
-    console.log("The sale missed its pool's minimum: refunding every bid in full.");
+  if (variant(auction.status) === "settling" && ((auction.liquidity ?? 0) === LIQUIDITY_FAILED || auction.raiseMissed)) {
+    console.log(
+      auction.raiseMissed
+        ? "The sale missed its minimum raise: refunding every bid in full."
+        : "The sale missed its pool's minimum: refunding every bid in full."
+    );
     for (const b of (await fetchBids()).filter((b) => variant(b.account.status) === "sealed")) {
       console.log(`Refunding bid ${b.account.index}...`);
       await program.methods

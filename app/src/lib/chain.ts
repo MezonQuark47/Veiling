@@ -99,6 +99,30 @@ export function foldAddress(auction: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([seed("fold"), auction.toBytes()], PROGRAM_ID)[0];
 }
 
+/** A token sale's allowlist: the root of its wallets' tree and where the list is published. */
+export function allowlistAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("allowlist"), auction.toBytes()], PROGRAM_ID)[0];
+}
+
+/** A wallet's admission to a sale with an allowlist (`join_auction`). */
+export function participantAddress(auction: PublicKey, wallet: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("participant"), auction.toBytes(), wallet.toBytes()], PROGRAM_ID)[0];
+}
+
+/** A sale's allowlist as the program keeps it, or null before the seller sets it. */
+export async function fetchAllowlistInfo(auction: PublicKey): Promise<{ root: Uint8Array; uri: string } | null> {
+  if (MOCK) return null;
+  const list = await program.account.allowlist.fetchNullable(allowlistAddress(auction));
+  return list ? { root: Uint8Array.from(list.root), uri: list.uri } : null;
+}
+
+/** What a wallet admitted to a sale has deposited across its bids, or null if it has not joined. */
+export async function fetchParticipant(auction: PublicKey, wallet: PublicKey): Promise<{ deposited: bigint } | null> {
+  if (MOCK) return null;
+  const p = await program.account.participant.fetchNullable(participantAddress(auction, wallet));
+  return p ? { deposited: big(p.deposited) } : null;
+}
+
 /** The per-page summaries of a book with more than one page (`BookIndex`). */
 export function bookIndexAddress(auction: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([seed("index"), auction.toBytes()], PROGRAM_ID)[0];
@@ -243,6 +267,14 @@ export interface Auction {
   extendedSecs: number;
   /** Pages the seller paid for ahead of time, bit `p` for page `p`; bids there pay no room fee. */
   prepaidPages: number;
+  /** Token sales: the least the winners must pay in all for the sale to go ahead (0 for none). */
+  minRaise: bigint;
+  /** Token sales with an allowlist: the most one wallet may deposit across its bids (0 for no cap). */
+  walletCap: bigint;
+  /** Token sales: whether only wallets on the sale's allowlist may bid. */
+  allowlist: boolean;
+  /** Whether the sale missed its minimum raise when it cleared; every bid is then refunded. */
+  raiseMissed: boolean;
 }
 
 /**
@@ -373,8 +405,18 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     liquidityFloor: a.liquidityFloor ? big(a.liquidityFloor) : 0n,
     extendedSecs: a.extendedSecs ?? 0,
     prepaidPages: a.prepaidPages ?? 0,
+    minRaise: a.minRaise ? big(a.minRaise) : 0n,
+    walletCap: a.walletCap ? big(a.walletCap) : 0n,
+    allowlist: a.allowlist ?? false,
+    raiseMissed: a.raiseMissed ?? false,
   };
 }
+
+/**
+ * Whether the sale does not go ahead: it missed its minimum raise or its
+ * pool's minimum. Every bid is then refunded in full, with no computation.
+ */
+export const saleFailed = (a: Auction) => a.raiseMissed || a.liquidity === "failed";
 
 /** Bids the auction can hold before new bids must replace the smallest. */
 export const bidCapacity = (a: Auction) => PAGE_BIDS * (1 + a.extraPages);

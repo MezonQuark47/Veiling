@@ -2305,6 +2305,36 @@ export type SealedAuction = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "list",
+          "docs": [
+            "Only for a sale with an allowlist, once set: closes too."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -2699,6 +2729,40 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "closeParticipant",
+      "docs": [
+        "Returns a `Participant`'s rent to its wallet once bidding is over (or",
+        "the auction is gone). Anyone can call it."
+      ],
+      "discriminator": [
+        192,
+        162,
+        92,
+        5,
+        148,
+        191,
+        207,
+        151
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "writable": true
+        },
+        {
+          "name": "auction",
+          "docs": [
+            "already be closed."
+          ]
+        },
+        {
+          "name": "participant",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "createAuction",
       "docs": [
         "Opens a token auction: escrows `terms.supply` base units, creates the",
@@ -2710,7 +2774,11 @@ export type SealedAuction = {
         "every bid deposits at least `terms.min_deposit` and names a private",
         "budget of at least that much, which its deposit covers. `fees` are",
         "the most the seller accepts to pay; opening fails if the platform's",
-        "are higher."
+        "are higher.",
+        "",
+        "`rules` are the sale's optional rules (see `SaleRules`): a minimum",
+        "raise, an allowlist (whose list `set_allowlist` then records) and,",
+        "with an allowlist, a cap on each wallet's deposits."
       ],
       "discriminator": [
         234,
@@ -2912,6 +2980,14 @@ export type SealedAuction = {
           "type": {
             "defined": {
               "name": "feeTerms"
+            }
+          }
+        },
+        {
+          "name": "rules",
+          "type": {
+            "defined": {
+              "name": "saleRules"
             }
           }
         }
@@ -3986,7 +4062,8 @@ export type SealedAuction = {
         "size. Only the latest version is checked when bidding closes, against",
         "the whole deposit. `book` is the page of the bid book that holds the",
         "bid (`page_slot`); a book with more than one page also passes its",
-        "`book_index`."
+        "`book_index`, and a sale with an allowlist the bidder's `participant`,",
+        "which the wallet cap applies to."
       ],
       "discriminator": [
         244,
@@ -4080,6 +4157,15 @@ export type SealedAuction = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "participant",
+          "docs": [
+            "Only in a sale with an allowlist: the bidder's admission, checked in",
+            "the handler."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [
@@ -4618,6 +4704,137 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "joinAuction",
+      "docs": [
+        "Admits the calling wallet to a token sale with an allowlist, with a",
+        "proof that the list holds it: the sibling hashes from its leaf up to",
+        "the root (at most `MAX_ALLOWLIST_PROOF`). Makes the wallet's",
+        "`Participant`, which its bids then pass and which counts its deposits",
+        "against the sale's wallet cap. Its rent comes back with",
+        "`close_participant` once bidding is over."
+      ],
+      "discriminator": [
+        187,
+        78,
+        197,
+        202,
+        80,
+        4,
+        226,
+        84
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "list",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "participant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  116,
+                  105,
+                  99,
+                  105,
+                  112,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "proof",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "openBookPage",
       "docs": [
         "Opens the next page of a full bid book, so the auction grows on its own",
@@ -4800,6 +5017,11 @@ export type SealedAuction = {
         "of the evicted bid. A book with more than one page also passes its",
         "`book_index`, which knows each page's smallest deposit.",
         "",
+        "A sale with an allowlist takes bids only from wallets that joined it",
+        "(`join_auction`): pass the bidder's `participant`, and when replacing",
+        "another wallet's bid, that wallet's as `evicted_participant`. With a",
+        "wallet cap, a wallet's deposits, across its bids, never exceed it.",
+        "",
         "For a token auction the encrypted quantity is the bid's budget in",
         "lamports: a budget the deposit does not cover, or below",
         "`min_deposit`, counts as no bid. For a collection auction a bid whose",
@@ -4934,6 +5156,24 @@ export type SealedAuction = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "participant",
+          "docs": [
+            "Only in a sale with an allowlist: the bidder's admission, checked in",
+            "the handler."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "evictedParticipant",
+          "docs": [
+            "Only in a sale with an allowlist, when replacing another wallet's",
+            "bid: that wallet's admission, checked in the handler."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [
@@ -5327,9 +5567,9 @@ export type SealedAuction = {
     {
       "name": "refundFailedBid",
       "docs": [
-        "Refunds a bid of a sale that missed its pool's minimum: no MPC",
-        "needed, the whole deposit and the account's rent go back to the",
-        "bidder. Anyone can call it."
+        "Refunds a bid of a sale that missed its minimum raise or its pool's",
+        "minimum: no MPC needed, the whole deposit and the account's rent go",
+        "back to the bidder. Anyone can call it."
       ],
       "discriminator": [
         225,
@@ -5832,6 +6072,112 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "setAllowlist",
+      "docs": [
+        "Records the allowlist of a token sale opened with one",
+        "(`SaleRules::allowlist`): the root of a Merkle tree of the wallets",
+        "allowed to bid (`allowlist_leaf`, `allowlist_node`) and where the list",
+        "itself is published (`uri`, at most `MAX_URI_LEN` bytes), so that",
+        "every wallet can find its proof and anyone can check the list matches",
+        "the root. Only the seller, once, before the first bid; until then no",
+        "wallet can join, so nobody can bid."
+      ],
+      "discriminator": [
+        141,
+        30,
+        41,
+        131,
+        132,
+        7,
+        216,
+        134
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "list",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "uri",
+          "type": "string"
+        }
+      ]
+    },
+    {
       "name": "setCrankRewards",
       "docs": [
         "Sets the rewards paid to whoever runs each MPC step, for auctions",
@@ -6284,6 +6630,19 @@ export type SealedAuction = {
   ],
   "accounts": [
     {
+      "name": "allowlist",
+      "discriminator": [
+        86,
+        65,
+        108,
+        108,
+        111,
+        119,
+        48,
+        49
+      ]
+    },
+    {
       "name": "arciumSignerAccount",
       "discriminator": [
         214,
@@ -6438,9 +6797,35 @@ export type SealedAuction = {
         48,
         49
       ]
+    },
+    {
+      "name": "participant",
+      "discriminator": [
+        86,
+        80,
+        97,
+        114,
+        116,
+        99,
+        48,
+        49
+      ]
     }
   ],
   "events": [
+    {
+      "name": "allowlistSet",
+      "discriminator": [
+        5,
+        175,
+        41,
+        145,
+        80,
+        182,
+        74,
+        12
+      ]
+    },
     {
       "name": "auctionCancelled",
       "discriminator": [
@@ -6793,6 +7178,19 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "minimumRaiseMissed",
+      "discriminator": [
+        72,
+        16,
+        166,
+        220,
+        251,
+        206,
+        62,
+        177
+      ]
+    },
+    {
       "name": "nftsClaimed",
       "discriminator": [
         171,
@@ -6819,6 +7217,19 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "participantJoined",
+      "discriminator": [
+        48,
+        182,
+        206,
+        15,
+        56,
+        181,
+        24,
+        253
+      ]
+    },
+    {
       "name": "poolFeesClaimed",
       "discriminator": [
         172,
@@ -6842,6 +7253,19 @@ export type SealedAuction = {
         211,
         73,
         9
+      ]
+    },
+    {
+      "name": "saleRulesSet",
+      "discriminator": [
+        12,
+        117,
+        131,
+        70,
+        92,
+        57,
+        141,
+        13
       ]
     },
     {
@@ -7258,6 +7682,41 @@ export type SealedAuction = {
       "code": 6079,
       "name": "alreadyTallied",
       "msg": "Every page is already counted"
+    },
+    {
+      "code": 6080,
+      "name": "invalidSaleRules",
+      "msg": "Sale rules are invalid: a wallet cap needs an allowlist and must allow at least the minimum deposit"
+    },
+    {
+      "code": 6081,
+      "name": "noAllowlist",
+      "msg": "This sale has no allowlist"
+    },
+    {
+      "code": 6082,
+      "name": "invalidAllowlist",
+      "msg": "The allowlist link is invalid"
+    },
+    {
+      "code": 6083,
+      "name": "notOnAllowlist",
+      "msg": "This wallet is not on the sale's allowlist"
+    },
+    {
+      "code": 6084,
+      "name": "walletCapExceeded",
+      "msg": "This would take the wallet's deposits past the sale's cap per wallet"
+    },
+    {
+      "code": 6085,
+      "name": "minimumRaiseMissed",
+      "msg": "The sale missed its minimum raise; refund the bids with refund_failed_bid"
+    },
+    {
+      "code": 6086,
+      "name": "saleNotFailed",
+      "msg": "The sale did not fail; settle the bids instead"
     }
   ],
   "types": [
@@ -7281,6 +7740,65 @@ export type SealedAuction = {
                 "name": "epoch"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "allowlist",
+      "docs": [
+        "A token sale's allowlist (`[ALLOWLIST_SEED, auction]`): the Merkle root of",
+        "the wallets allowed to bid and where the list is published. Set once,",
+        "before any bid (`set_allowlist`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "allowlistSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "uri",
+            "type": "string"
           }
         ]
       }
@@ -7669,6 +8187,35 @@ export type SealedAuction = {
               "(`room_fee`). Older auctions read 0."
             ],
             "type": "u8"
+          },
+          {
+            "name": "minRaise",
+            "docs": [
+              "Token sales: the least the winners must pay in all, in lamports, for",
+              "the sale to go ahead (0 for none). A sale that misses it sets",
+              "`raise_missed` when it clears, and every bid is refunded in full."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "walletCap",
+            "docs": [
+              "Token sales with an allowlist: the most one wallet may deposit across",
+              "its bids, in lamports (0 for no cap)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "allowlist",
+            "docs": [
+              "Token sales: whether only wallets on the sale's allowlist",
+              "(`Allowlist`) may bid."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "raiseMissed",
+            "type": "bool"
           }
         ]
       }
@@ -9410,6 +9957,14 @@ export type SealedAuction = {
           {
             "name": "endTime",
             "type": "i64"
+          },
+          {
+            "name": "minRaise",
+            "docs": [
+              "The sale's minimum raise (0 for none): a bidder relies on it being",
+              "met for the sale to go ahead."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -10067,6 +10622,29 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "minimumRaiseMissed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "raised",
+            "docs": [
+              "What the winners would have paid in all."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "minimum",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "mxeStatus",
       "docs": [
         "The status of an MXE."
@@ -10385,6 +10963,51 @@ export type SealedAuction = {
       }
     },
     {
+      "name": "participant",
+      "docs": [
+        "A wallet admitted to a token sale with an allowlist",
+        "(`[PARTICIPANT_SEED, auction, wallet]`, `join_auction`), and what it has",
+        "deposited across its bids, which the sale's wallet cap applies to."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "participantJoined",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "poolFeesClaimed",
       "type": {
         "kind": "struct",
@@ -10438,6 +11061,65 @@ export type SealedAuction = {
               "Unsold tokens returned, or unsold NFTs (never minted)."
             ],
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "saleRules",
+      "docs": [
+        "A token sale's optional rules, fixed when it opens."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "minRaise",
+            "docs": [
+              "The least the winners must pay in all, in lamports; 0 for none."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "walletCap",
+            "docs": [
+              "The most one wallet may deposit across its bids, in lamports; 0 for",
+              "no cap. Only with an allowlist, since without one a wallet cap is",
+              "undone by splitting bids across wallets."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "allowlist",
+            "docs": [
+              "Whether only wallets on an allowlist may bid (`set_allowlist`,",
+              "`join_auction`)."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "saleRulesSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "minRaise",
+            "type": "u64"
+          },
+          {
+            "name": "walletCap",
+            "type": "u64"
+          },
+          {
+            "name": "allowlist",
+            "type": "bool"
           }
         ]
       }

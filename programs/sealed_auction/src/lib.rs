@@ -30,6 +30,11 @@
 //!    it is one auction with one clearing price. A book with several pages
 //!    keeps a summary of each in its `BookIndex`, so no instruction reads
 //!    more than one page.
+//!    A token sale can also open with rules (`SaleRules`): a minimum raise,
+//!    below which it does not go ahead and every bid is refunded in full;
+//!    an allowlist of the wallets that may bid (`set_allowlist`, then
+//!    `join_auction` per wallet); and, with an allowlist, a cap on what one
+//!    wallet may deposit across its bids.
 //! 2. `place_bid` stores an encrypted bid and escrows its deposit (no MPC).
 //!    Once the book is full and can grow no further, a new bid must
 //!    out-deposit the smallest one by `EVICTION_PREMIUM_PERCENT`; that bid is
@@ -155,6 +160,11 @@ pub const FOLD_SEED: &[u8] = b"fold";
 /// The per-page summaries of a book with several pages:
 /// `[INDEX_SEED, auction]`.
 pub const INDEX_SEED: &[u8] = b"index";
+/// A token sale's allowlist: `[ALLOWLIST_SEED, auction]`.
+pub const ALLOWLIST_SEED: &[u8] = b"allowlist";
+/// A wallet admitted to a token sale with an allowlist:
+/// `[PARTICIPANT_SEED, auction, wallet]`.
+pub const PARTICIPANT_SEED: &[u8] = b"participant";
 
 /// Account discriminators of this version's auction state. They differ from
 /// the first release's, whose accounts had other layouts, so an account of
@@ -166,6 +176,13 @@ pub const ITEM_LIST_DISCRIMINATOR: &[u8] = b"VItems01";
 pub const BID_NOTE_DISCRIMINATOR: &[u8] = b"VNote_01";
 pub const FOLD_DISCRIMINATOR: &[u8] = b"VFold_01";
 pub const INDEX_DISCRIMINATOR: &[u8] = b"VIndex01";
+pub const ALLOWLIST_DISCRIMINATOR: &[u8] = b"VAllow01";
+pub const PARTICIPANT_DISCRIMINATOR: &[u8] = b"VPartc01";
+/// Domain tags of the allowlist's Merkle tree (see `allowlist_leaf`).
+pub const ALLOWLIST_LEAF_TAG: u8 = 0;
+pub const ALLOWLIST_NODE_TAG: u8 = 1;
+/// Longest Merkle proof `join_auction` takes: enough for 2^24 wallets.
+pub const MAX_ALLOWLIST_PROOF: usize = 24;
 /// Bytes of a bid note. The program stores them as given: the bidder's app
 /// encrypts the bid's price and size under a key only their wallet can make.
 pub const BID_NOTE_LEN: usize = 32;
@@ -555,14 +572,20 @@ pub mod sealed_auction {
     /// budget of at least that much, which its deposit covers. `fees` are
     /// the most the seller accepts to pay; opening fails if the platform's
     /// are higher.
+    ///
+    /// `rules` are the sale's optional rules (see `SaleRules`): a minimum
+    /// raise, an allowlist (whose list `set_allowlist` then records) and,
+    /// with an allowlist, a cap on each wallet's deposits.
     pub fn create_auction(
         ctx: Context<CreateAuction>,
         seed: u64,
         terms: TokenSaleTerms,
         fees: FeeTerms,
+        rules: SaleRules,
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let (start_time, end_time) = terms.check(now)?;
+        rules.check(&terms)?;
         check_mint_is_safe(&ctx.accounts.mint)?;
 
         let listing_fee = charge_listing_fee(
@@ -590,6 +613,9 @@ pub mod sealed_auction {
         auction.price_scale = 1;
         auction.min_price = terms.min_price;
         auction.min_deposit = terms.min_deposit;
+        auction.min_raise = rules.min_raise;
+        auction.wallet_cap = rules.wallet_cap;
+        auction.allowlist = rules.allowlist;
         ctx.accounts.auction.set_inner(auction);
         let mut book = ctx.accounts.book.load_init()?;
         book.auction = auction_key;
@@ -615,6 +641,86 @@ pub mod sealed_auction {
             &ctx.accounts.system_program,
         )?;
         emit_auction_created(&ctx.accounts.auction, listing_fee);
+        if rules != SaleRules::default() {
+            emit!(SaleRulesSet {
+                auction: auction_key,
+                min_raise: rules.min_raise,
+                wallet_cap: rules.wallet_cap,
+                allowlist: rules.allowlist,
+            });
+        }
+        Ok(())
+    }
+
+    /// Records the allowlist of a token sale opened with one
+    /// (`SaleRules::allowlist`): the root of a Merkle tree of the wallets
+    /// allowed to bid (`allowlist_leaf`, `allowlist_node`) and where the list
+    /// itself is published (`uri`, at most `MAX_URI_LEN` bytes), so that
+    /// every wallet can find its proof and anyone can check the list matches
+    /// the root. Only the seller, once, before the first bid; until then no
+    /// wallet can join, so nobody can bid.
+    pub fn set_allowlist(ctx: Context<SetAllowlist>, root: [u8; 32], uri: String) -> Result<()> {
+        let auction = &ctx.accounts.auction;
+        require!(auction.allowlist, AuctionError::NoAllowlist);
+        require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
+        require!(auction.bid_count == 0, AuctionError::HasBids);
+        require!(is_metadata_uri(&uri), AuctionError::InvalidAllowlist);
+        let list = &mut ctx.accounts.list;
+        list.auction = auction.key();
+        list.root = root;
+        list.uri = uri;
+        list.bump = ctx.bumps.list;
+        emit!(AllowlistSet {
+            auction: list.auction,
+            root,
+            uri: list.uri.clone(),
+        });
+        Ok(())
+    }
+
+    /// Admits the calling wallet to a token sale with an allowlist, with a
+    /// proof that the list holds it: the sibling hashes from its leaf up to
+    /// the root (at most `MAX_ALLOWLIST_PROOF`). Makes the wallet's
+    /// `Participant`, which its bids then pass and which counts its deposits
+    /// against the sale's wallet cap. Its rent comes back with
+    /// `close_participant` once bidding is over.
+    pub fn join_auction(ctx: Context<JoinAuction>, proof: Vec<[u8; 32]>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let auction = &ctx.accounts.auction;
+        require!(auction.allowlist, AuctionError::NoAllowlist);
+        require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
+        require!(now < auction.end_time, AuctionError::BiddingClosed);
+        require!(proof.len() <= MAX_ALLOWLIST_PROOF, AuctionError::NotOnAllowlist);
+        let wallet = ctx.accounts.wallet.key();
+        require!(
+            allowlist_root(&wallet, &proof) == ctx.accounts.list.root,
+            AuctionError::NotOnAllowlist
+        );
+        let participant = &mut ctx.accounts.participant;
+        participant.auction = auction.key();
+        participant.wallet = wallet;
+        participant.deposited = 0;
+        participant.bump = ctx.bumps.participant;
+        emit!(ParticipantJoined {
+            auction: participant.auction,
+            wallet,
+        });
+        Ok(())
+    }
+
+    /// Returns a `Participant`'s rent to its wallet once bidding is over (or
+    /// the auction is gone). Anyone can call it.
+    pub fn close_participant(ctx: Context<CloseParticipant>) -> Result<()> {
+        let info = ctx.accounts.auction.to_account_info();
+        if info.owner == &crate::ID && !info.data_is_empty() {
+            let data = info.try_borrow_data()?;
+            let auction = Auction::try_deserialize(&mut &data[..])?;
+            let now = Clock::get()?.unix_timestamp;
+            require!(
+                auction.status != AuctionStatus::Open || now >= auction.end_time,
+                AuctionError::BiddingOpen
+            );
+        }
         Ok(())
     }
 
@@ -1064,6 +1170,11 @@ pub mod sealed_auction {
     /// of the evicted bid. A book with more than one page also passes its
     /// `book_index`, which knows each page's smallest deposit.
     ///
+    /// A sale with an allowlist takes bids only from wallets that joined it
+    /// (`join_auction`): pass the bidder's `participant`, and when replacing
+    /// another wallet's bid, that wallet's as `evicted_participant`. With a
+    /// wallet cap, a wallet's deposits, across its bids, never exceed it.
+    ///
     /// For a token auction the encrypted quantity is the bid's budget in
     /// lamports: a budget the deposit does not cover, or below
     /// `min_deposit`, counts as no bid. For a collection auction a bid whose
@@ -1190,6 +1301,49 @@ pub mod sealed_auction {
             }
             index
         };
+        if auction.allowlist {
+            let bidder = ctx.accounts.bidder.key();
+            let participant = ctx
+                .accounts
+                .participant
+                .as_mut()
+                .ok_or(AuctionError::NotOnAllowlist)?;
+            require!(
+                participant.auction == auction_key && participant.wallet == bidder,
+                AuctionError::NotOnAllowlist
+            );
+            let mut deposited = participant.deposited;
+            if let Some(evicted) = ctx.accounts.evicted_bid.as_ref() {
+                // The replaced bid's deposit no longer counts against its
+                // wallet's cap.
+                if evicted.bidder == bidder {
+                    // Passing the same account twice would let one copy
+                    // overwrite the other when the instruction ends.
+                    require!(
+                        ctx.accounts.evicted_participant.is_none(),
+                        AuctionError::WrongBidAccounts
+                    );
+                    deposited = deposited.saturating_sub(evicted.deposit);
+                } else {
+                    let other = ctx
+                        .accounts
+                        .evicted_participant
+                        .as_mut()
+                        .ok_or(AuctionError::WrongBidAccounts)?;
+                    require!(
+                        other.auction == auction_key && other.wallet == evicted.bidder,
+                        AuctionError::WrongBidAccounts
+                    );
+                    other.deposited = other.deposited.saturating_sub(evicted.deposit);
+                }
+            }
+            deposited = deposited.checked_add(deposit).ok_or(AuctionError::MathOverflow)?;
+            require!(
+                auction.wallet_cap == 0 || deposited <= auction.wallet_cap,
+                AuctionError::WalletCapExceeded
+            );
+            participant.deposited = deposited;
+        }
         let (page, slot) = page_slot(index);
         require_keys_eq!(
             ctx.accounts.book.key(),
@@ -1281,7 +1435,8 @@ pub mod sealed_auction {
     /// size. Only the latest version is checked when bidding closes, against
     /// the whole deposit. `book` is the page of the bid book that holds the
     /// bid (`page_slot`); a book with more than one page also passes its
-    /// `book_index`.
+    /// `book_index`, and a sale with an allowlist the bidder's `participant`,
+    /// which the wallet cap applies to.
     #[allow(clippy::too_many_arguments)]
     pub fn increase_bid(
         ctx: Context<IncreaseBid>,
@@ -1331,6 +1486,26 @@ pub mod sealed_auction {
             ctx.accounts.book_index.is_some() == (auction.extra_pages > 0),
             AuctionError::WrongBookPage
         );
+        if auction.allowlist {
+            let participant = ctx
+                .accounts
+                .participant
+                .as_mut()
+                .ok_or(AuctionError::NotOnAllowlist)?;
+            require!(
+                participant.auction == auction.key() && participant.wallet == ctx.accounts.bidder.key(),
+                AuctionError::NotOnAllowlist
+            );
+            let deposited = participant
+                .deposited
+                .checked_add(extra_deposit)
+                .ok_or(AuctionError::MathOverflow)?;
+            require!(
+                auction.wallet_cap == 0 || deposited <= auction.wallet_cap,
+                AuctionError::WalletCapExceeded
+            );
+            participant.deposited = deposited;
+        }
         {
             let mut book = ctx.accounts.book.load_mut()?;
             book.deposits[slot] = deposit;
@@ -1789,6 +1964,7 @@ pub mod sealed_auction {
             auction.liquidity != LIQUIDITY_FAILED,
             AuctionError::LiquidityFloorMissed
         );
+        require!(!auction.raise_missed, AuctionError::MinimumRaiseMissed);
         require!(bid.status == BidStatus::Sealed, AuctionError::BidAlreadySettled);
         ensure_idle(&bid.pending_computation, bid.pending_since, now)?;
 
@@ -2505,14 +2681,15 @@ pub mod sealed_auction {
         liquidity::release(ctx)
     }
 
-    /// Refunds a bid of a sale that missed its pool's minimum: no MPC
-    /// needed, the whole deposit and the account's rent go back to the
-    /// bidder. Anyone can call it.
+    /// Refunds a bid of a sale that missed its minimum raise or its pool's
+    /// minimum: no MPC needed, the whole deposit and the account's rent go
+    /// back to the bidder. Anyone can call it.
     pub fn refund_failed_bid(ctx: Context<EmergencyRefund>) -> Result<()> {
         let auction = &ctx.accounts.auction;
         require!(
-            auction.liquidity == LIQUIDITY_FAILED && auction.status == AuctionStatus::Settling,
-            AuctionError::LiquidityNotPlanned
+            (auction.liquidity == LIQUIDITY_FAILED || auction.raise_missed)
+                && auction.status == AuctionStatus::Settling,
+            AuctionError::SaleNotFailed
         );
         require!(
             ctx.accounts.bid.status == BidStatus::Sealed,
@@ -2899,6 +3076,32 @@ pub fn eviction_threshold(smallest: u64) -> Result<u64> {
     Ok(smallest
         .checked_add(premium)
         .ok_or(AuctionError::MathOverflow)?)
+}
+
+/// Whether a cleared token sale raises less than its minimum
+/// (`Auction::min_raise`), so it does not go ahead.
+pub fn misses_minimum_raise(auction: &Auction) -> bool {
+    auction.min_raise > 0 && expected_gross_proceeds(auction) < auction.min_raise
+}
+
+/// A wallet's leaf in a sale's allowlist tree: `sha256(0x00 || wallet)`.
+pub fn allowlist_leaf(wallet: &Pubkey) -> [u8; 32] {
+    hashv(&[&[ALLOWLIST_LEAF_TAG], wallet.as_ref()]).to_bytes()
+}
+
+/// A node of the allowlist tree: `sha256(0x01 || low || high)`, its two
+/// children in byte order, so a proof needs no left or right flags. The tags
+/// keep a node from passing for a leaf.
+pub fn allowlist_node(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    let (low, high) = if a <= b { (a, b) } else { (b, a) };
+    hashv(&[&[ALLOWLIST_NODE_TAG], low, high]).to_bytes()
+}
+
+/// The root a wallet's proof leads to.
+pub fn allowlist_root(wallet: &Pubkey, proof: &[[u8; 32]]) -> [u8; 32] {
+    proof
+        .iter()
+        .fold(allowlist_leaf(wallet), |node, sibling| allowlist_node(&node, sibling))
 }
 
 /// The nonce a bid stored at `bid` must be encrypted under: the first 16
@@ -3629,6 +3832,10 @@ fn new_auction(
         liquidity_floor: 0,
         extended_secs: 0,
         prepaid_pages: 0,
+        min_raise: 0,
+        wallet_cap: 0,
+        allowlist: false,
+        raise_missed: false,
     }
 }
 
@@ -4367,6 +4574,20 @@ fn apply_clearing(
     auction.weight_above = weight_above;
     auction.weight_at = if filled { weight_at } else { 0 };
     auction.status = AuctionStatus::Settling;
+    if misses_minimum_raise(auction) {
+        // The sale missed its minimum: it does not go ahead, every bid is
+        // refunded in full (`refund_failed_bid`) and the seller keeps the
+        // tokens, and a planned pool's reserve.
+        auction.raise_missed = true;
+        if auction.liquidity == LIQUIDITY_PLANNED {
+            auction.liquidity = LIQUIDITY_FAILED;
+        }
+        emit!(MinimumRaiseMissed {
+            auction: auction.key(),
+            raised: expected_gross_proceeds(auction),
+            minimum: auction.min_raise,
+        });
+    }
     if auction.liquidity == LIQUIDITY_PLANNED {
         let expected_net = expected_net_proceeds(auction);
         if expected_net < auction.liquidity_floor {
@@ -4841,6 +5062,66 @@ pub struct Auction {
     /// bit `p` for page `p`. Bids on the other extra pages pay a room fee
     /// (`room_fee`). Older auctions read 0.
     pub prepaid_pages: u8,
+    /// Token sales: the least the winners must pay in all, in lamports, for
+    /// the sale to go ahead (0 for none). A sale that misses it sets
+    /// `raise_missed` when it clears, and every bid is refunded in full.
+    pub min_raise: u64,
+    /// Token sales with an allowlist: the most one wallet may deposit across
+    /// its bids, in lamports (0 for no cap).
+    pub wallet_cap: u64,
+    /// Token sales: whether only wallets on the sale's allowlist
+    /// (`Allowlist`) may bid.
+    pub allowlist: bool,
+    pub raise_missed: bool,
+}
+
+/// A token sale's allowlist (`[ALLOWLIST_SEED, auction]`): the Merkle root of
+/// the wallets allowed to bid and where the list is published. Set once,
+/// before any bid (`set_allowlist`).
+#[account(discriminator = ALLOWLIST_DISCRIMINATOR)]
+#[derive(InitSpace)]
+pub struct Allowlist {
+    pub auction: Pubkey,
+    pub root: [u8; 32],
+    #[max_len(MAX_URI_LEN)]
+    pub uri: String,
+    pub bump: u8,
+}
+
+/// A wallet admitted to a token sale with an allowlist
+/// (`[PARTICIPANT_SEED, auction, wallet]`, `join_auction`), and what it has
+/// deposited across its bids, which the sale's wallet cap applies to.
+#[account(discriminator = PARTICIPANT_DISCRIMINATOR)]
+#[derive(InitSpace)]
+pub struct Participant {
+    pub auction: Pubkey,
+    pub wallet: Pubkey,
+    pub deposited: u64,
+    pub bump: u8,
+}
+
+/// A token sale's optional rules, fixed when it opens.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SaleRules {
+    /// The least the winners must pay in all, in lamports; 0 for none.
+    pub min_raise: u64,
+    /// The most one wallet may deposit across its bids, in lamports; 0 for
+    /// no cap. Only with an allowlist, since without one a wallet cap is
+    /// undone by splitting bids across wallets.
+    pub wallet_cap: u64,
+    /// Whether only wallets on an allowlist may bid (`set_allowlist`,
+    /// `join_auction`).
+    pub allowlist: bool,
+}
+
+impl SaleRules {
+    fn check(&self, terms: &TokenSaleTerms) -> Result<()> {
+        require!(
+            self.wallet_cap == 0 || (self.allowlist && self.wallet_cap >= terms.min_deposit),
+            AuctionError::InvalidSaleRules
+        );
+        Ok(())
+    }
 }
 
 /// The items of a collection auction named per item. Item `k` covers NFT
@@ -4954,6 +5235,9 @@ pub struct ExpectedTerms {
     pub min_deposit: u64,
     pub max_per_bid: u16,
     pub end_time: i64,
+    /// The sale's minimum raise (0 for none): a bidder relies on it being
+    /// met for the sale to go ahead.
+    pub min_raise: u64,
 }
 
 impl ExpectedTerms {
@@ -4965,6 +5249,7 @@ impl ExpectedTerms {
             && self.min_price == auction.min_price
             && self.min_deposit == auction.min_deposit
             && self.max_per_bid == auction.max_per_bid
+            && self.min_raise == auction.min_raise
             // The soft close can only move the end later, which a bidder
             // never minds.
             && auction.end_time >= self.end_time
@@ -5678,6 +5963,71 @@ pub struct PlaceBid<'info> {
     #[account(mut)]
     pub evicted_bidder: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
+    /// Only in a sale with an allowlist: the bidder's admission, checked in
+    /// the handler.
+    #[account(mut)]
+    pub participant: Option<Box<Account<'info, Participant>>>,
+    /// Only in a sale with an allowlist, when replacing another wallet's
+    /// bid: that wallet's admission, checked in the handler.
+    #[account(mut)]
+    pub evicted_participant: Option<Box<Account<'info, Participant>>>,
+}
+
+#[derive(Accounts)]
+pub struct SetAllowlist<'info> {
+    #[account(mut)]
+    pub seller: Signer<'info>,
+    #[account(
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+        has_one = seller @ AuctionError::Unauthorized,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(
+        init,
+        payer = seller,
+        space = 8 + Allowlist::INIT_SPACE,
+        seeds = [ALLOWLIST_SEED, auction.key().as_ref()],
+        bump,
+    )]
+    pub list: Box<Account<'info, Allowlist>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct JoinAuction<'info> {
+    #[account(mut)]
+    pub wallet: Signer<'info>,
+    #[account(
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(seeds = [ALLOWLIST_SEED, auction.key().as_ref()], bump = list.bump)]
+    pub list: Box<Account<'info, Allowlist>>,
+    #[account(
+        init,
+        payer = wallet,
+        space = 8 + Participant::INIT_SPACE,
+        seeds = [PARTICIPANT_SEED, auction.key().as_ref(), wallet.key().as_ref()],
+        bump,
+    )]
+    pub participant: Box<Account<'info, Participant>>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Permissionless: the rent only goes to the wallet.
+#[derive(Accounts)]
+pub struct CloseParticipant<'info> {
+    /// CHECK: the participant's wallet, which gets the rent.
+    #[account(mut, address = participant.wallet @ AuctionError::Unauthorized)]
+    pub wallet: UncheckedAccount<'info>,
+    /// CHECK: the participant's auction, inspected in the handler; it may
+    /// already be closed.
+    #[account(address = participant.auction @ AuctionError::WrongBidAccounts)]
+    pub auction: UncheckedAccount<'info>,
+    #[account(mut, close = wallet)]
+    pub participant: Box<Account<'info, Participant>>,
 }
 
 #[derive(Accounts)]
@@ -5707,6 +6057,10 @@ pub struct IncreaseBid<'info> {
     )]
     pub bid: Box<Account<'info, Bid>>,
     pub system_program: Program<'info, System>,
+    /// Only in a sale with an allowlist: the bidder's admission, checked in
+    /// the handler.
+    #[account(mut)]
+    pub participant: Option<Box<Account<'info, Participant>>>,
 }
 
 #[derive(Accounts)]
@@ -5849,6 +6203,14 @@ pub struct CloseAuction<'info> {
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+    /// Only for a sale with an allowlist, once set: closes too.
+    #[account(
+        mut,
+        close = seller,
+        seeds = [ALLOWLIST_SEED, auction.key().as_ref()],
+        bump = list.bump,
+    )]
+    pub list: Option<Box<Account<'info, Allowlist>>>,
 }
 
 /// Permissionless: the tokens can only go to the bid owner's associated token
@@ -6522,6 +6884,35 @@ pub struct BookPageOpened {
 }
 
 #[event]
+pub struct SaleRulesSet {
+    pub auction: Pubkey,
+    pub min_raise: u64,
+    pub wallet_cap: u64,
+    pub allowlist: bool,
+}
+
+#[event]
+pub struct AllowlistSet {
+    pub auction: Pubkey,
+    pub root: [u8; 32],
+    pub uri: String,
+}
+
+#[event]
+pub struct ParticipantJoined {
+    pub auction: Pubkey,
+    pub wallet: Pubkey,
+}
+
+#[event]
+pub struct MinimumRaiseMissed {
+    pub auction: Pubkey,
+    /// What the winners would have paid in all.
+    pub raised: u64,
+    pub minimum: u64,
+}
+
+#[event]
 pub struct ClearingPageTallied {
     pub auction: Pubkey,
     pub page: u8,
@@ -6826,6 +7217,20 @@ pub enum AuctionError {
     BookNotFull,
     #[msg("Every page is already counted")]
     AlreadyTallied,
+    #[msg("Sale rules are invalid: a wallet cap needs an allowlist and must allow at least the minimum deposit")]
+    InvalidSaleRules,
+    #[msg("This sale has no allowlist")]
+    NoAllowlist,
+    #[msg("The allowlist link is invalid")]
+    InvalidAllowlist,
+    #[msg("This wallet is not on the sale's allowlist")]
+    NotOnAllowlist,
+    #[msg("This would take the wallet's deposits past the sale's cap per wallet")]
+    WalletCapExceeded,
+    #[msg("The sale missed its minimum raise; refund the bids with refund_failed_bid")]
+    MinimumRaiseMissed,
+    #[msg("The sale did not fail; settle the bids instead")]
+    SaleNotFailed,
 }
 
 // ---------------------------------------------------------------------------
@@ -7730,6 +8135,7 @@ mod tests {
             min_deposit: 10_000,
             max_per_bid: 0,
             end_time: 1_234,
+            min_raise: 5_000_000,
             ..blank_auction()
         };
         let terms = ExpectedTerms {
@@ -7741,6 +8147,7 @@ mod tests {
             min_deposit: 10_000,
             max_per_bid: 0,
             end_time: 1_234,
+            min_raise: 5_000_000,
         };
         assert!(terms.matches(&auction));
         let changed = [
@@ -7752,10 +8159,103 @@ mod tests {
             ExpectedTerms { min_deposit: 9_999, ..terms },
             ExpectedTerms { max_per_bid: 1, ..terms },
             ExpectedTerms { end_time: 1_235, ..terms },
+            ExpectedTerms { min_raise: 0, ..terms },
         ];
         for t in changed.iter() {
             assert!(!t.matches(&auction));
         }
+    }
+
+    // -- sale rules -----------------------------------------------------------
+
+    /// The allowlist tree of `wallets` as the app builds it: leaves in
+    /// order, each level pairing neighbours, an odd node carried up. Returns
+    /// the root and every wallet's proof.
+    fn allowlist_tree(wallets: &[Pubkey]) -> ([u8; 32], Vec<Vec<[u8; 32]>>) {
+        let mut level: Vec<[u8; 32]> = wallets.iter().map(allowlist_leaf).collect();
+        let mut positions: Vec<usize> = (0..wallets.len()).collect();
+        let mut proofs = vec![Vec::new(); wallets.len()];
+        while level.len() > 1 {
+            for (w, at) in positions.iter_mut().enumerate() {
+                let sibling = *at ^ 1;
+                if sibling < level.len() {
+                    proofs[w].push(level[sibling]);
+                }
+                *at /= 2;
+            }
+            level = level
+                .chunks(2)
+                .map(|pair| if pair.len() == 2 { allowlist_node(&pair[0], &pair[1]) } else { pair[0] })
+                .collect();
+        }
+        (level[0], proofs)
+    }
+
+    #[test]
+    fn allowlist_proofs_admit_exactly_the_listed_wallets() {
+        for n in [1usize, 2, 3, 7, 100, 1_000] {
+            let wallets: Vec<Pubkey> = (0..n).map(|_| Pubkey::new_unique()).collect();
+            let (root, proofs) = allowlist_tree(&wallets);
+            for (w, proof) in wallets.iter().zip(&proofs) {
+                assert_eq!(allowlist_root(w, proof), root, "{n} wallets");
+                assert!(proof.len() <= MAX_ALLOWLIST_PROOF);
+            }
+            // Another wallet, or a listed wallet with someone else's proof,
+            // does not reach the root.
+            let stranger = Pubkey::new_unique();
+            assert!(proofs.iter().all(|p| allowlist_root(&stranger, p) != root));
+            if n > 1 {
+                assert_ne!(allowlist_root(&wallets[0], &proofs[1]), root);
+            }
+        }
+        // A node cannot pass for a leaf: a wallet whose bytes are an inner
+        // node's hash does not prove itself with the rest of the path.
+        let wallets: Vec<Pubkey> = (0..4).map(|_| Pubkey::new_unique()).collect();
+        let (root, proofs) = allowlist_tree(&wallets);
+        let inner = Pubkey::new_from_array(allowlist_node(&allowlist_leaf(&wallets[0]), &allowlist_leaf(&wallets[1])));
+        assert_ne!(allowlist_root(&inner, &proofs[0][1..]), root);
+    }
+
+    #[test]
+    fn sale_rules_need_an_allowlist_for_a_wallet_cap() {
+        let terms = TokenSaleTerms {
+            supply: 1_000,
+            price_unit: 1,
+            min_price: 1,
+            min_deposit: 1_000_000,
+            duration_secs: 3_600,
+            start_time: 0,
+        };
+        assert!(SaleRules::default().check(&terms).is_ok());
+        assert!(SaleRules { min_raise: 50, ..Default::default() }.check(&terms).is_ok());
+        assert!(SaleRules { allowlist: true, ..Default::default() }.check(&terms).is_ok());
+        assert!(SaleRules { wallet_cap: 5_000_000, ..Default::default() }.check(&terms).is_err());
+        let capped = SaleRules { wallet_cap: 5_000_000, allowlist: true, ..Default::default() };
+        assert!(capped.check(&terms).is_ok());
+        // A cap below the minimum deposit would let nobody bid.
+        assert!(SaleRules { wallet_cap: 999_999, ..capped }.check(&terms).is_err());
+    }
+
+    #[test]
+    fn the_minimum_raise_is_measured_on_what_the_winners_pay() {
+        // 1,000 tokens at 3 lamports each, before any fee.
+        let mut a = cleared(token_auction(1_000, 1, 1), 3, 0, 3_000);
+        a.sale_fee_bps = 100;
+        assert_eq!(expected_gross_proceeds(&a), 3_000);
+        assert_eq!(expected_net_proceeds(&a), 2_970);
+        // Unfilled: every valid budget is spent at the minimum price.
+        let mut b = a.clone();
+        b.filled = false;
+        b.weight_above = 1_234;
+        assert_eq!(expected_gross_proceeds(&b), 1_234);
+        // The minimum is met when the winners pay at least that much.
+        assert!(!misses_minimum_raise(&a));
+        a.min_raise = 3_000;
+        assert!(!misses_minimum_raise(&a));
+        a.min_raise = 3_001;
+        assert!(misses_minimum_raise(&a));
+        b.min_raise = 1_235;
+        assert!(misses_minimum_raise(&b));
     }
 
     // -- fees and collections -----------------------------------------------

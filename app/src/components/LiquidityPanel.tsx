@@ -115,8 +115,11 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   } else if (auction.liquidity === "failed") {
     body = (
       <p>
-        The sale could not raise the pool's minimum of {formatSol(auction.liquidityFloor)} SOL after fees, so it does
-        not go ahead: every bid gets its whole deposit back, and the seller their tokens and reserve.
+        {auction.raiseMissed
+          ? `The sale missed its minimum raise of ${formatSol(auction.minRaise)} SOL`
+          : `The sale could not raise the pool's minimum of ${formatSol(auction.liquidityFloor)} SOL after fees`}
+        , so it does not go ahead and no pool opens: every bid gets its whole deposit back, and the seller their
+        tokens and reserve.
       </p>
     );
   } else if (auction.liquidity === "released") {

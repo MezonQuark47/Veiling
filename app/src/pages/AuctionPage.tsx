@@ -64,6 +64,7 @@ import {
   foldTotalSteps,
   pagesInUse,
   priceOf,
+  saleFailed,
 } from "../lib/chain";
 import { type ItemEntry, itemStart } from "../lib/items";
 import { type RevealStep, revealArt } from "../lib/reveal";
@@ -84,6 +85,9 @@ import {
   buildSettleBid,
   findEviction,
   buildIncreaseBid,
+  buildJoinAuction,
+  fetchAdmission,
+  type Admission,
 } from "../lib/actions";
 import { closeNoteInstruction, hasChainNote, noteForNewBid } from "../lib/bidNotes";
 import { forgetClosedBids, forgetNote, noteSize, readNote, saveNote } from "../lib/notes";
@@ -234,11 +238,25 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
   const cap = (amount: bigint) => (amount < auction.supply ? amount : auction.supply);
   const atYourPrice = price.ticks ? cap(tokensForBudget(budget, auction.priceUnit, price.ticks)) : 0n;
   const atMinimum = cap(tokensForBudget(budget, auction.priceUnit, auction.minPrice));
+  const admission = useLoader(
+    () => (auction.allowlist && signer ? fetchAdmission(auction, signer.publicKey) : Promise.resolve(null)),
+    [auction.address.toBase58(), signer?.publicKey.toBase58() ?? "", auction.bidCount]
+  );
+  // What this wallet may still deposit under the sale's cap.
+  const room = auction.walletCap > 0n && admission.data ? auction.walletCap - admission.data.deposited : null;
+  const admitted = !auction.allowlist || Boolean(admission.data?.listed);
+  const withinCap = room === null || deposit <= room;
 
   const place = () =>
     action.run("place", async () => {
       if (!signer) throw new Error("Connect a wallet first");
       if (!price.ticks) throw new Error("Enter a valid price");
+      // A wallet on the allowlist joins the sale once, before its first bid.
+      const join = await buildJoinAuction(signer.publicKey, auction);
+      if (join) {
+        await sendTransaction(join, signer);
+        admission.reload();
+      }
       const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, budget, deposit);
       const noted = await addNotes(tx, signer, bid, price.ticks, budget, evicted);
       const sig = await sendTransaction(tx, signer);
@@ -346,13 +364,83 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
         left. Whatever is not spent comes back. Until bidding closes you can raise your bid, but never lower or
         withdraw it.
       </p>
-      <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !valid}>
+      <SaleRulesHint auction={auction} admission={admission.data} loading={admission.loading} error={admission.error} room={room} deposit={deposit} />
+      <Button
+        variant="primary"
+        onClick={place}
+        busy={action.busy === "place"}
+        disabled={!signer || !valid || !admitted || !withinCap}
+      >
         {signer ? "Seal and place bid" : "Connect a wallet to bid"}
       </Button>
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
       {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
   );
+}
+
+/**
+ * A token sale's rules as they apply to the bidder: the minimum raise, and in
+ * a sale with an allowlist whether this wallet may bid and how much of its
+ * cap is left.
+ */
+function SaleRulesHint({
+  auction,
+  admission,
+  loading,
+  error,
+  room,
+  deposit,
+}: {
+  auction: Auction;
+  admission: Admission | null | undefined;
+  loading: boolean;
+  error: string | null;
+  room: bigint | null;
+  deposit: bigint;
+}) {
+  const parts: ReactNode[] = [];
+  if (auction.minRaise > 0n) {
+    parts.push(
+      <p key="raise" className="hint">
+        The sale goes ahead only if the winners pay at least {formatSol(auction.minRaise)} SOL in all. If they would
+        not, every bid gets its whole deposit back.
+      </p>
+    );
+  }
+  if (auction.allowlist) {
+    let text: ReactNode;
+    let tone = "";
+    if (error) {
+      text = `The allowlist could not be checked: ${error}`;
+      tone = " hint--error";
+    } else if (loading || admission === undefined) {
+      text = "Checking the allowlist…";
+    } else if (!admission) {
+      text = "Only wallets on the seller's allowlist can bid. Connect a wallet to see whether yours is on it.";
+    } else if (!admission.listed) {
+      text = "Only wallets on the seller's allowlist can bid, and this wallet is not on it.";
+      tone = " hint--error";
+    } else {
+      text = admission.joined
+        ? "This wallet is on the allowlist."
+        : "This wallet is on the allowlist. Your first bid also admits it to the sale, in a transaction of its own.";
+    }
+    parts.push(
+      <p key="list" className={`hint${tone}`}>
+        {text}
+      </p>
+    );
+    if (auction.walletCap > 0n && room !== null) {
+      parts.push(
+        <p key="cap" className={`hint${deposit > room ? " hint--error" : ""}`}>
+          A wallet may deposit at most {formatSol(auction.walletCap)} SOL across its bids; this one has{" "}
+          {formatSol(room > 0n ? room : 0n)} SOL left.
+        </p>
+      );
+    }
+  }
+  return parts.length > 0 ? <>{parts}</> : null;
 }
 
 /**
@@ -785,7 +873,7 @@ function Progress({
 
   // A sale that missed its pool's minimum refunds its bids instead, with no
   // computation.
-  const failed = auction.liquidity === "failed";
+  const failed = saleFailed(auction);
   const settle = (bid: Bid) =>
     action.run(`settle-${bid.address.toBase58()}`, async () => {
       const s = needSigner();
@@ -1051,9 +1139,9 @@ function Progress({
           <Step state={settleState} title={failed ? "Refund every bid" : "Settle every bid"}>
             {failed ? (
               <p className="muted">
-                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} refunded. The sale missed its
-                pool's minimum, so every bid gets its whole deposit back, with no computation. Anyone can refund any
-                bid.
+                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} refunded. The sale missed{" "}
+                {auction.raiseMissed ? `its minimum raise of ${formatSol(auction.minRaise)} SOL` : "its pool's minimum"}, so every
+                bid gets its whole deposit back, with no computation. Anyone can refund any bid.
               </p>
             ) : (
               <p className="muted">
@@ -1199,8 +1287,8 @@ function Progress({
           <p>
             {auction.liquidity === "pooled"
               ? "Your share of the proceeds was paid when the pool opened. Finish the sale to take back any unsold tokens."
-              : auction.liquidity === "failed"
-                ? "The sale did not go ahead. Take back your tokens and the pool's reserve."
+              : failed
+                ? `The sale did not go ahead. Take back your tokens${auction.liquidity === "failed" ? " and the pool's reserve" : ""}.`
                 : auction.status === "settling"
               ? auction.saleFeeBps > 0
                 ? `You can collect ${formatSol(auction.proceeds - fee)} SOL: ${formatSol(auction.proceeds)} SOL of sales less the ${formatPercent(auction.saleFeeBps)} platform fee (${formatSol(fee)} SOL)${collection ? "." : ", plus any unsold tokens."}`
@@ -1212,7 +1300,7 @@ function Progress({
           <Button variant="primary" onClick={claim} busy={action.busy === "claim"}>
             {auction.liquidity === "pooled"
               ? "Finish the sale"
-              : auction.liquidity === "failed"
+              : failed
                 ? "Take tokens back"
                 : auction.status === "settling"
                   ? "Claim proceeds"
@@ -1746,6 +1834,28 @@ export function AuctionPage({ address }: { address: string }) {
               <div>
                 <dt>Most per bid</dt>
                 <dd>{plural(auction.maxPerBid, "NFT")}</dd>
+              </div>
+            ) : null}
+            {auction.minRaise > 0n ? (
+              <div>
+                <dt>Minimum raise</dt>
+                <dd>
+                  {formatSol(auction.minRaise)} SOL
+                  <span className="muted">
+                    {auction.raiseMissed ? " (missed: every bid is refunded)" : "; below it the sale does not go ahead"}
+                  </span>
+                </dd>
+              </div>
+            ) : null}
+            {auction.allowlist ? (
+              <div>
+                <dt>Who can bid</dt>
+                <dd>
+                  Wallets on the seller's allowlist
+                  {auction.walletCap > 0n ? (
+                    <span className="muted">, up to {formatSol(auction.walletCap)} SOL of deposits each</span>
+                  ) : null}
+                </dd>
               </div>
             ) : null}
             <div>

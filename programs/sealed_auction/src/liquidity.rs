@@ -118,13 +118,20 @@ pub struct LiquidityPlan {
 /// Rounding in the awards can make the real figure a few lamports lower; the
 /// pool then takes all of it.
 pub fn expected_net_proceeds(auction: &Auction) -> u64 {
+    let gross = expected_gross_proceeds(auction);
+    gross - sale_fee(gross, auction.sale_fee_bps)
+}
+
+/// What the winners of a token sale cleared at the auction's price will
+/// roughly pay in all, before the sale fee (see `expected_net_proceeds`):
+/// what the minimum raise (`Auction::min_raise`) is measured against.
+pub fn expected_gross_proceeds(auction: &Auction) -> u64 {
     let gross = if auction.filled {
         auction.supply as u128 * auction.clearing_price as u128 / auction.price_unit.max(1) as u128
     } else {
         auction.weight_above
     };
-    let gross = u64::try_from(gross).unwrap_or(u64::MAX);
-    gross - sale_fee(gross, auction.sale_fee_bps)
+    u64::try_from(gross).unwrap_or(u64::MAX)
 }
 
 /// Lamports the pool gets out of `net` proceeds: `lp_bps` of them, raised to

@@ -164,9 +164,11 @@ impl Idl {
                 ("min_deposit", "u64"),
                 ("max_per_bid", "u16"),
                 ("end_time", "i64"),
+                ("min_raise", "u64"),
             ],
         );
         idl.assert_fields("FeeTerms", &[("listing_fee", "u64"), ("sale_fee_bps", "u16")]);
+        idl.assert_fields("SaleRules", &[("min_raise", "u64"), ("wallet_cap", "u64"), ("allowlist", "bool")]);
         idl.assert_fields(
             "CollectionTerms",
             &[
@@ -321,6 +323,7 @@ impl Args {
             .u64(view.min_deposit)
             .u16(view.max_per_bid)
             .i64(view.end_time)
+            .u64(view.min_raise)
     }
 }
 
@@ -468,6 +471,16 @@ struct AuctionInfo {
     min_deposit: u64,
     max_per_bid: u16,
     end_time: i64,
+    /// Token sales: the minimum raise (0 for none).
+    min_raise: u64,
+}
+
+/// A token sale's `SaleRules`.
+#[derive(Clone, Copy, Default)]
+struct Rules {
+    min_raise: u64,
+    wallet_cap: u64,
+    allowlist: bool,
 }
 
 struct Env {
@@ -693,6 +706,10 @@ impl Env {
             ("liquidity_floor", 8),
             ("extended_secs", 4),
             ("prepaid_pages", 1),
+            ("min_raise", 8),
+            ("wallet_cap", 8),
+            ("allowlist", 1),
+            ("raise_missed", 1),
         ] {
             if name == field {
                 return at;
@@ -961,7 +978,15 @@ impl Env {
         Instruction::new_with_bytes(
             PROGRAM_ID,
             &self.idl.data("increase_bid", &args.0),
-            vec![signer(*bidder), w(view.auction), w(book), self.index_meta(view), w(bid), r(SYSTEM_PROGRAM)],
+            vec![
+                signer(*bidder),
+                w(view.auction),
+                w(book),
+                self.index_meta(view),
+                w(bid),
+                r(SYSTEM_PROGRAM),
+                self.participant_meta(view, bidder),
+            ],
         )
     }
 
@@ -1019,10 +1044,29 @@ impl Env {
         terms: TokenTerms,
         fees: (u64, u16),
     ) -> (Instruction, AuctionInfo) {
+        self.create_auction_ix_with(seller, seed, mint, terms, fees, Rules::default())
+    }
+
+    /// `create_auction` with sale rules.
+    fn create_auction_ix_with(
+        &self,
+        seller: &Address,
+        seed: u64,
+        mint: Address,
+        terms: TokenTerms,
+        fees: (u64, u16),
+        rules: Rules,
+    ) -> (Instruction, AuctionInfo) {
         let auction = pda(&[b"auction", seller.as_ref(), &seed.to_le_bytes()]);
         let book = pda(&[b"book", auction.as_ref()]);
         let vault = ata(&auction, &mint);
-        let args = Args::default().u64(seed).token_terms(&terms).fees(fees);
+        let args = Args::default()
+            .u64(seed)
+            .token_terms(&terms)
+            .fees(fees)
+            .u64(rules.min_raise)
+            .u64(rules.wallet_cap)
+            .u8(rules.allowlist as u8);
         let ix = Instruction::new_with_bytes(
             PROGRAM_ID,
             &self.idl.data("create_auction", &args.0),
@@ -1055,6 +1099,7 @@ impl Env {
             min_deposit: terms.min_deposit,
             max_per_bid: 0,
             end_time: terms.start_time.max(self.now()) + terms.duration_secs,
+            min_raise: rules.min_raise,
         };
         (ix, info)
     }
@@ -1130,6 +1175,7 @@ impl Env {
             // The cheapest valid bid: one NFT at the minimum price.
             min_deposit: terms.min_price as u64 * NFT_PRICE_SCALE,
             max_per_bid: terms.max_per_bid,
+            min_raise: 0,
             end_time: terms.start_time.max(self.now()) + terms.duration_secs,
         };
         (ix, info)
@@ -1179,6 +1225,12 @@ impl Env {
             _ => (self.read_u32(&view.auction, "Auction", "bid_count") / PAGE_BIDS as u32).min(self.extra_pages(view) as u32),
         };
         let book = page_address(view, page as u8);
+        // In a sale with an allowlist: the bidder's admission, and the
+        // replaced wallet's when it is another.
+        let evicted_participant = match evicted {
+            Some((_, owner)) if owner != *bidder => self.participant_meta(view, &owner),
+            _ => r(PROGRAM_ID),
+        };
         let accounts = vec![
             signer(*bidder),
             w(view.auction),
@@ -1188,6 +1240,8 @@ impl Env {
             evicted_bid,
             evicted_bidder,
             r(SYSTEM_PROGRAM),
+            self.participant_meta(view, bidder),
+            evicted_participant,
         ];
         let ix = Instruction::new_with_bytes(PROGRAM_ID, &self.idl.data("place_bid", &args.0), accounts);
         (ix, bid)
@@ -1222,6 +1276,7 @@ impl Env {
             r(SYSTEM_PROGRAM),
         ]);
         if closing {
+            accounts.push(self.list_meta(a));
             accounts.extend(self.page_metas(a));
         }
         Instruction::new_with_bytes(PROGRAM_ID, &self.idl.data(name, &[]), accounts)
@@ -1235,6 +1290,69 @@ impl Env {
         } else {
             r(PROGRAM_ID)
         }
+    }
+
+    /// The sale's `Allowlist` when it has one, else the program id.
+    fn list_meta(&self, a: &AuctionInfo) -> AccountMeta {
+        let list = allowlist_address(a);
+        if self.exists(&list) {
+            w(list)
+        } else {
+            r(PROGRAM_ID)
+        }
+    }
+
+    /// `wallet`'s `Participant` in the sale when it joined, else the
+    /// program id.
+    fn participant_meta(&self, a: &AuctionInfo, wallet: &Address) -> AccountMeta {
+        let p = participant_address(a, wallet);
+        if self.exists(&p) {
+            w(p)
+        } else {
+            r(PROGRAM_ID)
+        }
+    }
+
+    /// `set_allowlist` with `root` and `uri`, signed by `seller`.
+    fn set_allowlist_ix(&self, a: &AuctionInfo, seller: &Address, root: [u8; 32], uri: &str) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("set_allowlist", &Args::default().bytes(&root).string(uri).0),
+            vec![signer(*seller), r(a.auction), w(allowlist_address(a)), r(SYSTEM_PROGRAM)],
+        )
+    }
+
+    /// `join_auction` by `wallet` with `proof`.
+    fn join_ix(&self, a: &AuctionInfo, wallet: &Address, proof: &[[u8; 32]]) -> Instruction {
+        let mut args = Args::default().u32(proof.len() as u32);
+        for node in proof {
+            args = args.bytes(node);
+        }
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("join_auction", &args.0),
+            vec![
+                signer(*wallet),
+                r(a.auction),
+                r(allowlist_address(a)),
+                w(participant_address(a, wallet)),
+                r(SYSTEM_PROGRAM),
+            ],
+        )
+    }
+
+    /// `close_participant` of `wallet`'s admission to `a`.
+    fn close_participant_ix(&self, a: &AuctionInfo, wallet: &Address) -> Instruction {
+        Instruction::new_with_bytes(
+            PROGRAM_ID,
+            &self.idl.data("close_participant", &[]),
+            vec![w(*wallet), r(a.auction), w(participant_address(a, wallet))],
+        )
+    }
+
+    /// The deposits `wallet` has made in the sale, as its admission counts them.
+    fn deposited(&self, a: &AuctionInfo, wallet: &Address) -> u64 {
+        self.read_u64(&participant_address(a, wallet), "Participant", "deposited")
     }
 
     /// The auction's `BookIndex` when it has one, else the program id.
@@ -1439,6 +1557,16 @@ fn fold_address(a: &AuctionInfo) -> Address {
     pda(&[b"fold", a.auction.as_ref()])
 }
 
+/// A token sale's allowlist.
+fn allowlist_address(a: &AuctionInfo) -> Address {
+    pda(&[b"allowlist", a.auction.as_ref()])
+}
+
+/// `wallet`'s admission to a sale with an allowlist.
+fn participant_address(a: &AuctionInfo, wallet: &Address) -> Address {
+    pda(&[b"participant", a.auction.as_ref(), wallet.as_ref()])
+}
+
 /// The index of the auction's book, once it has a second page.
 fn index_address(a: &AuctionInfo) -> Address {
     pda(&[b"index", a.auction.as_ref()])
@@ -1458,6 +1586,7 @@ fn item_list_address(auction: &Address) -> Address {
 fn anchor_error(name: &str) -> u32 {
     match name {
         "ConstraintSeeds" => 2006,
+        "ConstraintDuplicateMutableAccount" => 2040,
         other => panic!("no error named {other}"),
     }
 }
@@ -3610,7 +3739,7 @@ fn bids_are_refunded_this_way_only_when_the_floor_was_missed() {
     env.simulate_clearing(&a, 10_000, true, 600_000_000, 600_000_000);
     let caller = env.funded(1);
     let ix = env.bid_ix("refund_failed_bid", &a, bids[0].1, bids[0].0.pubkey());
-    env.expect_error(&[ix], &caller, &[], "LiquidityNotPlanned");
+    env.expect_error(&[ix], &caller, &[], "SaleNotFailed");
 }
 
 #[test]
@@ -3895,4 +4024,226 @@ fn a_collection_takes_10240_bids_in_one_sale_and_one_price() {
     // Every page's rent went to the seller, as did the auction's own.
     assert!(env.balance(&seller.pubkey()) + TX_FEE >= before + held);
     println!("most compute units used by one transaction: {}", env.max_compute_units);
+}
+
+// ---------------------------------------------------------------------------
+// Sale rules: a minimum raise, an allowlist and a cap per wallet
+// ---------------------------------------------------------------------------
+
+/// The allowlist tree the app builds: leaves `sha256(0x00 || wallet)` in
+/// order, each level pairing neighbours as `sha256(0x01 || low || high)`, an
+/// odd node carried up. Returns the root and each wallet's proof.
+fn allowlist_tree(wallets: &[Address]) -> ([u8; 32], Vec<Vec<[u8; 32]>>) {
+    let leaf = |w: &Address| solana_sha256_hasher::hashv(&[&[0u8], w.as_ref()]).to_bytes();
+    let node = |a: &[u8; 32], b: &[u8; 32]| {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        solana_sha256_hasher::hashv(&[&[1u8], lo, hi]).to_bytes()
+    };
+    let mut level: Vec<[u8; 32]> = wallets.iter().map(leaf).collect();
+    let mut at: Vec<usize> = (0..wallets.len()).collect();
+    let mut proofs = vec![Vec::new(); wallets.len()];
+    while level.len() > 1 {
+        for (w, i) in at.iter_mut().enumerate() {
+            if (*i ^ 1) < level.len() {
+                proofs[w].push(level[*i ^ 1]);
+            }
+            *i /= 2;
+        }
+        level = level.chunks(2).map(|p| if p.len() == 2 { node(&p[0], &p[1]) } else { p[0] }).collect();
+    }
+    (level[0], proofs)
+}
+
+const LIST_URI: &str = "https://arweave.net/allowlist-index";
+
+#[test]
+fn allowlisted_sales_take_bids_only_from_listed_wallets_within_their_cap() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let cap = 3 * TOKEN_TERMS.min_deposit;
+    let rules = Rules { min_raise: 0, wallet_cap: cap, allowlist: true };
+    // A cap needs an allowlist, and must allow at least one minimum deposit.
+    let (ix, _) = env.create_auction_ix_with(&seller.pubkey(), 30, mint, TOKEN_TERMS, (LISTING_FEE, SALE_FEE_BPS), Rules { allowlist: false, ..rules });
+    env.expect_error(&[ix], &seller, &[], "InvalidSaleRules");
+    let (ix, _) = env.create_auction_ix_with(&seller.pubkey(), 30, mint, TOKEN_TERMS, (LISTING_FEE, SALE_FEE_BPS), Rules { wallet_cap: TOKEN_TERMS.min_deposit - 1, ..rules });
+    env.expect_error(&[ix], &seller, &[], "InvalidSaleRules");
+    let (ix, a) = env.create_auction_ix_with(&seller.pubkey(), 30, mint, TOKEN_TERMS, (LISTING_FEE, SALE_FEE_BPS), rules);
+    env.send(&[ix], &seller, &[]).expect("create");
+    assert!(env.auction_flag(&a.auction, "allowlist"));
+
+    let alice = env.funded(2);
+    let bob = env.funded(2);
+    let eve = env.funded(2);
+    let listed: Vec<Address> = [alice.pubkey(), bob.pubkey()].into_iter().chain((0..5).map(|_| Address::new_unique())).collect();
+    let (root, proofs) = allowlist_tree(&listed);
+
+    // Until the list is set nobody can join, so nobody can bid.
+    assert!(env.send(&[env.join_ix(&a, &alice.pubkey(), &proofs[0])], &alice, &[]).is_err());
+    let key = honest_key(1);
+    let (ix, _) = env.place_bid_ix(&a, &alice.pubkey(), 1, key, edwards_y(&key), a.min_deposit, None);
+    env.expect_error(&[ix], &alice, &[], "NotOnAllowlist");
+
+    // Only the seller sets it, and only once.
+    env.expect_error(&[env.set_allowlist_ix(&a, &eve.pubkey(), root, LIST_URI)], &eve, &[], "Unauthorized");
+    env.send(&[env.set_allowlist_ix(&a, &seller.pubkey(), root, LIST_URI)], &seller, &[]).expect("set allowlist");
+    assert!(env.send(&[env.set_allowlist_ix(&a, &seller.pubkey(), [7; 32], LIST_URI)], &seller, &[]).is_err());
+
+    // A wallet joins only with its own proof.
+    env.expect_error(&[env.join_ix(&a, &eve.pubkey(), &proofs[0])], &eve, &[], "NotOnAllowlist");
+    env.expect_error(&[env.join_ix(&a, &alice.pubkey(), &proofs[1])], &alice, &[], "NotOnAllowlist");
+    env.send(&[env.join_ix(&a, &alice.pubkey(), &proofs[0])], &alice, &[]).expect("alice joins");
+    assert!(env.send(&[env.join_ix(&a, &alice.pubkey(), &proofs[0])], &alice, &[]).is_err());
+
+    // Listed wallets bid; others cannot, not even with someone else's admission.
+    let alice_bid = env.bid(&a, &alice, 1, a.min_deposit);
+    assert_eq!(env.deposited(&a, &alice.pubkey()), a.min_deposit);
+    let key = honest_key(2);
+    let (ix, _) = env.place_bid_ix(&a, &eve.pubkey(), 2, key, edwards_y(&key), a.min_deposit, None);
+    env.expect_error(&[ix.clone()], &eve, &[], "NotOnAllowlist");
+    let mut borrowed = ix;
+    borrowed.accounts[8] = w(participant_address(&a, &alice.pubkey()));
+    env.expect_error(&[borrowed], &eve, &[], "NotOnAllowlist");
+
+    // The cap counts every bid of the wallet, and raises too.
+    let alice_second = env.bid(&a, &alice, 3, a.min_deposit);
+    let key = honest_key(4);
+    let (ix, _) = env.place_bid_ix(&a, &alice.pubkey(), 4, key, edwards_y(&key), a.min_deposit + 1, None);
+    env.expect_error(&[ix], &alice, &[], "WalletCapExceeded");
+    let ix = env.increase_bid_ix(&a, &alice.pubkey(), alice_bid, honest_key(5), 5, None, a.min_deposit + 1);
+    env.expect_error(&[ix], &alice, &[], "WalletCapExceeded");
+    let ix = env.increase_bid_ix(&a, &alice.pubkey(), alice_bid, honest_key(6), 6, None, a.min_deposit);
+    env.send(&[ix], &alice, &[]).expect("raise up to the cap");
+    assert_eq!(env.deposited(&a, &alice.pubkey()), cap);
+    env.send(&[env.join_ix(&a, &bob.pubkey(), &proofs[1])], &bob, &[]).expect("bob joins");
+    let bob_bid = env.bid(&a, &bob, 7, cap);
+    assert_eq!(env.deposited(&a, &bob.pubkey()), cap);
+
+    // Admissions close once bidding is over, their rent going back to the wallet.
+    env.expect_error(&[env.close_participant_ix(&a, &bob.pubkey())], &eve, &[], "BiddingOpen");
+    env.set_time(a.end_time);
+    let before = env.balance(&bob.pubkey());
+    let rent = env.balance(&participant_address(&a, &bob.pubkey()));
+    env.send(&[env.close_participant_ix(&a, &bob.pubkey())], &eve, &[]).expect("close bob's admission");
+    assert_eq!(env.balance(&bob.pubkey()), before + rent);
+    assert!(!env.exists(&participant_address(&a, &bob.pubkey())));
+
+    // The list closes with the auction (safety net, then close).
+    env.set_time(a.end_time + EMERGENCY_DELAY_SECS);
+    env.send(&[env.seller_ix("claim_proceeds", &a)], &seller, &[]).expect("claim");
+    for (bid, owner) in [(alice_bid, alice.pubkey()), (alice_second, alice.pubkey()), (bob_bid, bob.pubkey())] {
+        env.send(&[env.bid_ix("emergency_refund", &a, bid, owner)], &eve, &[]).expect("refund");
+    }
+    let list_rent = env.balance(&allowlist_address(&a));
+    assert!(list_rent > 0);
+    env.send(&[env.seller_ix("close_auction", &a)], &seller, &[]).expect("close");
+    assert!(!env.exists(&allowlist_address(&a)));
+    // An admission whose auction is gone still closes.
+    env.send(&[env.close_participant_ix(&a, &alice.pubkey())], &eve, &[]).expect("close alice's admission");
+}
+
+#[test]
+fn replacing_a_bid_frees_room_under_its_wallets_cap() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let rules = Rules { min_raise: 0, wallet_cap: 1_000 * SOL, allowlist: true };
+    let (ix, a) = env.create_auction_ix_with(&seller.pubkey(), 31, mint, TOKEN_TERMS, (LISTING_FEE, SALE_FEE_BPS), rules);
+    env.send(&[ix], &seller, &[]).expect("create");
+    let many = env.funded(60);
+    let small = env.funded(2);
+    let late = env.funded(2);
+    let listed = vec![many.pubkey(), small.pubkey(), late.pubkey()];
+    let (root, proofs) = allowlist_tree(&listed);
+    env.send(&[env.set_allowlist_ix(&a, &seller.pubkey(), root, LIST_URI)], &seller, &[]).expect("set allowlist");
+    for (kp, proof) in [&many, &small, &late].into_iter().zip(&proofs) {
+        env.send(&[env.join_ix(&a, &kp.pubkey(), proof)], kp, &[]).expect("join");
+    }
+
+    // Fill all four pages: bid 0 is the smallest (one wallet), bid 1 the
+    // next smallest (the busy wallet's own).
+    let base = 10_000u64;
+    let mut bids = Vec::new();
+    for i in 0..PAGE_BIDS * MAX_PAGES as u64 {
+        let (kp, deposit) = match i {
+            0 => (&small, base),
+            1 => (&many, base + 1),
+            _ => (&many, base + 10 + i),
+        };
+        let key = honest_key(i);
+        let (mut ix, bid) = env.place_bid_ix(&a, &kp.pubkey(), i, key, edwards_y(&key), deposit, None);
+        let mut ixs = Vec::new();
+        if i > 0 && i % PAGE_BIDS == 0 {
+            let page = (i / PAGE_BIDS) as u8;
+            ixs.push(env.open_page_ix(&a, &kp.pubkey(), page));
+            ix.accounts[2] = w(page_address(&a, page));
+            ix.accounts[3] = w(index_address(&a));
+        }
+        ixs.push(ix);
+        env.send(&ixs, kp, &[]).unwrap_or_else(|e| panic!("bid {i}: {e:?}"));
+        bids.push(bid);
+    }
+    let many_total = env.deposited(&a, &many.pubkey());
+    assert_eq!(env.deposited(&a, &small.pubkey()), base);
+
+    // Replacing another wallet's bid takes its deposit off that wallet's count.
+    let key = honest_key(90_000);
+    let hint = edwards_y(&key);
+    let mut ix = env.place_bid_ix(&a, &late.pubkey(), 1, key, hint, 2 * base, Some((bids[0], small.pubkey()))).0;
+    ix.accounts[9] = r(PROGRAM_ID);
+    env.expect_error(&[ix], &late, &[], "WrongBidAccounts");
+    let ix = env.place_bid_ix(&a, &late.pubkey(), 1, key, hint, 2 * base, Some((bids[0], small.pubkey()))).0;
+    env.send(&[ix], &late, &[]).expect("replace the smallest bid");
+    assert_eq!(env.deposited(&a, &small.pubkey()), 0);
+    assert_eq!(env.deposited(&a, &late.pubkey()), 2 * base);
+
+    // A wallet replacing its own bid passes its admission once: passing it
+    // twice could let one copy overwrite the other.
+    let key = honest_key(90_001);
+    let hint = edwards_y(&key);
+    let mut ix = env.place_bid_ix(&a, &many.pubkey(), 90_001, key, hint, 2 * base, Some((bids[1], many.pubkey()))).0;
+    ix.accounts[9] = w(participant_address(&a, &many.pubkey()));
+    env.expect_error(&[ix], &many, &[], "ConstraintDuplicateMutableAccount");
+    let ix = env.place_bid_ix(&a, &many.pubkey(), 90_001, key, hint, 2 * base, Some((bids[1], many.pubkey()))).0;
+    env.send(&[ix], &many, &[]).expect("replace its own bid");
+    assert_eq!(env.deposited(&a, &many.pubkey()), many_total - (base + 1) + 2 * base);
+}
+
+#[test]
+fn a_sale_that_misses_its_minimum_raise_refunds_every_bid() {
+    let mut env = Env::new();
+    let seller = env.funded(10);
+    let mint = env.fixed_supply_mint(&seller, 1_000);
+    let rules = Rules { min_raise: SOL, ..Rules::default() };
+    let (ix, a) = env.create_auction_ix_with(&seller.pubkey(), 32, mint, TOKEN_TERMS, (LISTING_FEE, SALE_FEE_BPS), rules);
+    env.send(&[ix], &seller, &[]).expect("create");
+    assert_eq!(env.read_u64(&a.auction, "Auction", "supply"), TOKEN_TERMS.supply);
+
+    // A bidder who saw no minimum is refused: it is part of the terms.
+    let bidder = env.funded(5);
+    let key = honest_key(1);
+    let (ix, _) = env.place_bid_ix(&AuctionInfo { min_raise: 0, ..a }, &bidder.pubkey(), 1, key, edwards_y(&key), SOL, None);
+    env.expect_error(&[ix], &bidder, &[], "TermsMismatch");
+    let bids: Vec<Address> = (0..3).map(|i| env.bid(&a, &bidder, 10 + i, SOL / 2)).collect();
+
+    // The clearing found a price of 5,000,000 lamports a token: the 100
+    // tokens would raise 0.5 SOL, short of the minimum.
+    env.set_time(a.end_time + 1);
+    env.simulate_clearing(&a, 5_000_000, true, 0, 1_500_000_000);
+    let caller = env.funded(1);
+    env.expect_error(&[env.bid_ix("refund_failed_bid", &a, bids[0], bidder.pubkey())], &caller, &[], "SaleNotFailed");
+    env.write_auction_tail(&a.auction, "raise_missed", &[1]);
+
+    // Every bid gets its whole deposit and rent back, no MPC needed.
+    let before = env.balance(&bidder.pubkey());
+    let held: u64 = bids.iter().map(|b| env.balance(b)).sum();
+    for bid in &bids {
+        env.send(&[env.bid_ix("refund_failed_bid", &a, *bid, bidder.pubkey())], &caller, &[]).expect("refund");
+    }
+    assert_eq!(env.balance(&bidder.pubkey()), before + held);
+    // The seller gets every token back and closes the sale.
+    env.send(&[env.seller_ix("claim_proceeds", &a)], &seller, &[]).expect("claim");
+    assert_eq!(env.token_amount(&ata(&seller.pubkey(), &mint)), 1_000);
+    env.send(&[env.seller_ix("close_auction", &a)], &seller, &[]).expect("close");
+    assert!(!env.exists(&a.auction));
 }

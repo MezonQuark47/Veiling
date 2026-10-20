@@ -41,6 +41,7 @@ export const DOC_SECTIONS: [string, string][] = [
   ["price", "The clearing price"],
   ["launch", "Drops and collections"],
   ["nfts", "NFT collections"],
+  ["rules", "Sale rules"],
   ["liquidity", "Auto-liquidity"],
   ["fees", "Fees"],
   ["privacy", "What stays private"],
@@ -390,6 +391,28 @@ export function Docs({ section }: { section: string }) {
               <li>
                 When the sale is closed, the seller becomes the collection's update authority. Like any creator,
                 they can then change the collection's and its NFTs' metadata.
+              </li>
+            </ul>
+          </Section>
+
+          <Section id="rules" title="Sale rules">
+            <p>A token sale can open with up to three rules. They are fixed when it opens and nobody can change them.</p>
+            <ul className="doc__bullets">
+              <li>
+                <strong>Minimum raise.</strong> The least the winners must pay in all. When the price is found, if
+                the sale would raise less, it does not go ahead: every bidder gets their whole deposit back, with no
+                computation, and the seller keeps their tokens. The minimum is part of the terms a bid commits to.
+              </li>
+              <li>
+                <strong>Allowlist.</strong> Only the wallets the seller lists can bid. The list is published with the
+                sale, and the program keeps only its fingerprint (a Merkle root), so it can never be swapped. A
+                listed wallet proves it is on the list the first time it bids, in a small transaction of its own;
+                that admission's rent comes back once bidding is over.
+              </li>
+              <li>
+                <strong>Most per wallet.</strong> With an allowlist, the seller can cap what one wallet deposits across
+                all its bids. A budget can never exceed its deposit, so this also caps what one wallet can buy.
+                Without an allowlist a cap would mean little, since anyone could split their bids across wallets.
               </li>
             </ul>
           </Section>
