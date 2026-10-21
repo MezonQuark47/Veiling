@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { DemandChart } from "../components/DemandChart";
+import { BidTower, type Box, Scene } from "../components/Tower";
 import { AuctionTable, statusText, supplyDescription } from "../components/AuctionTable";
 import { Button, Notice, useAction, useAssetInfo, useLoader, useMetadataImage, useNow } from "../components/ui";
 import { buildAcceptAdmin } from "../lib/actions";
@@ -111,6 +111,91 @@ function AdminOffer({ accepted, onAccepted }: { accepted: boolean; onAccepted: (
   );
 }
 
+/** One live sale in the strip under the top bar. */
+function TickerItem({ auction, now, hidden }: { auction: Auction; now: number; hidden?: boolean }) {
+  const asset = useAssetInfo(auction);
+  const live = phaseOf(auction, now) === "bidding";
+  return (
+    <a
+      className="ticker__item"
+      href={`#/auction/${auction.address.toBase58()}`}
+      tabIndex={hidden ? -1 : undefined}
+      aria-hidden={hidden || undefined}
+    >
+      <span className={`ticker__dot${live ? " ticker__dot--live" : ""}`} />
+      <strong>{asset.title}</strong>
+      <span className="muted">{statusText(auction, now, asset)}</span>
+    </a>
+  );
+}
+
+/** The sales on now, scrolling; the list is drawn twice so the loop is seamless. */
+function Ticker({ auctions, now }: { auctions: Auction[]; now: number }) {
+  if (auctions.length === 0) return null;
+  const items = auctions.slice(0, 12);
+  return (
+    <div className="ticker" aria-label="Sales on now">
+      <div className={`ticker__track${items.length > 2 ? " ticker__track--moving" : ""}`}>
+        {items.map((a) => (
+          <TickerItem key={a.address.toBase58()} auction={a} now={now} />
+        ))}
+        {items.length > 2
+          ? items.map((a) => <TickerItem key={`again-${a.address.toBase58()}`} auction={a} now={now} hidden />)
+          : null}
+      </div>
+    </div>
+  );
+}
+
+const STACK = [70, 110, 90, 125];
+
+function stack(fate: boolean): Box[] {
+  return STACK.map((s, i) => ({
+    y: i * 20 - 30 + (fate && i >= 2 ? 18 : 0),
+    w: s,
+    h: 12,
+    d: s,
+    look: fate ? (i < 2 ? "lit" : "out") : "",
+  }));
+}
+
+const STEPS: { title: string; text: string; boxes: Box[] }[] = [
+  {
+    title: "Name your price",
+    text: "For a token, set the SOL you want to spend and the most you would pay per token. For an NFT collection, choose how many NFTs and the most you would pay for each. Your deposit covers it.",
+    boxes: [{ y: 0, w: 110, h: 16, d: 110 }],
+  },
+  {
+    title: "Your bid is sealed",
+    text: "Your price is encrypted in your browser and tied to your bid. Arcium’s network works with the bids without anyone, including us, seeing them one by one.",
+    boxes: [
+      { y: 6, w: 84, h: 14, d: 84 },
+      { y: 0, w: 140, h: 64, d: 140, look: "glass" },
+    ],
+  },
+  {
+    title: "One price is found",
+    text: "After bidding closes, the clearing price is the highest price at which the bids cover the supply.",
+    boxes: [...stack(false), { y: 0, w: 170, h: 1, d: 170, look: "plane" }],
+  },
+  {
+    title: "Everyone pays the same",
+    text: "Bids above it win, bids exactly at it share what is left, and every winner pays that one price. Bids below it stay sealed and are refunded in full.",
+    boxes: stack(true),
+  },
+];
+
+const TOKENS: Box[] = Array.from({ length: 7 }, (_, i) => ({ y: i * 13 - 40, w: 120, h: 9, d: 120, look: i < 3 ? "lit" : "" }));
+const NFTS: Box[] = Array.from({ length: 9 }, (_, n) => {
+  const won = [0, 4, 8].includes(n);
+  return { x: ((n % 3) - 1) * 60, z: (Math.floor(n / 3) - 1) * 60, y: won ? -26 : 0, w: 44, h: 44, d: 44, look: won ? "lit" : "" };
+});
+const POOL: Box[] = [
+  { x: -46, y: 0, w: 76, h: 76, d: 76, look: "lit" },
+  { x: 46, y: 0, w: 76, h: 76, d: 76 },
+  { y: -39, w: 230, h: 1, d: 170, look: "plane" },
+];
+
 export function Home() {
   const now = useNow();
   const { publicKey } = useWallet();
@@ -134,9 +219,10 @@ export function Home() {
 
   const featured = visible.find((a) => a.featured && !a.hidden && rank(a, now) < 3) ?? visible.find((a) => a.featured);
   const filtered = visible.filter((a) => matches(filter, a, now));
+  const onNow = visible.filter((a) => !a.hidden && rank(a, now) < 3);
 
   return (
-    <main className="page">
+    <main className="page page--home">
       {offered || accepted ? (
         <AdminOffer
           accepted={accepted}
@@ -146,31 +232,47 @@ export function Home() {
           }}
         />
       ) : null}
-      <section className="hero">
-        <div className="hero__copy">
-          <h1 className="hero__title">Sealed bids. One fair price.</h1>
-          <p className="hero__lede">
-            Tokens and NFT collections, sold by sealed bid. Name the most you would pay and it stays encrypted.
-            When bidding closes, one clearing price is found, every winner pays it, and whatever you do not spend
-            comes back.
+      <Ticker auctions={onNow} now={now} />
+
+      <section className="stage">
+        <div className="stage__glow" aria-hidden="true" />
+        <div className="stage__copy">
+          <h1 className="stage__title">
+            <span className="stage__line">
+              <span>Bid in private.</span>
+            </span>
+            <span className="stage__line">
+              <span>Pay one fair price.</span>
+            </span>
+          </h1>
+          <p className="stage__lede">
+            Veiling sells tokens and new NFT collections on Solana by sealed bid. Your price stays encrypted from
+            the moment you bid. When bidding closes, one clearing price is found, every winner pays it, and
+            whatever you did not spend comes back.
           </p>
-          <div className="hero__actions">
-            <a className="btn btn--primary" href="#/launch">
-              Launch an auction
+          <div className="stage__actions">
+            <a
+              className="btn btn--primary btn--large"
+              href="#/"
+              onClick={(e) => {
+                e.preventDefault();
+                document.getElementById("all-auctions")?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            >
+              See live auctions
             </a>
-            <a className="btn btn--quiet" href="#/docs">
-              How it works
+            <a className="btn btn--secondary btn--large" href="#/launch">
+              Launch an auction
             </a>
           </div>
         </div>
-        <div className="hero__visual">
-          {featured ? <FeaturedCard auction={featured} now={now} /> : <DemandChart animate />}
-        </div>
+        <BidTower />
       </section>
 
-      <section className="section" aria-labelledby="all-auctions">
+      <section className="section" aria-labelledby="all-auctions-title" id="all-auctions">
+        {featured ? <FeaturedCard auction={featured} now={now} /> : null}
         <div className="section__head">
-          <h2 id="all-auctions" className="section__title">
+          <h2 id="all-auctions-title" className="section__title">
             Auctions
           </h2>
           <div className="segmented" role="group" aria-label="Filter auctions">
@@ -205,44 +307,98 @@ export function Home() {
         {filtered.length > 0 ? <AuctionTable auctions={filtered} now={now} /> : null}
       </section>
 
-      <section className="section how" id="how" aria-labelledby="how-title">
-        <h2 id="how-title" className="section__title">
-          How a sealed auction works
+      <section className="section" id="how" aria-labelledby="how-title">
+        <h2 id="how-title" className="section__title section__title--wide">
+          From your bid to your tokens
         </h2>
-        <div className={featured ? "how__layout" : undefined}>
-          <ol className="steps">
-            <li>
-              <h3>Name your price</h3>
-              <p>
-                For a token, set the SOL you want to spend and the most you would pay per token. For an NFT
-                collection, choose how many NFTs and the most you would pay for each. Your deposit covers it.
-              </p>
+        <ol className="steps3d">
+          {STEPS.map((s, i) => (
+            <li key={s.title} className="card3d">
+              <Scene boxes={s.boxes} className="scene--scroll" />
+              <h3>
+                <span className="card3d__n">{i + 1}</span>
+                {s.title}
+              </h3>
+              <p>{s.text}</p>
             </li>
-            <li>
-              <h3>Your bid is sealed</h3>
-              <p>
-                Your price is encrypted in your browser and tied to your bid, so nobody can copy it elsewhere.
-                Arcium's network works with the bids without anyone, including us, seeing them one by one.
-              </p>
-            </li>
-            <li>
-              <h3>One price clears everyone</h3>
-              <p>
-                After bidding closes, the clearing price is the highest price at which the bids cover the supply.
-                Bids above it win, bids exactly at it share what is left, and every winner pays that one price.
-                Token bids spend their budget at it, so a lower price buys more. Bids below it stay sealed and
-                are refunded in full.
-              </p>
-            </li>
-          </ol>
-          {featured ? <DemandChart className="how__chart" /> : null}
-        </div>
+          ))}
+        </ol>
         <p className="how__fine">
           Every token sold here has a fixed supply: its mint and freeze rights are revoked before the auction
           opens. An NFT collection is created with its auction and only winners' NFTs are ever minted. If the
           private network ever stalls, bidders can take back their deposits and sellers their tokens three days
           after the end. <a href="#/docs">Read the details</a>.
         </p>
+      </section>
+
+      <section className="section" aria-labelledby="private-title">
+        <div className="section__intro">
+          <h2 id="private-title" className="section__title section__title--wide">
+            No one sees your bid. Not the seller, not other bidders, not us.
+          </h2>
+          <p className="page__lede">
+            A deposit only bounds a bid, so a wall of large deposits proves nothing. Here is exactly what the
+            chain shows.
+          </p>
+        </div>
+        <div className="split">
+          <div className="split__card">
+            <h3 className="split__head">On chain, for anyone</h3>
+            <p>Who bid, how many bids, and each deposit</p>
+            <p>The clearing price and the demand at it</p>
+            <p>What each winner won and paid</p>
+          </div>
+          <div className="split__card split__card--sealed">
+            <h3 className="split__head">Sealed, for everyone</h3>
+            <p>The price of every bid, winning or not</p>
+            <p>The budget of every losing token bid</p>
+            <p>The size of every losing collection bid</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="section" aria-labelledby="sellers-title">
+        <div className="section__head section__head--end">
+          <div className="section__intro">
+            <h2 id="sellers-title" className="section__title">
+              For sellers
+            </h2>
+            <p className="page__lede">
+              Open a sale in one transaction. The rules are fixed before the first bid, and bidders see all of
+              them.
+            </p>
+          </div>
+          <a className="btn btn--primary btn--large" href="#/launch">
+            Launch an auction
+          </a>
+        </div>
+        <div className="bento">
+          <div className="card3d">
+            <Scene boxes={TOKENS} height={230} className="scene--dots" />
+            <h3>Token sales</h3>
+            <p>
+              Sell a fixed supply to up to 1,024 bidders. Set a minimum price, a minimum raise and, with an
+              allowlist, a cap per wallet.
+            </p>
+          </div>
+          <div className="card3d">
+            <Scene boxes={NFTS} height={230} className="scene--dots" />
+            <h3>NFT collections</h3>
+            <p>
+              Up to 10,000 NFTs and 10,240 bids. NFTs are minted when winners collect them, assigned at random,
+              and the art can stay hidden until the sale ends.
+            </p>
+          </div>
+          <div className="card3d">
+            <Scene boxes={POOL} height={230} className="scene--dots" />
+            <h3>A pool at the price</h3>
+            <p>
+              Part of a token sale's proceeds and the matching tokens can open a Meteora pool at exactly the
+              clearing price, locked for good. Trading starts with a 50% fee that falls to the pool's own fee
+              over ten minutes.
+            </p>
+          </div>
+        </div>
       </section>
     </main>
   );

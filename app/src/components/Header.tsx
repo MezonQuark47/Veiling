@@ -5,17 +5,15 @@ import { useWallet } from "../lib/wallet";
 import { errorMessage } from "../lib/tx";
 
 /**
- * Three sealed bids, highest first, and the clearing price in red: the two
- * above it win, the one below is refunded.
+ * A sealed bid seen from above, the clearing price drawn in light under it,
+ * and the refunded layer below.
  */
 export function Logo() {
   return (
-    <svg className="logo" viewBox="0 0 32 32" aria-hidden="true">
-      <circle cx="16" cy="16" r="13.5" className="logo__plate" />
-      <rect x="9" y="9.5" width="3.8" height="13.5" rx="0.6" className="logo__bar" />
-      <rect x="14.1" y="13" width="3.8" height="10" rx="0.6" className="logo__bar" />
-      <rect x="19.2" y="17.5" width="3.8" height="5.5" rx="0.6" className="logo__bar logo__bar--out" />
-      <path d="M7.4 15.6 H24.6" className="logo__line" />
+    <svg className="logo" viewBox="0 0 34 34" aria-hidden="true">
+      <path d="M17 3 30 10.5 17 18 4 10.5Z" className="logo__plate" />
+      <path d="M4 17.5 17 25 30 17.5" className="logo__line" />
+      <path d="M4 23.5 17 31 30 23.5" className="logo__line logo__line--out" />
     </svg>
   );
 }
