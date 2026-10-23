@@ -206,7 +206,7 @@ Key facts:
 
 ## App
 
-- [Auctions](${url("/")}): live, upcoming and ended sales
+- [Auctions](${url("/#/auctions")}): live, upcoming and ended sales
 - [Launch](${url("/#/launch")}): open a sale of a new token, a drop or a collection
 `;
 

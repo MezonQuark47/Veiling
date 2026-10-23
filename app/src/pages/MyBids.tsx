@@ -94,7 +94,7 @@ export function MyBids() {
       ) : groups.length === 0 ? (
         <div className="empty">
           <p>You have not bid on anything yet.</p>
-          <a className="btn btn--secondary" href="#/">
+          <a className="btn btn--secondary" href="#/auctions">
             Browse auctions
           </a>
         </div>

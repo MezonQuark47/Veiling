@@ -52,7 +52,7 @@ export function Header({ route }: { route: string }) {
           <span className="brand__name">Veiling</span>
         </a>
         <nav className="nav" aria-label="Main">
-          {link("#/", "Auctions", (r) => r === "" || r.startsWith("auction"))}
+          {link("#/auctions", "Auctions", (r) => r.startsWith("auction"))}
           {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
           {link("#/bids", "My bids", (r) => r.startsWith("bids"))}
           {/* A real path, so crawlers find the docs from every page. */}

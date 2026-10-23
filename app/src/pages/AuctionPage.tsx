@@ -1750,7 +1750,7 @@ export function AuctionPage({ address }: { address: string }) {
 
   return (
     <main className="page">
-      <a className="back" href="#/">
+      <a className="back" href="#/auctions">
         All auctions
       </a>
       {about?.banner ? <img className="auction-banner" src={about.banner} alt="" referrerPolicy="no-referrer" /> : null}

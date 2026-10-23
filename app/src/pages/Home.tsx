@@ -1,80 +1,12 @@
 import { useMemo, useState } from "react";
 import { BidTower, type Box, Scene } from "../components/Tower";
-import { AuctionTable, statusText, supplyDescription } from "../components/AuctionTable";
-import { Button, Notice, useAction, useAssetInfo, useLoader, useMetadataImage, useNow } from "../components/ui";
+import { statusText } from "../components/AuctionTable";
+import { Button, Notice, useAction, useAssetInfo, useLoader, useNow } from "../components/ui";
 import { buildAcceptAdmin } from "../lib/actions";
-import { type Auction, fetchAdminRoles, fetchAuctions, formatPrice, phaseOf } from "../lib/chain";
-import { formatCount, formatSol } from "../lib/format";
+import { type Auction, fetchAdminRoles, fetchAuctions, phaseOf } from "../lib/chain";
+import { rank } from "./Auctions";
 import { sendTransaction } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
-
-type Filter = "live" | "upcoming" | "ended" | "all";
-
-const FILTERS: [Filter, string][] = [
-  ["live", "Live"],
-  ["upcoming", "Upcoming"],
-  ["ended", "Ended"],
-  ["all", "All"],
-];
-
-/** 0: bidding, 1: settling, 2: starts later, 3: over. */
-function rank(a: Auction, now: number): number {
-  const phase = phaseOf(a, now);
-  if (phase === "bidding") return 0;
-  if (phase === "checking" || phase === "ready-to-clear" || phase === "settling") return 1;
-  if (phase === "upcoming") return 2;
-  return 3;
-}
-
-function matches(filter: Filter, a: Auction, now: number): boolean {
-  const r = rank(a, now);
-  if (filter === "live") return r < 2;
-  if (filter === "upcoming") return r === 2;
-  if (filter === "ended") return r === 3;
-  return true;
-}
-
-/** The featured auction, leading the front page. */
-function FeaturedCard({ auction, now }: { auction: Auction; now: number }) {
-  const asset = useAssetInfo(auction);
-  const art = useMetadataImage(asset.collection?.uri ?? null);
-  const phase = phaseOf(auction, now);
-  const bidding = phase === "bidding";
-  return (
-    <a className="feature" href={`#/auction/${auction.address.toBase58()}`}>
-      <span className="feature__top">
-        <span className="tag tag--featured">Featured</span>
-        <span className="feature__status">{statusText(auction, now, asset)}</span>
-      </span>
-      {art ? <img className="feature__art" src={art} alt="" referrerPolicy="no-referrer" loading="lazy" /> : null}
-      <span className="feature__title">{asset.title}</span>
-      <span className="feature__sub">{asset.sub}</span>
-      <dl className="feature__facts">
-        <div>
-          <dt>For sale</dt>
-          <dd>{supplyDescription(auction, asset)}</dd>
-        </div>
-        <div>
-          <dt>Minimum price</dt>
-          <dd>
-            {formatPrice(auction, auction.minPrice, asset.decimals)} <span className="muted">per {asset.unit}</span>
-          </dd>
-        </div>
-        <div>
-          <dt>Sealed bids</dt>
-          <dd>{formatCount(auction.bidCount)}</dd>
-        </div>
-        <div>
-          <dt>Deposited</dt>
-          <dd>{formatSol(auction.totalDeposited, 2)} SOL</dd>
-        </div>
-      </dl>
-      <span className="btn btn--primary feature__cta">
-        {bidding ? "Place a sealed bid" : phase === "upcoming" ? "See what is coming" : "View the auction"}
-      </span>
-    </a>
-  );
-}
 
 /** Shown to the wallet the admin has offered the role to, until it accepts. */
 function AdminOffer({ accepted, onAccepted }: { accepted: boolean; onAccepted: () => void }) {
@@ -199,27 +131,19 @@ const POOL: Box[] = [
 export function Home() {
   const now = useNow();
   const { publicKey } = useWallet();
-  const [filter, setFilter] = useState<Filter>("live");
   const auctions = useLoader(fetchAuctions, [], 15_000);
   const roles = useLoader(fetchAdminRoles, []);
   const [accepted, setAccepted] = useState(false);
-  const isAdmin = Boolean(publicKey && roles.data && roles.data.admin.equals(publicKey));
   const offered = Boolean(publicKey && roles.data?.pendingAdmin?.equals(publicKey));
 
-  const visible = useMemo(() => {
-    const list = (auctions.data ?? []).filter((a) => isAdmin || !a.hidden);
-    return list.sort((x, y) => {
-      if (x.featured !== y.featured) return x.featured ? -1 : 1;
-      const r = rank(x, now) - rank(y, now);
-      if (r !== 0) return r;
-      // Upcoming sales: the next to open first.
-      return rank(x, now) === 2 ? x.startTime - y.startTime : y.startTime - x.startTime;
-    });
-  }, [auctions.data, isAdmin, now]);
-
-  const featured = visible.find((a) => a.featured && !a.hidden && rank(a, now) < 3) ?? visible.find((a) => a.featured);
-  const filtered = visible.filter((a) => matches(filter, a, now));
-  const onNow = visible.filter((a) => !a.hidden && rank(a, now) < 3);
+  // The ticker shows what is on now: featured sales first.
+  const onNow = useMemo(
+    () =>
+      (auctions.data ?? [])
+        .filter((a) => !a.hidden && rank(a, now) < 3)
+        .sort((x, y) => (x.featured !== y.featured ? (x.featured ? -1 : 1) : rank(x, now) - rank(y, now))),
+    [auctions.data, now]
+  );
 
   return (
     <main className="page page--home">
@@ -252,60 +176,19 @@ export function Home() {
             whatever you did not spend comes back.
           </p>
           <div className="stage__actions">
-            <a
-              className="btn btn--primary btn--large"
-              href="#/"
-              onClick={(e) => {
-                e.preventDefault();
-                document.getElementById("all-auctions")?.scrollIntoView({ behavior: "smooth", block: "start" });
-              }}
-            >
-              See live auctions
-            </a>
-            <a className="btn btn--secondary btn--large" href="#/launch">
+            <a className="btn btn--primary btn--large cta cta--primary" href="#/launch">
               Launch an auction
+              <svg className="cta__arrow" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M4 10h11M11 5.5 15.5 10 11 14.5" />
+              </svg>
+            </a>
+            <a className="btn btn--secondary btn--large cta cta--secondary" href="#/auctions">
+              <span className="cta__live" aria-hidden="true" />
+              See live auctions
             </a>
           </div>
         </div>
         <BidTower />
-      </section>
-
-      <section className="section" aria-labelledby="all-auctions-title" id="all-auctions">
-        {featured ? <FeaturedCard auction={featured} now={now} /> : null}
-        <div className="section__head">
-          <h2 id="all-auctions-title" className="section__title">
-            Auctions
-          </h2>
-          <div className="segmented" role="group" aria-label="Filter auctions">
-            {FILTERS.map(([f, label]) => (
-              <button
-                key={f}
-                className={`segmented__item${filter === f ? " segmented__item--on" : ""}`}
-                aria-pressed={filter === f}
-                onClick={() => setFilter(f)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-        {auctions.error ? <Notice tone="error">Could not load auctions: {auctions.error}</Notice> : null}
-        {auctions.loading && !auctions.data ? <p className="muted">Loading auctions…</p> : null}
-        {auctions.data && filtered.length === 0 ? (
-          <div className="empty">
-            <p>
-              {filter === "live"
-                ? "No live auctions right now."
-                : filter === "upcoming"
-                ? "No scheduled auctions right now."
-                : "Nothing here yet."}
-            </p>
-            <a className="btn btn--secondary" href="#/launch">
-              Launch the first one
-            </a>
-          </div>
-        ) : null}
-        {filtered.length > 0 ? <AuctionTable auctions={filtered} now={now} /> : null}
       </section>
 
       <section className="section" id="how" aria-labelledby="how-title">

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Header, Logo } from "./components/Header";
 import { AuctionPage } from "./pages/AuctionPage";
 import { Docs } from "./pages/Docs";
+import { Auctions } from "./pages/Auctions";
 import { Home } from "./pages/Home";
 import { Launch } from "./pages/Launch";
 import { MyBids } from "./pages/MyBids";
@@ -31,7 +32,7 @@ function Footer() {
         </div>
         <nav className="band__links" aria-label="Auctions">
           <h2 className="band__heading">Auctions</h2>
-          <a href="#/">Browse auctions</a>
+          <a href="#/auctions">Browse auctions</a>
           <a href="#/launch">Launch an auction</a>
           <a href="#/bids">My bids</a>
         </nav>
@@ -82,11 +83,14 @@ export function App({ route: fixed }: { route?: string }) {
           ? "My bids · Veiling"
           : route.startsWith("auction/")
             ? "Auction · Veiling"
+            : route.startsWith("auctions")
+              ? "Auctions · Veiling"
             : "Veiling, future of launchpads · Private bids. Public price.";
   }, [route]);
 
   let page;
   if (route.startsWith("auction/")) page = <AuctionPage address={route.slice("auction/".length)} />;
+  else if (route.startsWith("auctions")) page = <Auctions />;
   else if (route.startsWith("launch")) page = <Launch />;
   else if (route.startsWith("bids")) page = <MyBids />;
   else if (route.startsWith("docs")) page = <Docs section={route.slice("docs/".length)} />;

@@ -367,6 +367,10 @@ p {
   margin-top: 72px;
 }
 
+.auctions__featured {
+  margin-top: 32px;
+}
+
 .section__head {
   display: flex;
   align-items: center;
@@ -2860,7 +2864,8 @@ p {
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
   gap: 24px;
   align-items: center;
-  padding: 48px 48px 32px;
+  min-height: min(76vh, 720px);
+  padding: 64px 64px 40px;
   border-radius: 32px;
   background-color: #111318;
   background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
@@ -2886,7 +2891,7 @@ p {
 
 .stage__title {
   font-family: var(--font-display);
-  font-size: var(--step-4);
+  font-size: clamp(3rem, 6.4vw, 5.5rem);
   font-weight: 600;
   line-height: 1;
   letter-spacing: -0.04em;
@@ -2927,6 +2932,82 @@ p {
   gap: 12px;
 }
 
+/* The stage's two calls to action: launching leads, browsing follows. */
+.cta {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  transition:
+    background-color 150ms ease,
+    border-color 200ms ease,
+    box-shadow 260ms ease,
+    transform 260ms var(--ease-out);
+}
+
+.cta--primary {
+  min-height: 58px;
+  padding: 14px 30px;
+  font-size: var(--step-1);
+  box-shadow: 0 12px 34px -14px rgba(138, 155, 255, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+}
+
+/* A band of light that crosses the button. */
+.cta--primary::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 30%, rgba(138, 155, 255, 0.45) 48%, rgba(180, 191, 255, 0.25) 54%, transparent 70%);
+  transform: translateX(-110%);
+}
+
+.cta__arrow {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 260ms var(--ease-out);
+}
+
+.cta__live {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cobalt);
+}
+
+.cta__live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--cobalt);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cta:hover:not(:disabled) {
+    transform: translateY(-2px);
+  }
+  .cta--primary:hover {
+    box-shadow: 0 20px 44px -14px rgba(138, 155, 255, 0.9), 0 0 0 1px #ffffff inset;
+  }
+  .cta:hover .cta__arrow {
+    transform: translateX(4px);
+  }
+  .cta--secondary:hover {
+    border-color: rgba(138, 155, 255, 0.55);
+    box-shadow: 0 0 0 4px rgba(138, 155, 255, 0.08);
+  }
+}
+
+.cta:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
 /* ---------------------------------------------------------------- 3D scenes */
 
 .scene {
@@ -2937,7 +3018,7 @@ p {
 }
 
 .scene--tower {
-  height: 500px;
+  height: 600px;
   perspective: 1400px;
 }
 
@@ -2955,6 +3036,7 @@ p {
 
 .tower__scale {
   transform-style: preserve-3d;
+  transform: scale(1.06);
 }
 
 .scene__tilt,
@@ -3299,6 +3381,17 @@ p {
   .stage__actions {
     animation: fade 700ms ease 350ms both;
   }
+  /* The light crosses the launch button once as the stage settles, then on hover. */
+  .cta--primary::before {
+    animation: cta-sweep 1100ms var(--ease-out) 1300ms;
+  }
+  .cta--primary:hover::before {
+    transform: translateX(110%);
+    transition: transform 800ms var(--ease-out);
+  }
+  .cta__live::after {
+    animation: live-ring 1800ms ease-out infinite;
+  }
   .stage__glow {
     animation: glow-drift 14s ease-in-out infinite alternate;
   }
@@ -3330,6 +3423,26 @@ p {
   .cube__move.is-away,
   .cube__move.is-out {
     transform: none;
+  }
+}
+
+@keyframes cta-sweep {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(110%);
+  }
+}
+
+@keyframes live-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(3.2);
+    opacity: 0;
   }
 }
 
