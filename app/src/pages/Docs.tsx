@@ -25,10 +25,16 @@ import {
   MIN_LP_BPS,
   POOL_FEE_TIERS,
   SELLER_POOL_FEE_BPS,
+  LAUNCH_DECIMALS,
+  LAUNCH_HOURS,
+  LAUNCH_MIN_BID,
+  LAUNCH_MIN_RAISE,
+  LAUNCH_SALE_SUPPLY,
+  LAUNCH_SUPPLY,
 } from "../config";
 import { useLoader } from "../components/ui";
 import { bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee } from "../lib/chain";
-import { formatCount, formatSol } from "../lib/format";
+import { formatCount, formatSol, formatTokens } from "../lib/format";
 import { formatKb, formatMb } from "../lib/images";
 
 /** Hard caps compiled into the program; no admin can charge more. */
@@ -42,6 +48,7 @@ export const DOC_SECTIONS: [string, string][] = [
   ["launch", "Drops and collections"],
   ["nfts", "NFT collections"],
   ["rules", "Sale rules"],
+  ["fair", "Fair launches"],
   ["liquidity", "Auto-liquidity"],
   ["fees", "Fees"],
   ["privacy", "What stays private"],
@@ -413,6 +420,41 @@ export function Docs({ section }: { section: string }) {
                 <strong>Most per wallet.</strong> With an allowlist, the seller can cap what one wallet deposits across
                 all its bids. A budget can never exceed its deposit, so this also caps what one wallet can buy.
                 Without an allowlist a cap would mean little, since anyone could split their bids across wallets.
+              </li>
+            </ul>
+          </Section>
+
+          <Section id="fair" title="Fair launches">
+            <p>
+              A fair launch sells a new token that only exists if its sale succeeds. The creator gives it a name, a
+              symbol and an image, picks a graduation target of at least {formatSol(LAUNCH_MIN_RAISE)} SOL, and
+              bidding runs for {LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours.
+            </p>
+            <ul className="doc__bullets">
+              <li>
+                <strong>Half a billion for sale.</strong> {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} tokens
+                are sold by sealed bid, from {formatSol(LAUNCH_MIN_BID)} SOL a bid. The lowest price is the target
+                divided by that supply, so the launch graduates only if it sells out.
+              </li>
+              <li>
+                <strong>Born with its pool.</strong> If it graduates, anyone can make the token: exactly the tokens sold
+                and the tokens its pool takes are minted, and the mint closes for good, never past{" "}
+                {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. Every SOL raised, less the sale fee, then opens a
+                Meteora pool at the clearing price, locked forever. Winners collect their tokens once the pool is open,
+                so nobody holds any before it.
+              </li>
+              <li>
+                <strong>Or never at all.</strong> If it misses the target, no token is ever made and every bid is
+                refunded in full. The creator closes the launch and gets their deposit and rents back; only the listing
+                fee and what settlement used are spent.
+              </li>
+              <li>
+                <strong>No creator allocation.</strong> The creator holds no tokens and takes no SOL from the sale.
+                They earn {SELLER_POOL_FEE_BPS / 100}% of the pool's trading fees, for good.
+              </li>
+              <li>
+                <strong>A shorter safety net.</strong> If settlement stalls, deposits can be taken back one day after
+                bidding ends instead of three.
               </li>
             </ul>
           </Section>

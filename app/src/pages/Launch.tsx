@@ -32,6 +32,7 @@ import {
   SELLER_POOL_FEE_BPS,
 } from "../config";
 import { DemandChart } from "../components/DemandChart";
+import { FairLaunchForm } from "../components/FairLaunchForm";
 import { ImagePicker, ImageSetPicker, isSmallImage, useImageUrl } from "../components/ImagePicker";
 import {
   type ChosenSheet,
@@ -435,7 +436,7 @@ export function Launch() {
   /** The address a collection launch uses, kept across tries so sealed art and item lists are not made twice. */
   const seedRef = useRef<BN | null>(null);
 
-  const collection = kind !== "token";
+  const collection = kind === "drop" || kind === "collection";
   const unit = collection ? "NFT" : "token";
   const linked = kind === "drop" && dropFiles === "link";
   const uploadingCollection = collection && !linked;
@@ -1122,10 +1123,12 @@ export function Launch() {
     <main className="page">
       <h1 className="page__title">Launch a sealed auction</h1>
       <p className="page__lede">
-        Release a drop, build a collection item by item, or sell a token. However you put it together, it sells
-        through sealed bids: buyers name their own price in secret, and everyone who wins pays one clearing price.
+        Release a drop, build a collection item by item, sell a token, or launch a new one. However you put it
+        together, it sells through sealed bids: buyers name their own price in secret, and everyone who wins pays
+        one clearing price.
       </p>
       <KindChooser value={kind} onChange={setKind} />
+      {kind === "launch" ? <FairLaunchForm /> : (
       <div className="launch">
         <form
           className="launch__form"
@@ -1798,6 +1801,7 @@ export function Launch() {
           </p>
         </aside>
       </div>
+      )}
     </main>
   );
 }

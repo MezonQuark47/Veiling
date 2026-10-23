@@ -3421,6 +3421,7 @@ dependencies = [
  "curve25519-dalek",
  "solana-curve25519",
  "solana-sha256-hasher",
+ "spl-pod",
 ]
 
 [[package]]

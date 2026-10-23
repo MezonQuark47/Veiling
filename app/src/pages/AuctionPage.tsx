@@ -822,7 +822,10 @@ function Progress({
   const hiddenArt = collection && (auction.unrevealed || Boolean(meta?.hidden));
   const revealDeadline = revealClosesAt(auction);
   const deliverable = uncollected.filter(
-    (b) => auction.kind === "token" || b.won === 0n || b.delivered || missed || (ready && !auction.unrevealed)
+    (b) =>
+      // A fair launch's tokens exist only once its pool is open.
+      (auction.kind === "token" && (!auction.launch || auction.liquidity === "pooled" || b.won === 0n)) ||
+      (collection && (b.won === 0n || b.delivered || missed || (ready && !auction.unrevealed)))
   );
   const shuffleDue = needsShuffle(auction);
   // Auctions opened before NFTs were shuffled numbered them in claim order.
@@ -1273,7 +1276,7 @@ function Progress({
         </ol>
       )}
 
-      {isSeller && auction.status === "open" && auction.bidCount === 0 && (phase === "upcoming" || phase === "bidding" || phase === "no-bids") ? (
+      {isSeller && !auction.launch && auction.status === "open" && auction.bidCount === 0 && (phase === "upcoming" || phase === "bidding" || phase === "no-bids") ? (
         <div className="panel__footer">
           <p className="muted">
             Nobody has bid yet, so you can withdraw{phase === "upcoming" ? ", even before bidding opens" : ""}.{" "}
@@ -1286,7 +1289,7 @@ function Progress({
         </div>
       ) : null}
 
-      {canClaim && !(auction.status === "open" && auction.bidCount === 0) ? (
+      {canClaim && !(auction.status === "open" && auction.bidCount === 0) && !(auction.launch && auction.liquidity !== "pooled") ? (
         <div className="panel__footer">
           <p>
             {auction.liquidity === "pooled"
@@ -1336,8 +1339,8 @@ function Progress({
       {mineRefundable.length > 0 ? (
         <div className="panel__footer">
           <p>
-            Settlement stalled for three days, so you can take your deposit back in full. The bid then counts as
-            lost.
+            Settlement stalled for {auction.launch ? "a day" : "three days"}, so you can take your deposit back in
+            full. The bid then counts as lost.
           </p>
           {mineRefundable.map((b) => (
             <Button key={b.address.toBase58()} onClick={() => refund(b)} busy={action.busy === `refund-${b.address.toBase58()}`}>
@@ -1773,7 +1776,7 @@ export function AuctionPage({ address }: { address: string }) {
             </p>
           ) : null}
           <p className="auction-head__mint">
-            {collection ? "Collection address" : "Token address"}{" "}
+            {collection ? "Collection address" : auction.launch ? "Token address, once made" : "Token address"}{" "}
             <AddressLink address={auction.mint} label={auction.mint.toBase58()} />
           </p>
           <p className="auction-head__status">{statusText(auction, now, asset)}</p>
@@ -1782,8 +1785,10 @@ export function AuctionPage({ address }: { address: string }) {
           {auction.featured ? <span className="tag tag--featured">Featured</span> : null}
           {collection && auction.unrevealed ? <span className="tag tag--warn">Art hidden until revealed</span> : null}
           {collection ? <span className="tag tag--ok">Minted only for winners</span> : null}
-          {!collection && locked ? <span className="tag tag--ok">Supply locked</span> : null}
-          {!collection && locked === false ? <span className="tag tag--warn">Supply not locked</span> : null}
+          {auction.launch ? <span className="tag tag--ok">Fair launch</span> : null}
+          {auction.launch ? <span className="tag tag--ok">Made only if it sells out</span> : null}
+          {!collection && !auction.launch && locked ? <span className="tag tag--ok">Supply locked</span> : null}
+          {!collection && !auction.launch && locked === false ? <span className="tag tag--warn">Supply not locked</span> : null}
         </div>
       </header>
       {isAdmin ? <AdminControls auction={auction} refresh={loaded.reload} /> : null}

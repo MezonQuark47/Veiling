@@ -51,6 +51,24 @@ export const SOFT_CLOSE_SECS = 10 * 60;
 export const MAX_SOFT_CLOSE_EXTENSION_SECS = 24 * 60 * 60;
 export const PENDING_TIMEOUT_SECS = 30 * 60;
 export const EMERGENCY_DELAY_SECS = 3 * 24 * 60 * 60;
+/** The same for a fair launch (`LAUNCH_EMERGENCY_DELAY_SECS`). */
+export const LAUNCH_EMERGENCY_DELAY_SECS = 24 * 60 * 60;
+
+/** Fair launches (`create_launch_mint`, `create_launch`). */
+export const LAUNCH_DECIMALS = 6;
+/** A billion tokens, in base units; half is sold, half seeds the pool. */
+export const LAUNCH_SUPPLY = 1_000_000_000n * 1_000_000n;
+export const LAUNCH_SALE_SUPPLY = LAUNCH_SUPPLY / 2n;
+/** Smallest bid: 0.1 SOL. */
+export const LAUNCH_MIN_BID = 100_000_000n;
+/** Smallest graduation target: 10 SOL. */
+export const LAUNCH_MIN_RAISE = 10_000_000_000n;
+/** How long bidding may run, in hours. */
+export const LAUNCH_HOURS = [1, 2, 5] as const;
+export const MAX_LAUNCH_NAME_LEN = 32;
+export const MAX_LAUNCH_SYMBOL_LEN = 10;
+/** A launch's pool takes every lamport raised. */
+export const LAUNCH_LP_BPS = 10_000;
 export const BID_NONCE_DOMAIN = "sealed-auction/bid-nonce/v1";
 export const MIN_DURATION_SECS = 60;
 export const MAX_DURATION_SECS = 14 * 24 * 60 * 60;
@@ -162,5 +180,7 @@ export const DAMM_PROTOCOL_FEE_PERCENT = 20;
 export const LP_RENT_DEPOSIT = 25_000_000n;
 /** Compute units for opening the pool and for claiming its fees (measured about 300k and 100k). */
 export const LP_COMPUTE_UNITS = { bootstrap: 500_000, claimFees: 300_000 } as const;
+/** Compute for `graduate_launch`: the token, its metadata and three accounts. */
+export const LAUNCH_COMPUTE_UNITS = { graduate: 400_000 } as const;
 /** Where a pool can be seen and traded. */
 export const meteoraPoolUrl = (pool: PublicKey) => `https://app.meteora.ag/dammv2/${pool.toBase58()}`;

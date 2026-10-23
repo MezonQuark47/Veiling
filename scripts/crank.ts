@@ -18,7 +18,9 @@
  * A token sale with auto-liquidity opens its Meteora pool once every bid is
  * settled (`bootstrap_liquidity`, which also pays the seller), and pays out
  * the pool's trading fees on later runs. A sale that missed its pool's
- * minimum refunds its bids instead of settling them.
+ * minimum refunds its bids instead of settling them. A fair launch that sold
+ * out makes its token first (`graduate_launch`); winners collect their tokens
+ * once its pool is open.
  *
  *   ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
  *   ANCHOR_WALLET=~/.config/solana/devnet-test.json ARCIUM_CLUSTER_OFFSET=456 \
@@ -55,6 +57,7 @@ const PAGE_BIDS = 256;
 const MAX_NFTS_PER_CLAIM = 5;
 /** After this long past the end of bidding, the safety net opens and no seed is drawn. */
 const EMERGENCY_DELAY_SECS = 3 * 24 * 60 * 60;
+const LAUNCH_EMERGENCY_DELAY_SECS = 24 * 60 * 60;
 /** How long the seller of a hidden collection has to reveal it; winners are refunded after that. */
 const REVEAL_DELAY_SECS = 7 * 24 * 60 * 60;
 /** Where `Bid` keeps its auction: after three 32-byte fields and the nonce. */
@@ -295,6 +298,41 @@ async function main() {
     program.programId
   )[0];
   const lpWsol = getAssociatedTokenAddressSync(WSOL_MINT, lpAuthority, true, TOKEN_PROGRAM_ID);
+  // A fair launch that sold out makes its token first (`graduate_launch`):
+  // exactly what was sold and what the pool takes, paid from the creator's
+  // deposit. Its token-to-be record is closed once that is done.
+  const launchToken = PublicKey.findProgramAddressSync([Buffer.from("launch"), auctionAddress.toBuffer()], program.programId)[0];
+  if (
+    variant(auction.kind) === "launch" &&
+    (auction.liquidity ?? 0) === LIQUIDITY_PLANNED &&
+    !auction.raiseMissed &&
+    variant(auction.status) === "settling" &&
+    auction.resolvedCount === auction.bidCount &&
+    (await provider.connection.getAccountInfo(launchToken)) !== null
+  ) {
+    console.log("The launch sold out: making its token...");
+    const mintAta = (owner: PublicKey) => getAssociatedTokenAddressSync(auction.mint, owner, true, TOKEN_2022_PROGRAM_ID);
+    await program.methods
+      .graduateLaunch()
+      .accountsPartial({
+        caller: payer,
+        auction: auctionAddress,
+        launchToken,
+        plan: planAddress,
+        lpAuthority,
+        seller: auction.seller,
+        mint: auction.mint,
+        vault: mintAta(auctionAddress),
+        reserve: mintAta(lpAuthority),
+        sellerTokenAccount: mintAta(auction.seller),
+        wsolMint: WSOL_MINT,
+        lpWsol,
+        wsolTokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })])
+      .rpc();
+    auction = await fetchAuction();
+  }
   if (
     (auction.liquidity ?? 0) === LIQUIDITY_PLANNED &&
     variant(auction.status) === "settling" &&
@@ -356,7 +394,8 @@ async function main() {
   // places and need no seed; once the safety net is open, places are their
   // own numbers instead.
   const sold = BigInt(auction.sold.toString());
-  const safetyNetOpen = Date.now() / 1000 >= auction.endTime.toNumber() + EMERGENCY_DELAY_SECS;
+  const delay = variant(auction.kind) === "launch" ? LAUNCH_EMERGENCY_DELAY_SECS : EMERGENCY_DELAY_SECS;
+  const safetyNetOpen = Date.now() / 1000 >= auction.endTime.toNumber() + delay;
   if (
     collection &&
     !auction.seedDrawn &&

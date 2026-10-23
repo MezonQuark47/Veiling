@@ -11,7 +11,7 @@ import { isDisplayText } from "../lib/validate";
 import { ImagePicker, isSmallImage, useImageUrl } from "./ImagePicker";
 import { Button } from "./ui";
 
-export type Kind = "drop" | "collection" | "token";
+export type Kind = "drop" | "collection" | "token" | "launch";
 
 /** Longest description stored in metadata. */
 export const MAX_DESCRIPTION_LEN = 1_000;
@@ -48,6 +48,14 @@ function KindIcon({ kind }: { kind: Kind }) {
       </svg>
     );
   }
+  if (kind === "launch") {
+    return (
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 4 27 10.5 16 17 5 10.5Z" />
+        <path d="M5 17l11 6.5 11-6.5M5 23l11 6.5 11-6.5" />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true">
       <circle cx="16" cy="16" r="11" />
@@ -64,6 +72,11 @@ const KINDS: [Kind, string, string][] = [
   ],
   ["collection", "Collection", "Built item by item: each item has its own image, name, traits and number of editions."],
   ["token", "Token", "A fixed supply of a new token, or of one you hold."],
+  [
+    "launch",
+    "Fair launch",
+    "A new token made only if its sale sells out: half sold by sealed bid, the rest and every SOL raised into its pool.",
+  ],
 ];
 
 /** The choice between a drop, a collection and a token, as cards. */

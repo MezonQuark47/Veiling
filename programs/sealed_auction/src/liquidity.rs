@@ -344,6 +344,7 @@ pub fn mul_u128(a: u128, b: u128) -> U256 {
 
 pub fn plan(ctx: Context<PlanLiquidity>, lp_bps: u16, floor: u64, trade_fee_bps: u16) -> Result<()> {
     let auction = &ctx.accounts.auction;
+    require!(auction.kind == AuctionKind::Token, AuctionError::WrongAuctionKind);
     require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
     require!(auction.bid_count == 0, AuctionError::HasBids);
     require!(auction.liquidity == LIQUIDITY_NONE, AuctionError::LiquidityAlreadyPlanned);
@@ -673,11 +674,25 @@ pub fn bootstrap<'info>(ctx: Context<'info, BootstrapLiquidity<'info>>) -> Resul
     let pool_tokens_in = vault_amount(&a.token_a_vault)?;
     let pool_sol_in = vault_amount(&a.token_b_vault)?;
 
-    // The rest of the reserve goes back to the seller.
+    // The rest of the reserve goes back to the seller; a launch's few
+    // tokens of rounding are burned, since its creator holds none.
     let mut reserve = a.reserve.clone();
     reserve.reload()?;
     let returned = reserve.amount;
-    if returned > 0 {
+    if returned > 0 && a.auction.kind == AuctionKind::Launch {
+        token_interface::burn(
+            CpiContext::new_with_signer(
+                a.token_program.key(),
+                Burn {
+                    mint: a.mint.to_account_info(),
+                    from: a.reserve.to_account_info(),
+                    authority: a.lp_authority.to_account_info(),
+                },
+                signer,
+            ),
+            returned,
+        )?;
+    } else if returned > 0 {
         token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 a.token_program.key(),
@@ -875,6 +890,8 @@ pub fn claim_fees(ctx: Context<ClaimPoolFees>) -> Result<()> {
 pub fn release(ctx: Context<ReleaseLiquidity>) -> Result<()> {
     check_lp_wsol(&ctx.accounts.lp_wsol.key(), &ctx.accounts.lp_authority.key())?;
     let auction = &ctx.accounts.auction;
+    // A launch either graduates into its pool or closes without a token.
+    require!(auction.kind == AuctionKind::Token, AuctionError::WrongAuctionKind);
     let now = Clock::get()?.unix_timestamp;
     let allowed = match auction.liquidity {
         LIQUIDITY_FAILED => true,
@@ -923,7 +940,7 @@ pub struct PlanLiquidity<'info> {
         bump = auction.bump,
         has_one = seller @ AuctionError::Unauthorized,
         has_one = mint,
-        constraint = auction.kind == AuctionKind::Token @ AuctionError::WrongAuctionKind,
+        constraint = auction.kind.is_token() @ AuctionError::WrongAuctionKind,
     )]
     pub auction: Box<Account<'info, Auction>>,
     #[account(
@@ -985,7 +1002,7 @@ pub struct BootstrapLiquidity<'info> {
         has_one = seller @ AuctionError::Unauthorized,
         has_one = treasury @ AuctionError::InvalidTreasury,
         has_one = mint,
-        constraint = auction.kind == AuctionKind::Token @ AuctionError::WrongAuctionKind,
+        constraint = auction.kind.is_token() @ AuctionError::WrongAuctionKind,
     )]
     pub auction: Box<Account<'info, Auction>>,
     #[account(mut, seeds = [LIQUIDITY_SEED, auction.key().as_ref()], bump = plan.bump)]
@@ -999,7 +1016,8 @@ pub struct BootstrapLiquidity<'info> {
     /// CHECK: the auction's treasury; receives the sale fee.
     #[account(mut)]
     pub treasury: UncheckedAccount<'info>,
-    #[account(mint::token_program = token_program)]
+    /// Writable: a launch burns what rounding leaves in its reserve.
+    #[account(mut, mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
     /// CHECK: the SOL mint (address checked).
     #[account(address = WSOL_MINT)]

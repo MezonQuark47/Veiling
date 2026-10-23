@@ -54,6 +54,7 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
         {auction.featured ? <span className="tag tag--featured">Featured</span> : null}
         {auction.kind === "collection" ? <span className="tag">NFT</span> : null}
         {auction.kind === "collection" && auction.unrevealed ? <span className="tag">Art hidden</span> : null}
+        {auction.launch ? <span className="tag">Fair launch</span> : null}
         {auction.hidden ? <span className="tag">Hidden</span> : null}
       </td>
       <td className="num">{supplyDescription(auction, asset)}</td>

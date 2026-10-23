@@ -5,18 +5,22 @@ import {
   SELLER_POOL_FEE_BPS,
   meteoraPoolUrl,
 } from "../config";
-import { buildBootstrapLiquidity, buildClaimPoolFees } from "../lib/actions";
+import { buildBootstrapLiquidity, buildClaimPoolFees, buildCloseLaunch, buildGraduateLaunch } from "../lib/actions";
 import {
   type Auction,
+  emergencyOpensAt,
   fetchAuction,
+  fetchLaunchToken,
   fetchLiquidityPlan,
+  launchSettleSecs,
+  pagesInUse,
   formatPercent,
   formatPrice,
   poolReady,
   poolSol,
   saleFee,
 } from "../lib/chain";
-import { formatSol } from "../lib/format";
+import { formatDuration, formatSol, nowSecs } from "../lib/format";
 import { sendTransaction } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
 import { AddressLink, type AssetInfo, Button, Notice, TxLink, goodsAmount, useAction, useLoader } from "./ui";
@@ -26,11 +30,20 @@ import { AddressLink, type AssetInfo, Button, Notice, TxLink, goodsAmount, useAc
  * then the pool's opening (anyone can run it) and its trading fees.
  */
 export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; asset: AssetInfo; refresh: () => void }) {
-  const { signer } = useWallet();
+  const { signer, publicKey } = useWallet();
   const action = useAction();
   const loaded = useLoader(() => fetchLiquidityPlan(auction), [auction.address.toBase58(), auction.liquidity]);
+  // A fair launch's token-to-be: there until the token is made (or the launch closes).
+  const unmade = useLoader(
+    () => (auction.launch ? fetchLaunchToken(auction.address) : Promise.resolve(null)),
+    [auction.address.toBase58(), auction.liquidity, auction.resolvedCount]
+  );
   if (auction.liquidity === "none") return null;
   const plan = loaded.data;
+  const launch = auction.launch;
+  const tokenMade = launch && !unmade.loading && unmade.data === null;
+  const isSeller = Boolean(publicKey && publicKey.equals(auction.seller));
+  const now = nowSecs();
 
   const needSigner = () => {
     if (!signer) throw new Error("Connect a wallet first");
@@ -53,6 +66,32 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
         <>
           Someone had already opened Meteora's pool for this token, so none was added: the seller got all the proceeds
           and the reserve back. <TxLink signature={sig} />
+        </>
+      );
+    });
+
+  const graduate = () =>
+    action.run("graduate", async () => {
+      const s = needSigner();
+      const sig = await sendTransaction(await buildGraduateLaunch(s.publicKey, auction), s);
+      unmade.reload();
+      refresh();
+      return (
+        <>
+          The token is made: exactly what was sold and what the pool takes, and nobody can mint more. Open the pool
+          next. <TxLink signature={sig} />
+        </>
+      );
+    });
+
+  const closeLaunch = () =>
+    action.run("close-launch", async () => {
+      const s = needSigner();
+      const sig = await sendTransaction(await buildCloseLaunch(auction), s);
+      refresh();
+      return (
+        <>
+          The launch is closed. Your deposit and every rent came back to you. <TxLink signature={sig} />
         </>
       );
     });
@@ -84,7 +123,79 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   ) : null;
 
   let body = null;
-  if (auction.liquidity === "planned") {
+  // A fair launch's own story: the token waits for the sale.
+  const ended = now >= auction.endTime;
+  const nothingLeft = auction.liveBids === 0 && auction.sold === 0n;
+  const canCloseLaunch =
+    launch &&
+    isSeller &&
+    !tokenMade &&
+    nothingLeft &&
+    (auction.status === "cancelled" || ended || (auction.status === "open" && auction.bidCount === 0));
+  const closeButton = canCloseLaunch ? (
+    <>
+      <p>No token was made, and no bid is left. Close the launch to get your deposit and every rent back.</p>
+      <Button variant="primary" onClick={closeLaunch} busy={action.busy === "close-launch"}>
+        {auction.bidCount === 0 && !ended ? "Withdraw the launch" : "Close the launch"}
+      </Button>
+    </>
+  ) : null;
+  if (launch && auction.liquidity === "planned" && !tokenMade) {
+    const settling = ended && !poolReady(auction);
+    const eta = launchSettleSecs(auction.bidCount, pagesInUse(auction));
+    body = (
+      <>
+        <p>
+          Nothing is minted yet. If bids cover all {goodsAmount(auction.supply, asset)} at{" "}
+          {formatPrice(auction, auction.minPrice, asset.decimals)} per {asset.unit} or more, the sale raises its{" "}
+          {formatSol(auction.minRaise)} SOL target and the token is made: what was sold goes to the winners, and every
+          SOL raised less the sale fee opens a Meteora pool at the clearing price, locked for good. If not, no token is
+          ever made and every bid is refunded in full.
+        </p>
+        {!ended ? (
+          <p className="muted">
+            {formatSol(auction.totalDeposited)} SOL deposited so far. A deposit only bounds a bid, so this is the most
+            that bids could raise, not what they will. With {auction.bidCount} bid{auction.bidCount === 1 ? "" : "s"}{" "}
+            so far, the token would be made about {formatDuration(eta)} after bidding closes; more bids take longer.
+          </p>
+        ) : null}
+        {settling && auction.bidCount > 0 ? (
+          <p className="muted">
+            Bidding is over. Checking {auction.bidCount} sealed bids, finding the price and settling them takes about{" "}
+            {formatDuration(eta)} from the end of bidding; the token comes right after.
+          </p>
+        ) : null}
+        {poolReady(auction) ? (
+          <>
+            <p>
+              The launch sold out. Anyone can make its token now; the creator's deposit pays for it.
+            </p>
+            <Button variant="primary" onClick={graduate} busy={action.busy === "graduate"} disabled={!signer || unmade.loading}>
+              Make the token
+            </Button>
+          </>
+        ) : null}
+        {closeButton}
+      </>
+    );
+  } else if (launch && auction.liquidity === "failed") {
+    body = (
+      <>
+        <p>
+          The launch missed its {formatSol(auction.minRaise)} SOL target, so its token is never made: every bid gets its
+          whole deposit back.
+        </p>
+        {closeButton}
+      </>
+    );
+  } else if (launch && !tokenMade && emergencyOpensAt(auction) <= now) {
+    body = (
+      <>
+        <p>Settlement stalled, so every bid can be refunded in full; no token is made unless the sale settles.</p>
+        {closeButton}
+      </>
+    );
+  } else if (auction.liquidity === "planned") {
     // Once every bid is settled the pool's size is known.
     const fee = saleFee(auction.proceeds, auction.saleFeeBps);
     const sol = plan ? poolSol(auction.proceeds - fee, plan.lpBps, plan.floor) : 0n;
@@ -174,7 +285,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   return (
     <section className="panel" aria-labelledby="liquidity-title">
       <h2 id="liquidity-title" className="panel__title">
-        Auto-liquidity
+        {launch ? "Fair launch" : "Auto-liquidity"}
       </h2>
       {loaded.error ? <Notice tone="error">{loaded.error}</Notice> : body}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}

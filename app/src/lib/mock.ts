@@ -67,6 +67,7 @@ const base = (seed: number, overrides: Partial<Auction>): Auction => ({
   walletCap: 0n,
   allowlist: false,
   raiseMissed: false,
+  launch: false,
   ...overrides,
 });
 
@@ -80,7 +81,7 @@ export function mockLiquidityPlan(auction: Auction): LiquidityPlan {
     treasury: auction.treasury,
     mint: auction.mint,
     tokenProgram: auction.tokenProgram,
-    lpBps: 3_000,
+    lpBps: auction.launch ? 10_000 : 3_000,
     floor: auction.liquidityFloor,
     tradeFeeBps: 100,
     reserve: auction.supply,
@@ -98,6 +99,23 @@ export function mockAuctions(): Auction[] {
   // `?mock&nofeature` previews the front page without a featured auction.
   const featured = !new URLSearchParams(window.location.search).has("nofeature");
   return [
+    // A fair launch: a billion LNTN made with the sale, half sold, a 10 SOL
+    // target (20 lamports a token), 1 hour.
+    base(11, {
+      launch: true,
+      supply: 500_000_000_000_000n,
+      priceUnit: 1_000_000_000n,
+      minPrice: 20_000n,
+      minDeposit: 100_000_000n,
+      minRaise: 10_000_000_000n,
+      startTime: now() - 1_500,
+      endTime: now() + 2_100,
+      bidCount: 214,
+      liveBids: 214,
+      totalDeposited: 7_400_000_000n,
+      liquidity: "planned",
+      liquidityFloor: 1n,
+    }),
     base(1, {
       featured,
       bidCount: 37,
@@ -257,15 +275,16 @@ const NAMES: Record<number, [string, string]> = {
   3: ["Delft Blue", "DELFT"],
   4: ["Windmill Energy", "MILL"],
   5: ["Gouda Rewards", "GOUDA"],
+  11: ["Lantern", "LNTN"],
 };
 
 export function mockToken(mint: PublicKey): TokenInfo {
-  const seed = [1, 2, 3, 4, 5].find((s) => key(200 + s).equals(mint)) ?? 1;
+  const seed = [1, 2, 3, 4, 5, 11].find((s) => key(200 + s).equals(mint)) ?? 1;
   const [name, symbol] = NAMES[seed];
   return {
     mint,
     programId: new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
-    decimals: 9,
+    decimals: seed === 11 ? 6 : 9,
     supply: 1_000_000_000_000_000n,
     mintAuthority: null,
     freezeAuthority: null,
@@ -273,6 +292,11 @@ export function mockToken(mint: PublicKey): TokenInfo {
     symbol,
     uri: null,
   };
+}
+
+/** The sample fair launch's token-to-be. */
+export function mockLaunchToken(auction: PublicKey) {
+  return auction.equals(key(11)) ? { name: "Lantern", symbol: "LNTN", uri: "" } : null;
 }
 
 const COLLECTIONS: Record<number, [string, string]> = {

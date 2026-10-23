@@ -6,6 +6,7 @@ import {
   type TokenInfo,
   fetchCollectionInfo,
   fetchMetadataImage,
+  fetchSaleTokenInfo,
   fetchTokenInfo,
 } from "../lib/chain";
 import { EXPLORER_CLUSTER } from "../config";
@@ -70,6 +71,28 @@ export function useLoader<T>(load: () => Promise<T>, deps: unknown[], pollMs?: n
   return { data, error, loading, reload };
 }
 
+/**
+ * What a token sale sells. For a fair launch that is the token once made,
+ * or the name and symbol it will be made with (`fetchSaleTokenInfo`); the
+ * key changes once the launch's token exists, so it reloads then.
+ */
+export function useSaleTokenInfo(auction: Auction | null | undefined): TokenInfo | null {
+  const [info, setInfo] = useState<TokenInfo | null>(null);
+  const key = auction ? `${auction.address.toBase58()}:${auction.liquidity}` : undefined;
+  useEffect(() => {
+    if (!auction) return;
+    let cancelled = false;
+    fetchSaleTokenInfo(auction)
+      .then((t) => !cancelled && setInfo(t))
+      .catch(() => !cancelled && setInfo(null));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return info;
+}
+
 export function useTokenInfo(mint: PublicKey | null | undefined): TokenInfo | null {
   const [info, setInfo] = useState<TokenInfo | null>(null);
   const key = mint?.toBase58();
@@ -110,7 +133,7 @@ export interface AssetInfo {
 
 export function useAssetInfo(auction: Auction | null | undefined): AssetInfo {
   const isCollection = auction?.kind === "collection";
-  const token = useTokenInfo(isCollection ? null : auction?.mint);
+  const token = useSaleTokenInfo(isCollection ? null : auction);
   const [collection, setCollection] = useState<CollectionInfo | null>(null);
   const key = isCollection ? auction?.mint.toBase58() : undefined;
   useEffect(() => {

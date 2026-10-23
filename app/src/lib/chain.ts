@@ -15,6 +15,7 @@ import type { SealedAuction } from "../idl/sealed_auction";
 import {
   CP_AMM_ID,
   EMERGENCY_DELAY_SECS,
+  LAUNCH_EMERGENCY_DELAY_SECS,
   WSOL_MINT,
   EVICTION_PREMIUM_PERCENT,
   FOLD_PASSES,
@@ -30,8 +31,10 @@ import {
   RPC_URL,
   BATCH_SIZE,
   PAGE_BIDS,
+  LAUNCH_DECIMALS,
+  LAUNCH_SALE_SUPPLY,
 } from "../config";
-import { type Decimal, formatDecimal, nftPrice, nftPriceToTicks, tokenPrice, tokenPriceToTicks } from "./price";
+import { type Decimal, choosePriceUnit, formatDecimal, nftPrice, nftPriceToTicks, tokenPrice, tokenPriceToTicks } from "./price";
 
 export const connection = new Connection(RPC_URL, { commitment: "confirmed" });
 
@@ -131,6 +134,16 @@ export function bookIndexAddress(auction: PublicKey): PublicKey {
 /** A token sale's auto-liquidity plan. */
 export function liquidityPlanAddress(auction: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([seed("liquidity"), auction.toBytes()], PROGRAM_ID)[0];
+}
+
+/** A fair launch's token-to-be: its name, symbol and link until it is made. */
+export function launchTokenAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("launch"), auction.toBytes()], PROGRAM_ID)[0];
+}
+
+/** Where a fair launch's token is made if it graduates. */
+export function launchMintAddress(auction: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("launch_mint"), auction.toBytes()], PROGRAM_ID)[0];
 }
 
 /** The data-less address that holds a plan's reserve and owns its pool position. */
@@ -275,6 +288,12 @@ export interface Auction {
   allowlist: boolean;
   /** Whether the sale missed its minimum raise when it cleared; every bid is then refunded. */
   raiseMissed: boolean;
+  /**
+   * A fair launch: a token sale whose token was made with it. Sells like any
+   * token sale (`kind` is "token"); half the supply is sold, the other half
+   * and all the SOL raised open its pool, and what is left is burned.
+   */
+  launch: boolean;
 }
 
 /**
@@ -354,7 +373,8 @@ const enumKey = <T extends string>(v: object) => Object.keys(v)[0] as T;
 export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
   return {
     address,
-    kind: enumKey<AuctionKind>(a.kind),
+    // A fair launch sells like a token sale; `launch` tells it apart.
+    kind: enumKey<string>(a.kind) === "collection" ? "collection" : "token",
     seed: a.seed,
     seller: a.seller,
     mint: a.mint,
@@ -409,6 +429,7 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
     walletCap: a.walletCap ? big(a.walletCap) : 0n,
     allowlist: a.allowlist ?? false,
     raiseMissed: a.raiseMissed ?? false,
+    launch: enumKey<string>(a.kind) === "launch",
   };
 }
 
@@ -931,7 +952,7 @@ export function maxPriceOf(a: Auction, decimals: number | null): Decimal | null 
 }
 
 export function emergencyOpensAt(a: Auction): number {
-  return a.endTime + EMERGENCY_DELAY_SECS;
+  return a.endTime + (a.launch ? LAUNCH_EMERGENCY_DELAY_SECS : EMERGENCY_DELAY_SECS);
 }
 
 /** The platform's cut of a sale, rounded down as the program does. */
@@ -1231,4 +1252,80 @@ export const fetchNftMetadata = cached<NftMetadata>(async (uri) => {
 /** Where NFT `number` (from 0) of a collection auction reads its metadata (`nft_uri` in the program). */
 export function nftMetadataUri(a: Auction, number: number): string {
   return a.uriPerItem ? `${a.itemUri}${number}.json` : a.itemUri;
+}
+
+// ---------------------------------------------------------------------------
+// Fair launches
+// ---------------------------------------------------------------------------
+
+/** A fair launch's token before it is made. */
+export interface LaunchTokenInfo {
+  name: string;
+  symbol: string;
+  uri: string;
+}
+
+/**
+ * A fair launch's token-to-be, or null once it was made (graduating closes
+ * the record: the token itself then carries its name) or never will be (the
+ * launch closed).
+ */
+export async function fetchLaunchToken(auction: PublicKey): Promise<LaunchTokenInfo | null> {
+  if (MOCK) return import("./mock").then((m) => m.mockLaunchToken(auction));
+  const raw = await program.account.launchToken.fetchNullable(launchTokenAddress(auction));
+  return raw ? { name: raw.name, symbol: raw.symbol, uri: raw.uri } : null;
+}
+
+/**
+ * What a fair launch sells: the token once made, or the details it will be
+ * made with, as the same `TokenInfo` (6 decimals, nothing minted yet).
+ */
+export async function fetchSaleTokenInfo(a: Auction): Promise<TokenInfo> {
+  if (!a.launch) return fetchTokenInfo(a.mint);
+  const made = await fetchTokenInfo(a.mint).catch(() => null);
+  if (made) return made;
+  const token = await fetchLaunchToken(a.address);
+  return {
+    mint: a.mint,
+    programId: TOKEN_2022_PROGRAM_ID,
+    decimals: LAUNCH_DECIMALS,
+    supply: 0n,
+    mintAuthority: a.address,
+    freezeAuthority: null,
+    name: token?.name ?? null,
+    symbol: token?.symbol ?? null,
+    uri: token?.uri ?? null,
+  };
+}
+
+/**
+ * The terms of a fair launch with a graduation target of `targetLamports`:
+ * the minimum price is what makes selling the whole half raise the target,
+ * rounded up to a whole price tick, so the real target is never lower.
+ */
+export function launchSaleTerms(targetLamports: bigint): { priceUnit: bigint; minPrice: bigint; target: bigint } | null {
+  if (targetLamports <= 0n) return null;
+  // SOL per whole token: target / 500,000,000 tokens = target lamports x 2 x 10^-18.
+  const perToken = { mantissa: targetLamports * 2n, exponent: -18 };
+  const chosen = choosePriceUnit(perToken, LAUNCH_DECIMALS);
+  if (!chosen) return null;
+  const units = LAUNCH_SALE_SUPPLY / chosen.priceUnit;
+  if (units === 0n) return null;
+  const minPrice = (targetLamports + units - 1n) / units;
+  if (minPrice > MAX_PRICE_TICKS) return null;
+  return { priceUnit: chosen.priceUnit, minPrice, target: units * minPrice };
+}
+
+/**
+ * A rough wait, in seconds, from the end of bidding until a launch's token
+ * and pool exist: every batch of four bids checked, the price found (one
+ * step, or a step per page and pass), every batch settled, then the token
+ * and the pool. Each step is one MPC computation or transaction, run one
+ * after another; the real time depends on the network.
+ */
+export function launchSettleSecs(bids: number, pages: number): number {
+  const batches = Math.ceil(bids / 4);
+  const clearing = pages <= 1 ? 1 : 8 * (pages - 1) + 1;
+  const SECS_PER_COMPUTATION = 20;
+  return (2 * batches + clearing) * SECS_PER_COMPUTATION + 2 * 15;
 }

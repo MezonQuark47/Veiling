@@ -27,6 +27,9 @@ import { createInitializeInstruction, createUpdateAuthorityInstruction, pack } f
 import {
   BATCH_SIZE,
   CP_AMM_ID,
+  LAUNCH_COMPUTE_UNITS,
+  LAUNCH_MIN_BID,
+  LAUNCH_SALE_SUPPLY,
   LP_COMPUTE_UNITS,
   MAX_NFTS_PER_CLAIM,
   MAX_PREPAID_PAGES,
@@ -50,6 +53,8 @@ import {
   dammVaultAddress,
   liquidityPlanAddress,
   lpAuthorityAddress,
+  launchMintAddress,
+  launchTokenAddress,
   assetAddress,
   auctionAddress,
   bidAddress,
@@ -1220,5 +1225,118 @@ export function buildSetListing(admin: PublicKey, auction: PublicKey, featured: 
   return program.methods
     .setListing(featured, hidden)
     .accountsPartial({ admin, config: configAddress, auction })
+    .transaction();
+}
+
+// ---------------------------------------------------------------------------
+// Fair launches
+// ---------------------------------------------------------------------------
+
+/** A fair launch's token: made only if the sale graduates. */
+export interface LaunchToken {
+  name: string;
+  symbol: string;
+  /** Its metadata file (name, symbol, image), uploaded first. */
+  uri: string;
+}
+
+/** A fair launch's terms, as `launchSaleTerms` makes them from a target. */
+export interface LaunchTerms {
+  priceUnit: bigint;
+  minPrice: bigint;
+  durationSecs: number;
+  /** When bidding opens (unix seconds); 0 for right away. */
+  startTime: number;
+  /** The pool's trading fee once the anti-sniper fee is over, in bps. */
+  tradeFeeBps: number;
+}
+
+/**
+ * Opens a fair launch: half a billion tokens sold by sealed bid, the token
+ * made only if it sells out, every lamport raised (less the sale fee) and
+ * the other half of the supply into its pool. The seller pays the listing
+ * fee, the crank fee and a deposit that comes back.
+ */
+export async function buildCreateLaunch(seller: PublicKey, token: LaunchToken, terms: LaunchTerms, fees: FeeConfig) {
+  const seed = randomU64();
+  const auction = auctionAddress(seller, seed);
+  const tx = await program.methods
+    .createLaunch(
+      seed,
+      {
+        supply: bn(LAUNCH_SALE_SUPPLY),
+        priceUnit: bn(terms.priceUnit),
+        minPrice: Number(terms.minPrice),
+        minDeposit: bn(LAUNCH_MIN_BID),
+        durationSecs: bn(terms.durationSecs),
+        startTime: bn(terms.startTime),
+      },
+      acceptedFees(fees),
+      { name: token.name, symbol: token.symbol, uri: token.uri },
+      terms.tradeFeeBps
+    )
+    .accountsPartial({
+      seller,
+      auction,
+      book: bookAddress(auction),
+      launchToken: launchTokenAddress(auction),
+      plan: liquidityPlanAddress(auction),
+      lpAuthority: lpAuthorityAddress(auction),
+      mint: launchMintAddress(auction),
+      feeConfig: feeConfigAddress,
+      treasury: fees.treasury,
+    })
+    .transaction();
+  return { tx, auction };
+}
+
+/**
+ * Makes a graduated launch's token: exactly what was sold and what the pool
+ * takes, then the mint closes for good. Anyone can send it; the seller's
+ * deposit pays for the token's accounts.
+ */
+export async function buildGraduateLaunch(payer: PublicKey, auction: Auction) {
+  const lpAuthority = lpAuthorityAddress(auction.address);
+  const mint = launchMintAddress(auction.address);
+  const ata = (owner: PublicKey) => getAssociatedTokenAddressSync(mint, owner, true, TOKEN_2022_PROGRAM_ID);
+  return program.methods
+    .graduateLaunch()
+    .accountsPartial({
+      caller: payer,
+      auction: auction.address,
+      launchToken: launchTokenAddress(auction.address),
+      plan: liquidityPlanAddress(auction.address),
+      lpAuthority,
+      seller: auction.seller,
+      mint,
+      vault: ata(auction.address),
+      reserve: ata(lpAuthority),
+      sellerTokenAccount: ata(auction.seller),
+      wsolMint: WSOL_MINT,
+      lpWsol: getAssociatedTokenAddressSync(WSOL_MINT, lpAuthority, true, TOKEN_PROGRAM_ID),
+      wsolTokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .preInstructions([computeLimit(LAUNCH_COMPUTE_UNITS.graduate)])
+    .transaction();
+}
+
+/**
+ * Closes a launch whose token was never made, once no bid is left: the
+ * deposit and every rent go back to the seller.
+ */
+export async function buildCloseLaunch(auction: Auction) {
+  return program.methods
+    .closeLaunch()
+    .accountsPartial({
+      seller: auction.seller,
+      auction: auction.address,
+      book: bookAddress(auction.address),
+      fold: foldIfPaged(auction),
+      bookIndex: indexIfPaged(auction),
+      launchToken: launchTokenAddress(auction.address),
+      plan: liquidityPlanAddress(auction.address),
+      lpAuthority: lpAuthorityAddress(auction.address),
+    })
+    .remainingAccounts(pageAccounts(auction, true))
     .transaction();
 }

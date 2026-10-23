@@ -1,0 +1,282 @@
+import { useMemo, useState } from "react";
+import {
+  LAUNCH_DECIMALS,
+  LAUNCH_HOURS,
+  LAUNCH_MIN_BID,
+  LAUNCH_MIN_RAISE,
+  LAUNCH_SALE_SUPPLY,
+  LAUNCH_SUPPLY,
+  MAX_LAUNCH_NAME_LEN,
+  MAX_LAUNCH_SYMBOL_LEN,
+} from "../config";
+import { buildCreateLaunch } from "../lib/actions";
+import { freeTarget } from "../lib/arweave";
+import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchSaleTerms, sellerCrankFee } from "../lib/chain";
+import { formatSol, formatTokens, parseDecimal } from "../lib/format";
+import type { PreparedImage } from "../lib/images";
+import { formatDecimal, tokenPrice } from "../lib/price";
+import { sendTransaction } from "../lib/tx";
+import { uploadTokenMetadata } from "../lib/uploads";
+import { useWallet } from "../lib/wallet";
+import { ImagePicker, isSmallImage, useImageUrl } from "./ImagePicker";
+import { MAX_DESCRIPTION_LEN } from "./LaunchParts";
+import { Button, Notice, useAction, useLoader } from "./ui";
+
+/** What the creator deposits for the token's accounts and its pool; it comes back. */
+const LAUNCH_DEPOSIT = 40_000_000n;
+const POOL_FEES: [number, string][] = [
+  [25, "0.25%"],
+  [100, "1%"],
+  [200, "2%"],
+];
+
+function Choice<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: [T, string][];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="segmented" role="group" aria-label={label}>
+      {options.map(([v, text]) => (
+        <button
+          key={String(v)}
+          type="button"
+          className={`segmented__item${value === v ? " segmented__item--on" : ""}`}
+          aria-pressed={value === v}
+          onClick={() => onChange(v)}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A fair launch: a new token that only exists if its sale succeeds. Half of
+ * a billion tokens is sold by sealed bid; if it sells out, the token is made
+ * and every SOL raised goes with the other half into its pool. If not, no
+ * token is made and every bid is refunded.
+ */
+export function FairLaunchForm() {
+  const { signer } = useWallet();
+  const action = useAction();
+  const fees = useLoader(fetchFeeConfig, []);
+  const crank = useLoader(fetchCrankRewards, []);
+
+  const [name, setName] = useState("");
+  const [symbol, setSymbol] = useState("");
+  const [image, setImage] = useState<PreparedImage | null>(null);
+  const [description, setDescription] = useState("");
+  const [targetInput, setTargetInput] = useState("25");
+  const [hours, setHours] = useState<number>(1);
+  const [poolFee, setPoolFee] = useState<number>(100);
+  const [touched, setTouched] = useState(false);
+  const [step, setStep] = useState<"form" | "upload" | "open">("form");
+  const art = useImageUrl(image);
+
+  const target = parseDecimal(targetInput, 9);
+  const terms = useMemo(() => (target ? launchSaleTerms(target) : null), [target]);
+  const ticker = symbol.trim().toUpperCase();
+
+  const problems: string[] = [];
+  if (!name.trim()) problems.push("Give the token a name.");
+  else if (new TextEncoder().encode(name.trim()).length > MAX_LAUNCH_NAME_LEN) problems.push(`The name is longer than ${MAX_LAUNCH_NAME_LEN} bytes.`);
+  if (!ticker) problems.push("Give the token a symbol.");
+  else if (new TextEncoder().encode(ticker).length > MAX_LAUNCH_SYMBOL_LEN) problems.push(`The symbol is longer than ${MAX_LAUNCH_SYMBOL_LEN} bytes.`);
+  if (!image) problems.push("Choose the token's image.");
+  if (description.length > MAX_DESCRIPTION_LEN) problems.push(`The description is longer than ${MAX_DESCRIPTION_LEN} characters.`);
+  if (target === null || target < LAUNCH_MIN_RAISE) problems.push(`The target is at least ${formatSol(LAUNCH_MIN_RAISE)} SOL.`);
+  else if (!terms) problems.push("That target cannot be priced; try a rounder number.");
+  if (!fees.data) problems.push("The platform's fees are not loaded yet.");
+
+  const price = terms ? formatDecimal(tokenPrice(terms.minPrice, terms.priceUnit, LAUNCH_DECIMALS)) : null;
+  const net = terms && fees.data ? terms.target - (terms.target * BigInt(fees.data.saleFeeBps)) / 10_000n : null;
+  const pooledTokens = net && terms ? (net * terms.priceUnit) / terms.minPrice : null;
+  const goods = ticker || "tokens";
+
+  const launch = () =>
+    action
+      .run("launch", async () => {
+        setTouched(true);
+        if (!signer) throw new Error("Connect a wallet first.");
+        if (problems.length > 0 || !terms || !fees.data || !image) throw new Error(problems[0] ?? "Check the form.");
+        setStep("upload");
+        const uri = await uploadTokenMetadata(
+          { name: name.trim(), symbol: ticker, description, image },
+          () => {},
+          freeTarget()
+        );
+        setStep("open");
+        const built = await buildCreateLaunch(
+          signer.publicKey,
+          { name: name.trim(), symbol: ticker, uri },
+          { priceUnit: terms.priceUnit, minPrice: terms.minPrice, durationSecs: hours * 3600, startTime: 0, tradeFeeBps: poolFee },
+          fees.data
+        );
+        await sendTransaction(built.tx, signer);
+        window.location.hash = `#/auction/${built.auction.toBase58()}`;
+      })
+      .finally(() => setStep("form"));
+
+  return (
+    <div className="launch">
+      <form
+        className="launch__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          launch();
+        }}
+      >
+        <fieldset className="group">
+          <legend className="group__title">Token</legend>
+          <p className="hint">
+            Nothing is minted now. The token is made only if its sale sells out, and then never more than{" "}
+            {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)} of it. You hold none: buy at the sale like everyone else.
+          </p>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="fl-name">Name</label>
+              <input id="fl-name" value={name} maxLength={MAX_LAUNCH_NAME_LEN} onChange={(e) => setName(e.target.value)} placeholder="Lantern" />
+            </div>
+            <div className="field field--narrow">
+              <label htmlFor="fl-symbol">Symbol</label>
+              <input
+                id="fl-symbol"
+                value={symbol}
+                maxLength={MAX_LAUNCH_SYMBOL_LEN}
+                onChange={(e) => setSymbol(e.target.value)}
+                placeholder="LNTN"
+                autoCapitalize="characters"
+              />
+            </div>
+          </div>
+          <ImagePicker id="fl-image" label="Token image" value={image} onChange={setImage} />
+          <div className="field">
+            <label htmlFor="fl-description">Description (optional)</label>
+            <textarea id="fl-description" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+        </fieldset>
+
+        <fieldset className="group">
+          <legend className="group__title">Sale</legend>
+          <div className="field">
+            <label htmlFor="fl-target">Graduation target (SOL)</label>
+            <input id="fl-target" inputMode="decimal" value={targetInput} onChange={(e) => setTargetInput(e.target.value)} />
+            <p className="hint">
+              What selling all {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} {goods} must raise, at least{" "}
+              {formatSol(LAUNCH_MIN_RAISE)} SOL. It sets the lowest price: {price ? `${price} SOL per ${ticker || "token"}` : "…"}.
+              Bids can go higher; everyone who wins pays the one price where demand meets the supply.
+            </p>
+          </div>
+          <div className="field">
+            <span className="field__label" id="fl-hours">
+              Bidding time
+            </span>
+            <Choice label="Bidding time" value={hours} options={LAUNCH_HOURS.map((h) => [h, `${h} hour${h > 1 ? "s" : ""}`])} onChange={setHours} />
+            <p className="hint">Bids start at {formatSol(LAUNCH_MIN_BID)} SOL. Bidding opens as soon as the launch does.</p>
+          </div>
+          <div className="field">
+            <span className="field__label">Pool trading fee</span>
+            <Choice label="Pool trading fee" value={poolFee} options={POOL_FEES} onChange={setPoolFee} />
+            <p className="hint">
+              Trading opens with a 50% fee against snipers that falls to this over ten minutes. You get 80% of the
+              pool's fees, for good; the platform gets the rest.
+            </p>
+          </div>
+        </fieldset>
+
+        <fieldset className="group">
+          <legend className="group__title">If it sells out</legend>
+          <ul className="launch-facts">
+            <li>
+              The token is made: the {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} sold go to the winners.
+            </li>
+            <li>
+              Every SOL raised, less the {fees.data ? formatPercent(fees.data.saleFeeBps) : "…"} sale fee
+              {net ? ` (${formatSol(net, 2)} SOL at the target)` : ""}, opens a Meteora pool at the clearing price with
+              the {pooledTokens ? formatTokens(pooledTokens, LAUNCH_DECIMALS, 0) : "…"} {goods} it buys there. The pool
+              is locked for good.
+            </li>
+            <li>Then the mint closes: nobody can ever make more.</li>
+          </ul>
+          <p className="hint">
+            If it does not sell out, no token is ever made, every bid is refunded in full, and you close the launch to
+            get your deposit and rents back.
+          </p>
+        </fieldset>
+
+        <fieldset className="group">
+          <legend className="group__title">Costs</legend>
+          <dl className="fees">
+            <div>
+              <dt>Listing</dt>
+              <dd>
+                <span className="fees__amount">{fees.data ? `${formatSol(fees.data.listingFee)} SOL` : "…"}</span>
+                <span className="fees__note">Not refunded.</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Settlement fund</dt>
+              <dd>
+                <span className="fees__amount">{crank.data ? `${formatSol(sellerCrankFee(crank.data, "token"))} SOL` : "…"}</span>
+                <span className="fees__note">Pays for the private steps that find the price. What is not used comes back.</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Deposit</dt>
+              <dd>
+                <span className="fees__amount">{formatSol(LAUNCH_DEPOSIT)} SOL</span>
+                <span className="fees__note">Pays for the token's accounts and the pool if it graduates. The rest comes back.</span>
+              </dd>
+            </div>
+          </dl>
+        </fieldset>
+
+        {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
+        <div className="launch__submit">
+          <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
+            {!signer ? "Connect a wallet to launch" : step === "upload" ? "Uploading the token's details…" : "Open fair launch"}
+          </Button>
+          <p className="hint">The token's image and details upload first, with no wallet prompt. Then your wallet approves one transaction.</p>
+        </div>
+        {action.error ? <Notice tone="error">{action.error}</Notice> : null}
+      </form>
+      <aside className="launch__preview" aria-label="Your launch">
+        <figure className="launchcard">
+          {art ? <img className={`launchcard__art${isSmallImage(image) ? " launch__art--pixels" : ""}`} src={art} alt="" /> : <span className="launchcard__art launchcard__art--empty" />}
+          <figcaption>
+            <span className="launchcard__name">{name.trim() || "Token name"}</span>
+            <span className="launchcard__meta">
+              {ticker || "SYMBOL"}, fair launch, {hours} hour{hours > 1 ? "s" : ""}
+            </span>
+          </figcaption>
+        </figure>
+        <ol className="launchsteps">
+          <li>
+            <span>
+              <strong>Sealed bids for {hours} hour{hours > 1 ? "s" : ""}.</strong> Nobody sees a price.
+            </span>
+          </li>
+          <li>
+            <span>
+              <strong>One price is found.</strong> It sells out if bids cover {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} {goods} at{" "}
+              {price ?? "…"} SOL or more.
+            </span>
+          </li>
+          <li>
+            <span>
+              <strong>The token is born</strong> with its pool, or never at all.
+            </span>
+          </li>
+        </ol>
+      </aside>
+    </div>
+  );
+}

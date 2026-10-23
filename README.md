@@ -262,6 +262,42 @@ paid is where the market starts (`programs/sealed_auction/src/liquidity.rs`).
 Measured on devnet: opening the pool takes about 300,000 compute units and
 about 0.017 SOL of rent, paid from the seller's deposit.
 
+### Fair launches
+
+A fair launch sells a token that does not exist yet and only comes into being
+if its sale succeeds, after pump.fun's graduation but by sealed bid
+(`programs/sealed_auction/src/launch.rs`).
+
+- **Opening.** `create_launch` takes the token's name, symbol and metadata
+  URI, a graduation target of at least 10 SOL, a bidding time of 1, 2 or 5
+  hours and the pool's trading fee. It opens a `Launch` auction for half of a
+  fixed 1,000,000,000-token supply (6 decimals) with no mint behind it, plans
+  a pool of all the net proceeds (`lp_bps` 100%), and records the token in a
+  `LaunchToken` account (`[b"launch", auction]`). The creator deposits 0.04
+  SOL for the token's accounts and pool; what is not used comes back.
+- **Sells out or fails.** The lowest price is the target divided by the
+  supply for sale, and the minimum raise is the target, so a launch graduates
+  only if bids cover every token for sale. Bids start at 0.1 SOL.
+- **Graduation.** Once every bid is settled, anyone can send
+  `graduate_launch`. It creates the Token-2022 mint (`[b"launch_mint",
+  auction]`) with its metadata on the mint itself and no update authority,
+  mints exactly the tokens sold into the sale's vault and the tokens the pool
+  takes into its reserve, and revokes minting for good. The supply never
+  passes 1,000,000,000 and is usually a little under it.
+  `bootstrap_liquidity` then opens the pool as for any token sale; rounding
+  dust left in the reserve is burned. Winners claim their tokens only once
+  the pool is open, so nobody trades before it.
+- **Failure.** If the launch misses its target, no mint is ever made and every
+  bid is refunded in full with `refund_failed_bid`. The creator then sends
+  `close_launch` to get the deposit and the accounts' rents back.
+- **No creator allocation.** The creator holds no tokens and takes no SOL from
+  the sale; they earn the seller's 80% of the pool's trading fees.
+- **Safety net.** A stalled launch reaches the safety net one day after
+  bidding ends instead of three.
+
+Measured in tests: graduation takes about 180,000 compute units and opening a
+launch's pool about 355,000.
+
 ### NFT collections
 
 - NFT `i` (from 0) is named `"{item_name} #{i + 1}"`. Its metadata URI is
@@ -546,7 +582,7 @@ Docs page (`#/docs`) explains auctions, fees and privacy for users.
 
 ### Uploading art
 
-The Launch page offers three kinds of launch, after OpenSea's model; all of
+The Launch page offers four kinds of launch; all of
 them sell through the same sealed auction:
 
 - **Drop**: a whole collection at once. One image per NFT (up to 10,000), or
@@ -560,6 +596,8 @@ them sell through the same sealed auction:
 - **Collection**: built item by item, each with its image, name, editions,
   description, link and traits; always named per item through the item list.
 - **Token**: a new or existing fixed-supply token.
+- **Fair launch**: a new token made only if its sale sells out (see Fair
+  launches above).
 
 The collection's details (logo, optional banner, description, website and X
 links) go into its metadata file: `image`, `banner_image` and `external_url`

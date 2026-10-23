@@ -32,6 +32,8 @@ bytemuck = { version = "1.25.2", features = ["derive", "min_const_generics"] }
 # themselves are part of the runtime.
 solana-curve25519 = { version = "3.1.14", features = ["agave-unstable-api"] }
 solana-sha256-hasher = "3.1.0"
+# `OptionalNonZeroPubkey`, to give up a launch token's metadata authority.
+spl-pod = "=0.7.4"
 
 [dev-dependencies]
 curve25519-dalek = "4.1.3"

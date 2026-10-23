@@ -111,7 +111,9 @@ use anchor_spl::token_2022::spl_token_2022::{
     extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
 };
 use anchor_spl::token_interface::{
-    self, CloseAccount, Mint, TokenAccount, TokenInterface, TransferChecked,
+    self, Burn, CloseAccount, InitializeMint2, MetadataPointerInitialize, Mint, MintTo, SetAuthority,
+    TokenAccount, TokenInterface, TokenMetadataInitialize, TokenMetadataUpdateAuthority,
+    TransferChecked,
 };
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::accounts::ComputationAccount;
@@ -128,6 +130,8 @@ use solana_sha256_hasher::hashv;
 
 pub mod liquidity;
 use liquidity::*;
+pub mod launch;
+use launch::*;
 
 declare_id!("CjUVaVK3jF9o4EehHWtB13TGg9SPXBWKGBepmZHwyLK2");
 
@@ -333,6 +337,32 @@ pub const MAX_SOFT_CLOSE_EXTENSION_SECS: i64 = 24 * 60 * 60;
 pub const PENDING_TIMEOUT_SECS: i64 = 30 * 60;
 /// Time after the end of bidding when the safety net opens.
 pub const EMERGENCY_DELAY_SECS: i64 = 3 * 24 * 60 * 60;
+/// The same for a fair launch, whose sale lasts hours rather than days.
+pub const LAUNCH_EMERGENCY_DELAY_SECS: i64 = 24 * 60 * 60;
+
+/// Fair launches (see `launch`): where the token is made if the sale
+/// graduates, `[LAUNCH_MINT_SEED, auction]`, and what it is.
+pub const LAUNCH_MINT_SEED: &[u8] = b"launch_mint";
+pub const LAUNCH_DECIMALS: u8 = 6;
+/// At most 1,000,000,000 whole tokens: half is sold by sealed bid, the
+/// other half is the most the pool can take. Only what is sold and what the
+/// pool takes is ever minted.
+pub const LAUNCH_SUPPLY: u64 = 1_000_000_000 * 1_000_000;
+pub const LAUNCH_SALE_SUPPLY: u64 = LAUNCH_SUPPLY / 2;
+/// Smallest bid of a launch, in lamports: 0.1 SOL.
+pub const LAUNCH_MIN_BID: u64 = 100_000_000;
+/// Smallest graduation target, in lamports: 10 SOL.
+pub const LAUNCH_MIN_RAISE: u64 = 10_000_000_000;
+/// How long a launch's bidding may run: one, two or five hours.
+pub const LAUNCH_DURATIONS: [i64; 3] = [60 * 60, 2 * 60 * 60, 5 * 60 * 60];
+/// Longest name and symbol of a launch token, in bytes.
+pub const MAX_LAUNCH_NAME_LEN: usize = 32;
+pub const MAX_LAUNCH_SYMBOL_LEN: usize = 10;
+/// What the creator deposits with a launch, in lamports: the token's
+/// account and its holders' (about 0.01 SOL) and the pool's rent (about
+/// 0.017 SOL), with room to spare. All of it comes back if the launch does
+/// not graduate; what is left over comes back when the pool opens.
+pub const LAUNCH_LP_DEPOSIT: u64 = 40_000_000;
 /// Compute budget requested for every callback transaction. Callbacks verify
 /// the cluster's BLS signature, which is too close to the default budget to
 /// leave to chance. No priority fee is set, so this costs nothing extra.
@@ -665,6 +695,42 @@ pub mod sealed_auction {
             });
         }
         Ok(())
+    }
+
+    /// Opens a fair launch (see `launch`): a sale of `LAUNCH_SALE_SUPPLY`
+    /// base units of a token that is made only if the sale succeeds, named
+    /// `token`. Bidding runs one of `LAUNCH_DURATIONS`; every bid deposits
+    /// at least `LAUNCH_MIN_BID`; the minimum raise is what selling it all
+    /// raises at the minimum price, at least `LAUNCH_MIN_RAISE`. The pool
+    /// is planned here, with every lamport raised less the sale fee and a
+    /// `trade_fee_bps` trading fee, and the seller deposits
+    /// `LAUNCH_LP_DEPOSIT` for the token's accounts and the pool.
+    pub fn create_launch(
+        ctx: Context<CreateLaunch>,
+        seed: u64,
+        terms: TokenSaleTerms,
+        fees: FeeTerms,
+        token: LaunchTokenTerms,
+        trade_fee_bps: u16,
+    ) -> Result<()> {
+        launch::create(ctx, seed, terms, fees, token, trade_fee_bps)
+    }
+
+    /// Makes a launch's token once its sale succeeded and every bid is
+    /// settled: Token-2022 with its metadata fixed for good, exactly the
+    /// tokens sold (in the vault) and the tokens the pool takes at the
+    /// clearing price (in its reserve), and no way to mint more.
+    /// `bootstrap_liquidity` then opens the pool. Anyone can call it.
+    pub fn graduate_launch(ctx: Context<GraduateLaunch>) -> Result<()> {
+        launch::graduate(ctx)
+    }
+
+    /// Closes a launch whose token was never made, once no bid is left:
+    /// withdrawn before any bid, ended without bids, missed its target, or
+    /// stalled until every bid took the safety net. The seller gets back
+    /// the deposit and every account's rent.
+    pub fn close_launch<'info>(ctx: Context<'info, CloseLaunch<'info>>) -> Result<()> {
+        launch::close(ctx)
     }
 
     /// Records the allowlist of a token sale opened with one
@@ -1584,7 +1650,7 @@ pub mod sealed_auction {
         // terms.
         let args = push_bid_batch(ArgBuilder::new(), &bids, count)
             .plaintext_u8(count as u8)
-            .plaintext_bool(auction.kind == AuctionKind::Token)
+            .plaintext_bool(auction.kind.is_token())
             .plaintext_u32(auction.min_price)
             .plaintext_u64(auction.price_scale)
             .plaintext_u64(auction.max_per_bid as u64)
@@ -1726,7 +1792,7 @@ pub mod sealed_auction {
                 &book.batch_nonces,
                 ctx.accounts.book.key(),
                 active_batches,
-                auction.kind == AuctionKind::Token,
+                auction.kind.is_token(),
                 auction.price_unit,
                 auction.supply,
             )
@@ -2487,6 +2553,12 @@ pub mod sealed_auction {
         require!(bid.status == BidStatus::Settled, AuctionError::NotSettled);
         require!(bid.won > 0, AuctionError::NothingToClaim);
         require!(!bid.delivered, AuctionError::AlreadyClaimed);
+        // A launch's token goes live with its pool: nobody holds any before,
+        // so nobody can open the token's pool first.
+        require!(
+            auction.kind != AuctionKind::Launch || auction.liquidity == LIQUIDITY_POOLED,
+            AuctionError::LiquidityPending
+        );
         let amount = bid.won;
         let delivered = auction
             .delivered
@@ -3517,7 +3589,7 @@ pub fn clearing_is_consistent(
                 weight_above < supply
             }
         }
-        AuctionKind::Token => {
+        AuctionKind::Token | AuctionKind::Launch => {
             let unit = auction.price_unit as u128;
             let budget_cost = |weight: u128| weight.checked_mul(unit).ok_or(AuctionError::InvalidClearing);
             if filled {
@@ -3827,7 +3899,7 @@ fn apply_award<'info>(
     require!(auction.status == AuctionStatus::Settling, AuctionError::WrongStatus);
     require!(bid.status == BidStatus::Sealed, AuctionError::BidAlreadySettled);
 
-    if auction.kind == AuctionKind::Token {
+    if auction.kind.is_token() {
         // The bid's private budget, revealed because it won something; the
         // check made sure its deposit covers it.
         let budget = quantity;
@@ -4552,7 +4624,7 @@ fn load_batch<'info>(
 /// auction. Collection bids have no budget.
 fn min_budget(auction: &Auction) -> u64 {
     match auction.kind {
-        AuctionKind::Token => auction.min_deposit,
+        AuctionKind::Token | AuctionKind::Launch => auction.min_deposit,
         AuctionKind::Collection => 0,
     }
 }
@@ -4569,7 +4641,7 @@ pub fn bid_capacity(auction: &Auction) -> u32 {
 /// Most pages the auction's book can have.
 pub fn max_pages(auction: &Auction) -> u8 {
     match auction.kind {
-        AuctionKind::Token => MAX_TOKEN_PAGES,
+        AuctionKind::Token | AuctionKind::Launch => MAX_TOKEN_PAGES,
         AuctionKind::Collection => MAX_PAGES,
     }
 }
@@ -4882,7 +4954,7 @@ fn fold_arguments(
     list.push_u64(fold.prefix as u64);
     list.args.push(ArgumentRef::PlaintextU8(step.shift));
     list.push_u64(1u64 << step.shift);
-    list.args.push(ArgumentRef::PlaintextBool(auction.kind == AuctionKind::Token));
+    list.args.push(ArgumentRef::PlaintextBool(auction.kind.is_token()));
     list.push_u64(auction.price_unit);
     list.push_u64(auction.supply);
     list.finish()
@@ -5005,9 +5077,18 @@ fn clear_auction_pending(auction: &mut Account<Auction>) {
 fn before_emergency(auction: &Auction, now: i64) -> Result<bool> {
     let opens_at = auction
         .end_time
-        .checked_add(EMERGENCY_DELAY_SECS)
+        .checked_add(emergency_delay(auction))
         .ok_or(AuctionError::MathOverflow)?;
     Ok(now < opens_at)
+}
+
+/// How long after the end of bidding the safety net opens.
+pub fn emergency_delay(auction: &Auction) -> i64 {
+    if auction.kind == AuctionKind::Launch {
+        LAUNCH_EMERGENCY_DELAY_SECS
+    } else {
+        EMERGENCY_DELAY_SECS
+    }
 }
 
 /// True until the time to reveal a hidden collection runs out.
@@ -5138,6 +5219,16 @@ pub enum AuctionKind {
     /// NFTs of a new Metaplex Core collection, minted when winners claim
     /// them; `mint` is the collection and `token_program` is Core.
     Collection,
+    /// A fair launch (see `launch`): a token sale whose token is made only
+    /// if it succeeds; `mint` is where it will be. It sells like `Token`.
+    Launch,
+}
+
+impl AuctionKind {
+    /// Token sales, fair launches included.
+    pub fn is_token(self) -> bool {
+        matches!(self, AuctionKind::Token | AuctionKind::Launch)
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
@@ -5946,7 +6037,7 @@ pub struct SellerWithdraw<'info> {
         has_one = seller @ AuctionError::Unauthorized,
         has_one = mint,
         has_one = treasury @ AuctionError::InvalidTreasury,
-        constraint = auction.kind == AuctionKind::Token @ AuctionError::WrongAuctionKind,
+        constraint = auction.kind.is_token() @ AuctionError::WrongAuctionKind,
     )]
     pub auction: Box<Account<'info, Auction>>,
     /// CHECK: the treasury fixed when the auction opened; receives the sale
@@ -6363,7 +6454,7 @@ pub struct CloseAuction<'info> {
         bump = auction.bump,
         has_one = seller @ AuctionError::Unauthorized,
         has_one = mint,
-        constraint = auction.kind == AuctionKind::Token @ AuctionError::WrongAuctionKind,
+        constraint = auction.kind.is_token() @ AuctionError::WrongAuctionKind,
     )]
     pub auction: Box<Account<'info, Auction>>,
     #[account(
@@ -6434,7 +6525,7 @@ pub struct ClaimTokens<'info> {
         seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
         bump = auction.bump,
         has_one = mint,
-        constraint = auction.kind == AuctionKind::Token @ AuctionError::WrongAuctionKind,
+        constraint = auction.kind.is_token() @ AuctionError::WrongAuctionKind,
     )]
     pub auction: Box<Account<'info, Auction>>,
     #[account(mut, has_one = auction @ AuctionError::WrongBidAccounts)]
@@ -7544,6 +7635,10 @@ pub enum AuctionError {
     MinimumRaiseMissed,
     #[msg("The sale did not fail; settle the bids instead")]
     SaleNotFailed,
+    #[msg("Launch terms are invalid: check the name, symbol, link, duration, smallest bid, target and pool fee")]
+    InvalidLaunch,
+    #[msg("This launch did not graduate")]
+    LaunchFailed,
 }
 
 // ---------------------------------------------------------------------------

@@ -596,6 +596,10 @@ export type SealedAuction = {
         },
         {
           "name": "mint",
+          "docs": [
+            "Writable: a launch burns what rounding leaves in its reserve."
+          ],
+          "writable": true,
           "relations": [
             "auction"
           ]
@@ -2831,6 +2835,223 @@ export type SealedAuction = {
       "args": []
     },
     {
+      "name": "closeLaunch",
+      "docs": [
+        "Closes a launch whose token was never made, once no bid is left:",
+        "withdrawn before any bid, ended without bids, missed its target, or",
+        "stalled until every bid took the safety net. The seller gets back",
+        "the deposit and every account's rent."
+      ],
+      "discriminator": [
+        27,
+        216,
+        111,
+        223,
+        10,
+        230,
+        19,
+        211
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  111,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fold",
+          "docs": [
+            "Only for an auction with more than one page: its paged clearing."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  111,
+                  108,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bookIndex",
+          "docs": [
+            "Only for an auction with more than one page: its book's index."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "launchToken",
+          "docs": [
+            "Still here: the launch never graduated, so its token was never made."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  97,
+                  117,
+                  110,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "plan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "closeParticipant",
       "docs": [
         "Returns a `Participant`'s rent to its wallet once bidding is over (or",
@@ -3314,6 +3535,268 @@ export type SealedAuction = {
               "name": "collectionTerms"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "createLaunch",
+      "docs": [
+        "Opens a fair launch (see `launch`): a sale of `LAUNCH_SALE_SUPPLY`",
+        "base units of a token that is made only if the sale succeeds, named",
+        "`token`. Bidding runs one of `LAUNCH_DURATIONS`; every bid deposits",
+        "at least `LAUNCH_MIN_BID`; the minimum raise is what selling it all",
+        "raises at the minimum price, at least `LAUNCH_MIN_RAISE`. The pool",
+        "is planned here, with every lamport raised less the sale fee and a",
+        "`trade_fee_bps` trading fee, and the seller deposits",
+        "`LAUNCH_LP_DEPOSIT` for the token's accounts and the pool."
+      ],
+      "discriminator": [
+        239,
+        223,
+        255,
+        134,
+        39,
+        121,
+        127,
+        62
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              },
+              {
+                "kind": "arg",
+                "path": "seed"
+              }
+            ]
+          }
+        },
+        {
+          "name": "book",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  111,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "launchToken",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  97,
+                  117,
+                  110,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "plan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "docs": [
+            "not exist yet."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  97,
+                  117,
+                  110,
+                  99,
+                  104,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "feeConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "crankConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "seed",
+          "type": "u64"
+        },
+        {
+          "name": "terms",
+          "type": {
+            "defined": {
+              "name": "tokenSaleTerms"
+            }
+          }
+        },
+        {
+          "name": "fees",
+          "type": {
+            "defined": {
+              "name": "feeTerms"
+            }
+          }
+        },
+        {
+          "name": "token",
+          "type": {
+            "defined": {
+              "name": "launchTokenTerms"
+            }
+          }
+        },
+        {
+          "name": "tradeFeeBps",
+          "type": "u16"
         }
       ]
     },
@@ -4152,6 +4635,218 @@ export type SealedAuction = {
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "graduateLaunch",
+      "docs": [
+        "Makes a launch's token once its sale succeeded and every bid is",
+        "settled: Token-2022 with its metadata fixed for good, exactly the",
+        "tokens sold (in the vault) and the tokens the pool takes at the",
+        "clearing price (in its reserve), and no way to mint more.",
+        "`bootstrap_liquidity` then opens the pool. Anyone can call it."
+      ],
+      "discriminator": [
+        49,
+        31,
+        22,
+        11,
+        201,
+        190,
+        128,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "auction",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "launchToken",
+          "docs": [
+            "Closes here: the token now carries its name, symbol and link."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  97,
+                  117,
+                  110,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "plan",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  117,
+                  105,
+                  100,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lpAuthority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  97,
+                  117,
+                  110,
+                  99,
+                  104,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          },
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "reserve",
+          "writable": true
+        },
+        {
+          "name": "sellerTokenAccount",
+          "writable": true
+        },
+        {
+          "name": "wsolMint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "lpWsol",
+          "writable": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "wsolTokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "increaseBid",
@@ -7104,6 +7799,19 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "launchToken",
+      "discriminator": [
+        86,
+        76,
+        97,
+        117,
+        110,
+        99,
+        104,
+        49
+      ]
+    },
+    {
       "name": "liquidityPlan",
       "discriminator": [
         86,
@@ -7428,6 +8136,45 @@ export type SealedAuction = {
         242,
         101,
         118
+      ]
+    },
+    {
+      "name": "launchClosed",
+      "discriminator": [
+        18,
+        101,
+        70,
+        162,
+        2,
+        120,
+        163,
+        0
+      ]
+    },
+    {
+      "name": "launchGraduated",
+      "discriminator": [
+        79,
+        140,
+        188,
+        70,
+        185,
+        121,
+        130,
+        216
+      ]
+    },
+    {
+      "name": "launchOpened",
+      "discriminator": [
+        136,
+        24,
+        115,
+        132,
+        210,
+        174,
+        226,
+        71
       ]
     },
     {
@@ -8035,6 +8782,16 @@ export type SealedAuction = {
       "code": 6086,
       "name": "saleNotFailed",
       "msg": "The sale did not fail; settle the bids instead"
+    },
+    {
+      "code": 6087,
+      "name": "invalidLaunch",
+      "msg": "Launch terms are invalid: check the name, symbol, link, duration, smallest bid, target and pool fee"
+    },
+    {
+      "code": 6088,
+      "name": "launchFailed",
+      "msg": "This launch did not graduate"
     }
   ],
   "types": [
@@ -8706,6 +9463,9 @@ export type SealedAuction = {
           },
           {
             "name": "collection"
+          },
+          {
+            "name": "launch"
           }
         ]
       }
@@ -10538,6 +11298,134 @@ export type SealedAuction = {
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "launchClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "launchGraduated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "sold",
+            "type": "u64"
+          },
+          {
+            "name": "poolTokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "launchOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "docs": [
+              "Where the token will be made if the launch graduates."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string"
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "target",
+            "docs": [
+              "What selling it all raises, in lamports: the graduation target."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "launchToken",
+      "docs": [
+        "What a launch's token will be called, until it is made."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auction",
+            "type": "pubkey"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string"
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "launchTokenTerms",
+      "docs": [
+        "A launch token's name, symbol and metadata link."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string"
+          },
+          {
+            "name": "uri",
+            "type": "string"
           }
         ]
       }

@@ -2341,7 +2341,7 @@ p {
 
 .kinds {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-top: 28px;
 }
@@ -2746,7 +2746,13 @@ p {
   font-size: var(--step-2);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
+  .kinds {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
   .kinds {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3366,4 +3372,97 @@ p {
   to {
     transform: rotateX(-24deg) rotateY(-40deg);
   }
+}
+
+/* ---------------------------------------------------------------- Fair launch form */
+
+.launchcard {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  margin: 0 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.launchcard__art {
+  flex: none;
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+  object-fit: cover;
+  background: var(--raised);
+}
+
+.launchcard__art--empty {
+  display: block;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+.launchcard figcaption {
+  display: grid;
+  gap: 4px;
+}
+
+.launchcard__name {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.launchcard__meta {
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.launchsteps {
+  width: 100%;
+  max-width: 380px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: launchstep;
+  display: grid;
+  gap: 14px;
+}
+
+.launchsteps li {
+  counter-increment: launchstep;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  line-height: 1.5;
+  color: #c7cad1;
+}
+
+.launchsteps li::before {
+  content: counter(launchstep);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--cobalt-tint);
+  color: var(--cobalt-soft);
+  font-weight: 700;
+  font-size: var(--step--1);
+}
+
+.launchsteps strong {
+  color: var(--ink);
+}
+
+.launch-facts {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
 }
