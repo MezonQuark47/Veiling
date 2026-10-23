@@ -440,6 +440,12 @@ export function decodeAuction(address: PublicKey, a: RawAuction): Auction {
  */
 export const saleFailed = (a: Auction) => a.raiseMissed || a.liquidity === "failed";
 
+/**
+ * Whether a winning bid of a new token still waits for its tokens: they reach
+ * winners only once the token's pool is open.
+ */
+export const waitsForPool = (a: Auction, b: Bid) => a.launch && a.liquidity !== "pooled" && b.won > 0n && !b.delivered;
+
 /** Bids the auction can hold before new bids must replace the smallest. */
 export const bidCapacity = (a: Auction) => PAGE_BIDS * (1 + a.extraPages);
 

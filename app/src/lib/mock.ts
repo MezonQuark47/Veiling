@@ -116,6 +116,51 @@ export function mockAuctions(): Auction[] {
       liquidity: "planned",
       liquidityFloor: 1n,
     }),
+    // A new token that missed its target: every bid is being refunded.
+    base(12, {
+      launch: true,
+      supply: 500_000_000_000_000n,
+      priceUnit: 1_000_000_000n,
+      minPrice: 20_000n,
+      minDeposit: 100_000_000n,
+      minRaise: 10_000_000_000n,
+      startTime: now() - 7_200,
+      endTime: now() - 3_600,
+      status: "settling",
+      bidCount: 6,
+      checkedCount: 6,
+      resolvedCount: 2,
+      liveBids: 4,
+      clearingPrice: 20_000n,
+      raiseMissed: true,
+      totalDeposited: 2_100_000_000n,
+      liquidity: "failed",
+      liquidityFloor: 1n,
+    }),
+    // A new token that sold out: settled, its token still to be made.
+    base(13, {
+      launch: true,
+      supply: 500_000_000_000_000n,
+      priceUnit: 1_000_000_000n,
+      minPrice: 20_000n,
+      minDeposit: 100_000_000n,
+      minRaise: 10_000_000_000n,
+      startTime: now() - 7_200,
+      endTime: now() - 3_600,
+      status: "settling",
+      bidCount: 6,
+      checkedCount: 6,
+      resolvedCount: 6,
+      liveBids: 6,
+      clearingPrice: 22_000n,
+      filled: true,
+      weightAbove: 11_000_000_000n,
+      sold: 500_000_000_000_000n,
+      proceeds: 11_000_000_000n,
+      totalDeposited: 11_000_000_000n,
+      liquidity: "planned",
+      liquidityFloor: 1n,
+    }),
     base(1, {
       featured,
       bidCount: 37,
@@ -276,15 +321,17 @@ const NAMES: Record<number, [string, string]> = {
   4: ["Windmill Energy", "MILL"],
   5: ["Gouda Rewards", "GOUDA"],
   11: ["Lantern", "LNTN"],
+  12: ["Ember", "EMBR"],
+  13: ["Harbor", "HRBR"],
 };
 
 export function mockToken(mint: PublicKey): TokenInfo {
-  const seed = [1, 2, 3, 4, 5, 11].find((s) => key(200 + s).equals(mint)) ?? 1;
+  const seed = [1, 2, 3, 4, 5, 11, 12, 13].find((s) => key(200 + s).equals(mint)) ?? 1;
   const [name, symbol] = NAMES[seed];
   return {
     mint,
     programId: new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
-    decimals: seed === 11 ? 6 : 9,
+    decimals: seed >= 11 ? 6 : 9,
     supply: 1_000_000_000_000_000n,
     mintAuthority: null,
     freezeAuthority: null,
@@ -296,7 +343,8 @@ export function mockToken(mint: PublicKey): TokenInfo {
 
 /** The sample fair launch's token-to-be. */
 export function mockLaunchToken(auction: PublicKey) {
-  return auction.equals(key(11)) ? { name: "Lantern", symbol: "LNTN", uri: "" } : null;
+  const seed = [11, 12, 13].find((s) => key(s).equals(auction));
+  return seed ? { name: NAMES[seed][0], symbol: NAMES[seed][1], uri: "" } : null;
 }
 
 const COLLECTIONS: Record<number, [string, string]> = {

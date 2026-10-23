@@ -423,9 +423,9 @@ export function Docs({ section }: { section: string }) {
                 open, so nobody holds any before it.
               </li>
               <li>
-                <strong>Or never at all.</strong> If it misses the target, no token is ever made and every bid is
-                refunded in full. The creator closes the sale and gets their deposit and rents back; only the listing
-                fee and what settlement used are spent.
+                <strong>Or never at all.</strong> If it misses the target, no token is ever made and every bid's
+                deposit comes back in full (the small settlement fee each bid paid does not). The creator closes the
+                sale and gets their deposit and rents back; only the listing fee and what settlement used are spent.
               </li>
               <li>
                 <strong>No creator allocation.</strong> The creator holds none of the supply and takes no SOL from the
@@ -517,7 +517,8 @@ export function Docs({ section }: { section: string }) {
               The private steps after bidding (checking the bids, finding the price, settling each bid and, for a
               collection, the shuffle) each cost a network fee to start. Anyone can start them, and each pays whoever
               did it a fixed reward from the auction's settlement fund once it succeeds, a little above that fee. So
-              a sale settles even if nobody involved is online, and running the steps never costs anyone money.
+              a sale does not depend on the seller, the bidders or us being online, and running the steps never costs anyone
+              money.
             </p>
           </Section>
 

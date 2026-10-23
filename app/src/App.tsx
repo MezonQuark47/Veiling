@@ -21,8 +21,8 @@ function Footer() {
             Veiling
           </a>
           <p>
-            Sealed-bid auctions for tokens and NFT collections on Solana. Bids stay encrypted until one clearing
-            price is found, and every winner pays it.
+            Sealed-bid auctions for new tokens and NFT collections on Solana. Bids are never opened: only one
+            clearing price is made public, and every winner pays it.
           </p>
         </div>
         <nav className="band__links" aria-label="Auctions">

@@ -8,11 +8,12 @@ import {
   LAUNCH_SUPPLY,
   MAX_LAUNCH_NAME_LEN,
   MAX_LAUNCH_SYMBOL_LEN,
+  MAX_TOKEN_BIDS,
 } from "../config";
 import { buildCreateLaunch } from "../lib/actions";
 import { freeTarget } from "../lib/arweave";
 import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchSaleTerms, sellerCrankFee, supplyShare } from "../lib/chain";
-import { formatSol, formatTokens, parseDecimal } from "../lib/format";
+import { formatCount, formatSol, formatTokens, parseDecimal } from "../lib/format";
 import type { PreparedImage } from "../lib/images";
 import { formatDecimal, tokenPrice } from "../lib/price";
 import { sendTransaction } from "../lib/tx";
@@ -181,7 +182,11 @@ export function TokenLaunchForm() {
               Bidding time
             </span>
             <Choice label="Bidding time" value={hours} options={LAUNCH_HOURS.map((h) => [h, `${h} hour${h > 1 ? "s" : ""}`])} onChange={setHours} />
-            <p className="hint">Bids start at {formatSol(LAUNCH_MIN_BID)} SOL. Bidding opens as soon as the sale does.</p>
+            <p className="hint">
+              Bids start at {formatSol(LAUNCH_MIN_BID)} SOL. Bidding opens as soon as the sale does. Only if all{" "}
+              {formatCount(MAX_TOKEN_BIDS)} bid places fill up and a bid is pushed out near the end does it run a
+              little longer, so that bidder can answer.
+            </p>
           </div>
           <div className="field">
             <span className="field__label">Pool trading fee</span>

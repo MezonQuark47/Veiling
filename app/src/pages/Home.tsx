@@ -246,7 +246,7 @@ export function Home() {
             </span>
           </h1>
           <p className="stage__lede">
-            Veiling sells tokens and new NFT collections on Solana by sealed bid. Your price stays encrypted from
+            Veiling sells new tokens and NFT collections on Solana by sealed bid. Your price stays encrypted from
             the moment you bid. When bidding closes, one clearing price is found, every winner pays it, and
             whatever you did not spend comes back.
           </p>
@@ -364,7 +364,7 @@ export function Home() {
               For sellers
             </h2>
             <p className="page__lede">
-              Open a sale in one transaction. The rules are fixed before the first bid, and bidders see all of
+              Open a sale in a few minutes. Its rules are fixed before the first bid, and every bidder sees
               them.
             </p>
           </div>
@@ -377,8 +377,8 @@ export function Home() {
             <Scene boxes={TOKENS} height={230} className="scene--dots" />
             <h3>New tokens</h3>
             <p>
-              50% of the supply sold to up to 1,024 bidders in 1, 2 or 5 hours. The token is made only if the
-              sale sells out; if not, every bid is refunded in full.
+              50% of the supply, up to 1,024 bids, in 1, 2 or 5 hours. The token is made only if the sale sells
+              out; if not, every deposit comes back in full.
             </p>
           </div>
           <div className="card3d">
@@ -393,8 +393,8 @@ export function Home() {
             <Scene boxes={POOL} height={230} className="scene--dots" />
             <h3>A pool at the price</h3>
             <p>
-              Every SOL a new token raises opens its Meteora pool at exactly the clearing price, locked for good.
-              Trading starts with a 50% fee that falls to the pool's own fee over ten minutes.
+              What a new token raises, less the platform fee, opens its Meteora pool at exactly the clearing price,
+              locked for good. Trading starts with a 50% fee that falls to the pool's own fee over ten minutes.
             </p>
           </div>
         </div>

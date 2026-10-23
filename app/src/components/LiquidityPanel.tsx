@@ -21,7 +21,7 @@ import {
   saleFee,
   supplyShare,
 } from "../lib/chain";
-import { formatDuration, formatSol, nowSecs } from "../lib/format";
+import { formatDuration, formatSol, nowSecs, plural } from "../lib/format";
 import { sendTransaction } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
 import { AddressLink, type AssetInfo, Button, Notice, TxLink, goodsAmount, useAction, useLoader } from "./ui";
@@ -153,31 +153,36 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
     const eta = launchSettleSecs(auction.bidCount, pagesInUse(auction));
     body = (
       <>
-        <p>
-          Nothing is minted yet. If bids cover the {supplyShare(auction.supply)} of the supply for sale at{" "}
-          {formatPrice(auction, auction.minPrice, asset.decimals)} per {asset.unit} or more, the sale raises its{" "}
-          {formatSol(auction.minRaise)} SOL target and the token is made: what was sold goes to the winners, and every
-          SOL raised less the sale fee opens a Meteora pool at the clearing price, with up to the other{" "}
-          {supplyShare(auction.supply)}, locked for good. If not, no token is ever made and every bid is refunded in
-          full.
-        </p>
+        {poolReady(auction) ? null : (
+          <ul className="launch-facts">
+            <li>
+              <strong>If it sells out,</strong> the token is made. Winners get the {supplyShare(auction.supply)} of the
+              supply that was sold, and everything raised, less the platform fee, opens a Meteora pool at the same
+              price, locked for good.
+            </li>
+            <li>
+              <strong>If it does not,</strong> no token is ever made and every deposit comes back in full.
+            </li>
+            {!ended || (settling && auction.bidCount > 0) ? (
+              <li>
+                <strong>How long:</strong>{" "}
+                {!ended
+                  ? `with ${plural(auction.bidCount, "bid")} so far, about ${formatDuration(eta)} after bidding closes; more bids take longer.`
+                  : `about ${formatDuration(eta)} from the end of bidding.`}
+              </li>
+            ) : null}
+          </ul>
+        )}
         {!ended ? (
           <p className="muted">
-            {formatSol(auction.totalDeposited)} SOL deposited so far. A deposit only bounds a bid, so this is the most
-            that bids could raise, not what they will. With {auction.bidCount} bid{auction.bidCount === 1 ? "" : "s"}{" "}
-            so far, the token would be made about {formatDuration(eta)} after bidding closes; more bids take longer.
-          </p>
-        ) : null}
-        {settling && auction.bidCount > 0 ? (
-          <p className="muted">
-            Bidding is over. Checking {auction.bidCount} sealed bids, finding the price and settling them takes about{" "}
-            {formatDuration(eta)} from the end of bidding; the token comes right after.
+            {formatSol(auction.totalDeposited)} SOL deposited so far. A deposit only caps a bid, so this is the most the
+            bids could raise.
           </p>
         ) : null}
         {poolReady(auction) ? (
           <>
             <p>
-              The sale sold out. Anyone can make its token now; the creator's deposit pays for it.
+              The sale sold out. Anyone can make the token now; the creator's deposit pays for it.
             </p>
             <Button variant="primary" onClick={graduate} busy={action.busy === "graduate"} disabled={!signer || unmade.loading}>
               Make the token

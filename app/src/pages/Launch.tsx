@@ -15,7 +15,6 @@ import {
   MAX_UPLOADED_ITEMS,
   MAX_URI_LEN,
   NFT_MINT_COST_LAMPORTS,
-  PAGE_BIDS,
   REVEAL_DELAY_SECS,
   MAX_START_DELAY_SECS,
 } from "../config";
@@ -210,12 +209,9 @@ function BidRoom() {
     <div className="field">
       <span className="field__label">Room for bids</span>
       <p className="hint">
-        Up to {formatCount(MAX_COLLECTION_BIDS)} bids, at no cost to you up front, enough for a 10,000-NFT collection to
-        sell out at one NFT a bid. The auction starts with room for {formatCount(PAGE_BIDS)}; each time that fills, the
-        next bid opens room for {formatCount(PAGE_BIDS)} more. However many bids come, it stays one auction with one
-        price for everyone. Bids on the extra room pay a small room fee for it, and its rent comes back to you when you
-        close the auction; only a last, partly filled stretch of room can cost you something, out of the proceeds.
-        Once {formatCount(MAX_COLLECTION_BIDS)} bids are in, larger deposits replace the smallest.
+        Up to {formatCount(MAX_COLLECTION_BIDS)} bids, enough for a 10,000-NFT collection to sell out at one NFT a bid.
+        If it fills up, a larger deposit can take the smallest bid's place. Details in the{" "}
+        <a href="#/docs/bidding">docs</a>.
       </p>
     </div>
   );

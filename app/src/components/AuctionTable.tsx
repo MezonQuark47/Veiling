@@ -1,11 +1,18 @@
 import type { Auction } from "../lib/chain";
-import { formatPrice, phaseOf, supplyShare } from "../lib/chain";
+import { formatPrice, phaseOf, saleFailed, supplyShare } from "../lib/chain";
 import { formatCount, formatDuration, formatSol, shortAddress } from "../lib/format";
 import { type AssetInfo, goodsAmount, useAssetInfo } from "./ui";
 
 export function statusText(a: Auction, now: number, asset: AssetInfo): string {
   const clearing = formatPrice(a, a.clearingPrice, asset.decimals);
-  switch (phaseOf(a, now)) {
+  const phase = phaseOf(a, now);
+  // A sale that did not reach its target refunds every bid instead of settling.
+  if (saleFailed(a) && (phase === "settling" || phase === "settled")) {
+    return phase === "settled" ? "Did not go ahead, bids refunded" : "Did not go ahead, refunding bids";
+  }
+  // A new token that sold out is made, then its pool opens.
+  if (a.launch && phase === "settled" && a.liquidity === "planned") return `Sold out at ${clearing}, opening the pool`;
+  switch (phase) {
     case "upcoming":
       return `Starts in ${formatDuration(a.startTime - now)}`;
     case "bidding":

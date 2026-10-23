@@ -1,5 +1,5 @@
-import { type Auction, type Bid, bidCapacity, formatPrice, phaseOf } from "../lib/chain";
-import { formatCount, formatDateTime, formatDuration } from "../lib/format";
+import { type Auction, type Bid, bidCapacity, formatPrice, phaseOf, saleFailed, supplyShare } from "../lib/chain";
+import { formatCount, formatDateTime, formatDuration, formatSol } from "../lib/format";
 import { statusText } from "./AuctionTable";
 import { type AssetInfo, goodsAmount } from "./ui";
 
@@ -105,7 +105,7 @@ function SupplyBar({ auction, asset }: { auction: Auction; asset: AssetInfo }) {
     // When demand fell short, every valid bid won all it asked for at the minimum price.
     { key: "above", amount: above, label: auction.filled ? "To bids above the price" : "To the winning bids" },
     { key: "at", amount: at, label: "Shared by bids at the price" },
-    { key: "unsold", amount: unsold, label: "Unsold, back to the seller" },
+    { key: "unsold", amount: unsold, label: auction.launch ? "Unsold, never made" : "Unsold, back to the seller" },
   ].filter((p) => p.amount > 0n);
   return (
     <div className="supply">
@@ -122,8 +122,9 @@ function SupplyBar({ auction, asset }: { auction: Auction; asset: AssetInfo }) {
               {p.label}
             </dt>
             <dd>
-              {auction.kind === "token" ? "about " : ""}
-              {goodsAmount(p.amount, asset, 2)}
+              {auction.launch
+                ? `${supplyShare(p.amount)} of the supply`
+                : `${auction.kind === "token" ? "about " : ""}${goodsAmount(p.amount, asset, 2)}`}
             </dd>
           </div>
         ))}
@@ -145,7 +146,8 @@ export function AuctionBoard({
   now: number;
 }) {
   const phase = phaseOf(auction, now);
-  const cleared = auction.status === "settling" || (auction.status === "finished" && auction.sold > 0n);
+  const failed = saleFailed(auction);
+  const cleared = !failed && (auction.status === "settling" || (auction.status === "finished" && auction.sold > 0n));
   return (
     <section className="board" aria-label="Auction status">
       <div className={`board__headline${cleared ? " board__headline--cleared" : ""}`}>
@@ -166,6 +168,17 @@ export function AuctionBoard({
               {auction.extendedSecs > 0
                 ? ` Extended by ${formatDuration(auction.extendedSecs)}: a bid was replaced near the end, so its owner had time to answer.`
                 : ""}
+            </p>
+          </>
+        ) : failed && auction.status === "settling" ? (
+          <>
+            <p className="board__label">Did not go ahead</p>
+            <p className="board__value board__value--text">Every bid is refunded</p>
+            <p className="board__sub">
+              {auction.launch
+                ? `The bids did not reach the ${formatSol(auction.minRaise)} SOL target, so the token is never made.`
+                : "The bids did not reach the sale's minimum, so nothing is sold."}{" "}
+              Every deposit comes back in full.
             </p>
           </>
         ) : cleared ? (

@@ -66,7 +66,7 @@ const KINDS: [Kind, string, string][] = [
   [
     "token",
     "Token",
-    "A new token, made only if its sale sells out: 50% of the supply sold by sealed bid, and every SOL raised opens its pool.",
+    "A new token, made only if its sale sells out: 50% of the supply sold by sealed bid, and what it raises opens its pool.",
   ],
 ];
 

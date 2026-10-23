@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { LeftoverNotes, NoteUnlock } from "../components/BidNotes";
 import { Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
 import { statusText } from "../components/AuctionTable";
-import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, revealMissed } from "../lib/chain";
+import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, revealMissed, waitsForPool } from "../lib/chain";
 import { noteSize, readNote } from "../lib/notes";
 import { formatSol, plural } from "../lib/format";
 import { useWallet } from "../lib/wallet";
@@ -42,7 +42,9 @@ function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; no
                       ? revealMissed(auction, now)
                         ? `Won ${goodsAmount(b.won, asset)}, but the art was not revealed in time. Take your whole deposit back on the auction page.`
                         : `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. They are minted once the seller reveals the art.`
-                      : b.won > 0n
+                      : waitsForPool(auction, b)
+                        ? `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. Collect them on the auction page once the token's pool is open.`
+                        : b.won > 0n
                         ? `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. Collect your ${asset.goods} and refund on the auction page.`
                         : "Did not win. Collect your deposit on the auction page."}
               </p>

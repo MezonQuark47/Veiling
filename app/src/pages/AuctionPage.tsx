@@ -66,6 +66,7 @@ import {
   pagesInUse,
   priceOf,
   saleFailed,
+  waitsForPool,
 } from "../lib/chain";
 import { type ItemEntry, itemStart } from "../lib/items";
 import { type RevealStep, revealArt } from "../lib/reveal";
@@ -285,8 +286,8 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
           aria-describedby="budget-hint"
         />
         <p id="budget-hint" className={`hint${budgetInput !== "" && !budgetValid ? " hint--error" : ""}`}>
-          The most SOL you want to spend, at least {formatSol(auction.minDeposit)} SOL. Sealed like your price:
-          only a winning budget is ever revealed.
+          The most SOL you want to spend, at least {formatSol(auction.minDeposit)} SOL. Sealed: only a winning
+          budget is ever shown.
         </p>
       </div>
       <div className="field">
@@ -303,7 +304,7 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
         <p id="price-hint" className={`hint${price.tooLow || price.tooHigh ? " hint--error" : ""}`}>
           {price.tooHigh && max
             ? `This auction takes prices up to ${formatDecimal(max)} SOL.`
-            : `At least ${min}. Sealed: nobody sees it, before or after the auction.`}
+            : `At least ${min}. Sealed: nobody ever sees it.`}
           {price.rounded && price.shown ? ` Rounded down to ${price.shown}.` : ""}
         </p>
       </div>
@@ -336,12 +337,12 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
         <p className={`hint${mode === "exact" ? " hint--warn" : ""}`}>
           {mode === "private"
             ? budgetValid
-              ? `Deposits are public. This one would cover a budget of up to ${formatSol(deposit)} SOL, so it does not show yours.`
-              : "Deposits are public. A private deposit is rounded up, so it does not show your budget."
+              ? `Deposits are public, so yours is rounded up to ${formatSol(deposit)} SOL to hide your budget.`
+              : "Deposits are public. A private deposit is rounded up to hide your budget."
             : mode === "exact"
-              ? "Anyone looking at the chain sees your budget in an exact deposit. Use it only if you do not mind that."
-              : `Any amount from your budget up. The further it is from your budget, the less it reveals.`}{" "}
-          Whatever you do not spend comes back after settlement.
+              ? "An exact deposit shows your budget to anyone who looks."
+              : "Any amount from your budget up. The bigger the gap, the less it shows."}{" "}
+          What you do not spend comes back.
         </p>
         <EvictionHint {...evict} enough={enoughToEnter} bidCount={auction.bidCount} />
       </fieldset>
@@ -361,10 +362,8 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
         <SettlementFee auction={auction} />
       </dl>
       <p className="hint">
-        Every winner pays the same clearing price, never more than their own. A bid above it spends its whole budget
-        at that price, so the lower the price, the more {asset.goods} you get. A bid exactly at it shares what is
-        left. Whatever is not spent comes back. Until bidding closes you can raise your bid, but never lower or
-        withdraw it.
+        Every winner pays the same price, never more than their own: the lower it ends, the more {asset.goods} your
+        budget buys. You can raise a bid until bidding closes, but not lower or cancel it.
       </p>
       <SaleRulesHint auction={auction} admission={admission.data} loading={admission.loading} error={admission.error} room={room} deposit={deposit} />
       <Button
@@ -405,8 +404,9 @@ function SaleRulesHint({
   if (auction.minRaise > 0n) {
     parts.push(
       <p key="raise" className="hint">
-        The sale goes ahead only if the winners pay at least {formatSol(auction.minRaise)} SOL in all. If they would
-        not, every bid gets its whole deposit back.
+        {auction.launch
+          ? `The token is made only if the bids reach the ${formatSol(auction.minRaise)} SOL target. If they do not, every deposit comes back in full; the settlement fee does not.`
+          : `The sale goes ahead only if the winners pay at least ${formatSol(auction.minRaise)} SOL in all. If not, every deposit comes back in full; the settlement fee does not.`}
       </p>
     );
   }
@@ -462,10 +462,8 @@ function CrankNote({ auction }: { auction: Auction }) {
     ...(auction.kind === "collection" ? [`${formatSol(r.seedDraw)} SOL for the shuffle`] : []),
   ];
   return (
-    <p className="muted">
-      Anyone can take the steps below. Each one pays whoever runs it from this auction's settlement fund when Arcium
-      finishes it, to cover its network fee: {parts.join(", ")}. {formatSol(auction.crankPool)} SOL is left in the fund;
-      what is not used goes back to the seller.
+    <p className="muted" title={`Paid from the settlement fund: ${parts.join(", ")}. ${formatSol(auction.crankPool)} SOL is left in it.`}>
+      These steps run on their own. Anyone can also start one; the sale's settlement fund pays its network fee.
     </p>
   );
 }
@@ -663,8 +661,7 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         />
         <p id="quantity-hint" className={`hint${quantityValid ? "" : " hint--error"}`}>
           {auction.maxPerBid === 1 ? "One NFT per bid." : `Between 1 and ${formatCount(auction.maxPerBid)} NFTs.`}{" "}
-          Each is minted to you when you collect it, for about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL in rent and
-          Metaplex fees.
+          Minting costs about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT, paid when you collect.
         </p>
       </div>
       <div className="field">
@@ -681,7 +678,7 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         <p id="price-hint" className={`hint${price.tooLow || price.tooHigh ? " hint--error" : ""}`}>
           {price.tooHigh && max
             ? `This auction takes prices up to ${formatDecimal(max)} SOL.`
-            : `At least ${min}. Sealed: nobody sees it, before or after the auction.`}
+            : `At least ${min}. Sealed: nobody ever sees it.`}
           {price.rounded && price.shown ? ` Rounded down to ${price.shown}.` : ""}
         </p>
       </div>
@@ -714,12 +711,12 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         <p className={`hint${mode === "exact" ? " hint--warn" : ""}`}>
           {mode === "private"
             ? price.ticks && quantityValid
-              ? `Deposits are public. This one would cover up to ${plural(Number(coveredNfts), "NFT")} at up to ${formatPrice(auction, coveredTicks, asset.decimals)} each, so it shows neither your price nor your exact size.`
-              : "Deposits are public. A private deposit is rounded up, so it shows neither your price nor your exact size."
+              ? `Deposits are public, so yours covers up to ${plural(Number(coveredNfts), "NFT")} at up to ${formatPrice(auction, coveredTicks, asset.decimals)} each, to hide your price and size.`
+              : "Deposits are public. A private deposit is rounded up to hide your price and size."
             : mode === "exact"
-              ? "Anyone looking at the chain can work out your price and size from an exact deposit. Use it only if you do not mind that."
-              : `Any amount from ${formatSol(cost)} SOL up. The further it is from price × NFTs, the less it reveals.`}{" "}
-          Whatever you do not spend comes back after settlement.
+              ? "An exact deposit shows your price and size to anyone who looks."
+              : `Any amount from ${formatSol(cost)} SOL up. The bigger the gap, the less it shows.`}{" "}
+          What you do not spend comes back.
         </p>
         <EvictionHint {...evict} enough={enoughToEnter} bidCount={auction.bidCount} />
       </fieldset>
@@ -735,8 +732,8 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         <SettlementFee auction={auction} />
       </dl>
       <p className="hint">
-        Winners pay the clearing price for each NFT, never more than their own. Bids at exactly that price share
-        what is left. Until bidding closes you can raise your bid, but never lower or withdraw it.
+        Every winner pays the same price per NFT, never more than their own. You can raise a bid until bidding
+        closes, but not lower or cancel it.
       </p>
       <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !valid}>
         {signer ? "Seal and place bid" : "Connect a wallet to bid"}
@@ -982,7 +979,9 @@ function Progress({
         <>
           {collection
             ? "Proceeds were sent to you. Unsold NFTs are never minted."
-            : "Proceeds and any unsold tokens were sent to you. Tokens that winners have not collected yet stay in escrow for them."}{" "}
+            : auction.launch
+              ? "The sale is finished. Once every bid is collected, close it to get its rent back."
+              : "Proceeds and any unsold tokens were sent to you. Tokens that winners have not collected yet stay in escrow for them."}{" "}
           <TxLink signature={sig} />
         </>
       );
@@ -1102,7 +1101,7 @@ function Progress({
           <Step state={checkState} title="Check the sealed bids">
             <p className="muted">
               {formatCount(auction.checkedCount)} of {formatCount(auction.bidCount)} checked. Arcium checks each bid
-              against the terms and its deposit, four at a time, without opening any of them.
+              against the rules without opening it.
             </p>
             {phase === "checking" ? (
               auctionPending ? (
@@ -1117,21 +1116,23 @@ function Progress({
           <Step state={priceState} title="Reveal the clearing price">
             {auction.status === "open" ? (
               <p className="muted">
-                The highest price at which the bids cover the supply. Only that price and the demand at and above it
-                are revealed.
+                The highest price at which the bids cover everything for sale. Only this price is made public.
               </p>
             ) : (
               <p>
-                {auction.filled
-                  ? `Cleared at ${clearing} per ${unit}.`
-                  : `Demand did not cover the supply, so every valid bid wins at the minimum price of ${clearing}.`}
+                {failed
+                  ? auction.launch
+                    ? `The bids did not reach the ${formatSol(auction.minRaise)} SOL target, so no token is made.`
+                    : "The bids did not reach the sale's minimum, so it does not go ahead."
+                  : auction.filled
+                    ? `Cleared at ${clearing} per ${unit}.`
+                    : `Demand did not cover the supply, so every valid bid wins at the minimum price of ${clearing}.`}
               </p>
             )}
             {paged && phase === "ready-to-clear" ? (
               <p className="muted">
-                The bids fill {pages} pages of 256, so Arcium reads one page at a time, four bits of the price per
-                pass: {formatCount(foldDone)} of {formatCount(foldSteps)} steps done. The totals in between stay
-                encrypted.
+                Many bids came in, so the price is found in {formatCount(foldSteps)} steps: {formatCount(foldDone)}{" "}
+                done.
               </p>
             ) : null}
             {phase === "ready-to-clear" ? (
@@ -1147,31 +1148,24 @@ function Progress({
           <Step state={settleState} title={failed ? "Refund every bid" : "Settle every bid"}>
             {failed ? (
               <p className="muted">
-                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} refunded. The sale missed{" "}
-                {auction.raiseMissed ? `its minimum raise of ${formatSol(auction.minRaise)} SOL` : "its pool's minimum"}, so every
-                bid gets its whole deposit back, with no computation. Anyone can refund any bid.
+                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} refunded. Every bid gets its
+                whole deposit back. Anyone can refund any bid.
               </p>
             ) : (
               <p className="muted">
-                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} settled. Arcium decides each
-                bid against the price without showing what it bid. Anyone can settle any bid.
+                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} settled. Arcium works out what
+                each bid won without showing what it bid.
               </p>
             )}
             {collection && auction.filled && auction.weightAt > 0n && auction.status !== "open" ? (
               <p className="muted">
-                Bids at exactly the clearing price share the {plural(Number(left), "NFT")} left there by size; any NFT
-                lost to rounding goes to the earliest of them.
+                Bids at exactly the clearing price share the {plural(Number(left), "NFT")} left there.
                 {sharesReady
                   ? ""
                   : ` ${formatCount(Number(auction.atRevealed))} of ${plural(Number(auction.weightAt), "NFT")} wanted at that price revealed so far.`}
               </p>
             ) : null}
-            {!collection && auction.filled && auction.status !== "open" ? (
-              <p className="muted">
-                Bids above the price spend their whole budget at it; bids exactly at it share the tokens left, by
-                budget.
-              </p>
-            ) : null}
+
             {phase === "settling" && (unsettled.length > 0 || (sharesReady && atClearing.length > 0)) ? (
               <div className="actions">
                 {mine
@@ -1260,9 +1254,10 @@ function Progress({
               {uncollected.length > 0 ? `${plural(uncollected.length, "settled bid")} still to deliver. ` : ""}
               Winners get their {asset.goods} and everyone gets their unused SOL. Anyone can do this for any bid; it
               only ever pays the bid's owner.
-              {collection
-                ? ` NFTs are minted as they are delivered, after the shuffle, and whoever delivers pays about ${formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT in rent and Metaplex fees.`
+              {auction.launch && auction.liquidity !== "pooled" && !failed
+                ? ` The ${asset.goods} reach winners once the pool is open; refunds can go out now.`
                 : ""}
+              {collection ? ` NFTs are minted as they are delivered, about ${formatSol(NFT_MINT_COST_LAMPORTS)} SOL each.` : ""}
             </p>
             {deliverable.length > 0 ? (
               <Button
@@ -1293,7 +1288,9 @@ function Progress({
       {canClaim && !(auction.status === "open" && auction.bidCount === 0) && !(auction.launch && auction.liquidity !== "pooled") ? (
         <div className="panel__footer">
           <p>
-            {auction.liquidity === "pooled"
+            {auction.launch
+              ? "The pool is open. Finish the sale, then close it once every bid is collected to get the rents and what is left of the settlement fund back."
+              : auction.liquidity === "pooled"
               ? "Your share of the proceeds was paid when the pool opened. Finish the sale to take back any unsold tokens."
               : failed
                 ? `The sale did not go ahead. Take back your tokens${auction.liquidity === "failed" ? " and the pool's reserve" : ""}.`
@@ -1319,7 +1316,11 @@ function Progress({
         </div>
       ) : isSeller && poolFirst ? (
         <div className="panel__footer">
-          <p className="muted">Open the pool under Auto-liquidity; it pays you the rest of the proceeds as it opens.</p>
+          <p className="muted">
+            {auction.launch
+              ? "Make the token and open its pool under Token and pool below."
+              : "Open the pool under Auto-liquidity; it pays you the rest of the proceeds as it opens."}
+          </p>
         </div>
       ) : isSeller && awaitingReveal && auction.status === "settling" && !missed ? (
         <div className="panel__footer">
@@ -1464,9 +1465,11 @@ function YourBids({
           const takesBack = owed && missed;
           const waitsForReveal = owed && auction.unrevealed && !missed;
           const waitsForShuffle = owed && !nftsKnown && !takesBack;
+          // A new token reaches its winners once the pool is open.
+          const poolWait = waitsForPool(auction, b);
           const ready =
             takesBack ||
-            (b.status === "settled" && !waitsForShuffle && !waitsForReveal) ||
+            (b.status === "settled" && !waitsForShuffle && !waitsForReveal && !poolWait) ||
             (b.status === "atClearing" && sharesReady);
           const numbers = nftNumbersOf(auction, b, now);
           const names = numbers?.map((n) => nftName(auction, n, entries) ?? `#${n}`) ?? null;
@@ -1513,7 +1516,9 @@ function YourBids({
                       : "At the clearing price. Your share is known once every bid at that price is revealed."
                     : takesBack
                       ? `Won ${goodsAmount(b.won, asset)}, but the art was not revealed in time, so no NFT is minted and your whole ${formatSol(b.deposit)} SOL deposit comes back.`
-                      : b.won > 0n
+                      : poolWait
+                        ? `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. Your ${asset.goods} and the ${formatSol(refundOf(b))} SOL left of your deposit can be collected once the pool is open.`
+                        : b.won > 0n
                         ? `Won ${goodsAmount(b.won, asset)}${names ? ` (${nameList(names)})` : ""} for ${formatSol(b.payment)} SOL. ${formatSol(refundOf(b))} SOL comes back.${waitsForShuffle ? " Which NFTs is drawn at random once every bid is settled." : ""}${waitsForReveal ? ` They are minted once the seller reveals the art, by ${formatDateTime(revealClosesAt(auction))}; if not, you take your payment back.` : ""}`
                         : `Did not win. Your ${formatSol(refundOf(b))} SOL deposit comes back.`}
               </p>
@@ -1731,7 +1736,8 @@ export function AuctionPage({ address }: { address: string }) {
   const bids = loaded.data?.bids ?? [];
   const phase = phaseOf(auction, now);
   const bidding = phase === "bidding";
-  const cleared = auction.status === "settling" || (auction.status === "finished" && auction.sold > 0n);
+  const failed = saleFailed(auction);
+  const cleared = !failed && (auction.status === "settling" || (auction.status === "finished" && auction.sold > 0n));
   const collection = auction.kind === "collection";
   const token = asset.token;
   const locked = collection ? true : token ? token.mintAuthority === null && token.freezeAuthority === null : null;
@@ -1776,10 +1782,12 @@ export function AuctionPage({ address }: { address: string }) {
               ) : null}
             </p>
           ) : null}
-          <p className="auction-head__mint">
-            {collection ? "Collection address" : auction.launch ? "Token address, once made" : "Token address"}{" "}
-            <AddressLink address={auction.mint} label={auction.mint.toBase58()} />
-          </p>
+          {auction.launch && failed ? null : (
+            <p className="auction-head__mint">
+              {collection ? "Collection address" : auction.launch ? "Token address, once made" : "Token address"}{" "}
+              <AddressLink address={auction.mint} label={auction.mint.toBase58()} />
+            </p>
+          )}
           <p className="auction-head__status">{statusText(auction, now, asset)}</p>
         </div>
         <div className="auction-head__tags">
@@ -1927,7 +1935,7 @@ export function AuctionPage({ address }: { address: string }) {
                   </dd>
                 </div>
               </>
-            ) : (
+            ) : auction.launch ? null : (
               <div>
                 <dt>Token</dt>
                 <dd>
@@ -1936,7 +1944,7 @@ export function AuctionPage({ address }: { address: string }) {
               </div>
             )}
             <div>
-              <dt>Seller</dt>
+              <dt>{auction.launch ? "Creator" : "Seller"}</dt>
               <dd>
                 <AddressLink address={auction.seller} />
               </dd>
