@@ -36,6 +36,7 @@ function Footer() {
           <a href="#/docs/how">How it works</a>
           <a href="#/docs/fees">Fees</a>
           <a href="#/docs/launch">Drops and collections</a>
+          <a href="#/docs/token">New tokens</a>
           <a href="#/docs/privacy">What stays private</a>
           <a href="#/docs/safety">If settlement stalls</a>
         </nav>

@@ -53,6 +53,7 @@ import {
   revealClosesAt,
   revealMissed,
   saleFee,
+  supplyShare,
   sharesAreFinal,
   ticksOf,
   bidCrankFee,
@@ -823,7 +824,7 @@ function Progress({
   const revealDeadline = revealClosesAt(auction);
   const deliverable = uncollected.filter(
     (b) =>
-      // A fair launch's tokens exist only once its pool is open.
+      // A new token exists for its winners only once its pool is open.
       (auction.kind === "token" && (!auction.launch || auction.liquidity === "pooled" || b.won === 0n)) ||
       (collection && (b.won === 0n || b.delivered || missed || (ready && !auction.unrevealed)))
   );
@@ -1785,7 +1786,7 @@ export function AuctionPage({ address }: { address: string }) {
           {auction.featured ? <span className="tag tag--featured">Featured</span> : null}
           {collection && auction.unrevealed ? <span className="tag tag--warn">Art hidden until revealed</span> : null}
           {collection ? <span className="tag tag--ok">Minted only for winners</span> : null}
-          {auction.launch ? <span className="tag tag--ok">Fair launch</span> : null}
+          {auction.launch ? <span className="tag tag--ok">New token</span> : null}
           {auction.launch ? <span className="tag tag--ok">Made only if it sells out</span> : null}
           {!collection && !auction.launch && locked ? <span className="tag tag--ok">Supply locked</span> : null}
           {!collection && !auction.launch && locked === false ? <span className="tag tag--warn">Supply not locked</span> : null}
@@ -1847,11 +1848,15 @@ export function AuctionPage({ address }: { address: string }) {
             ) : null}
             {auction.minRaise > 0n ? (
               <div>
-                <dt>Minimum raise</dt>
+                <dt>{auction.launch ? "Target" : "Minimum raise"}</dt>
                 <dd>
                   {formatSol(auction.minRaise)} SOL
                   <span className="muted">
-                    {auction.raiseMissed ? " (missed: every bid is refunded)" : "; below it the sale does not go ahead"}
+                    {auction.raiseMissed
+                      ? " (missed: every bid is refunded)"
+                      : auction.launch
+                        ? "; below it no token is made"
+                        : "; below it the sale does not go ahead"}
                   </span>
                 </dd>
               </div>
@@ -1886,7 +1891,9 @@ export function AuctionPage({ address }: { address: string }) {
               <div>
                 <dt>Sold so far</dt>
                 <dd>
-                  {goodsAmount(auction.sold, asset)} of {supplyDescription(auction, asset)}
+                  {auction.launch
+                    ? `${supplyShare(auction.sold)} of the supply`
+                    : `${goodsAmount(auction.sold, asset)} of ${supplyDescription(auction, asset)}`}
                 </dd>
               </div>
             ) : null}
@@ -1936,7 +1943,13 @@ export function AuctionPage({ address }: { address: string }) {
             </div>
             <div>
               <dt>Platform fee</dt>
-              <dd>{auction.saleFeeBps > 0 ? `${formatPercent(auction.saleFeeBps)} of the proceeds, paid by the seller` : "None"}</dd>
+              <dd>
+                {auction.saleFeeBps === 0
+                  ? "None"
+                  : auction.launch
+                    ? `${formatPercent(auction.saleFeeBps)} of what the sale raises; the rest opens the pool`
+                    : `${formatPercent(auction.saleFeeBps)} of the proceeds, paid by the seller`}
+              </dd>
             </div>
         </dl>
         <div className="auction-grid__side">

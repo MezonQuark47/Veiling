@@ -324,10 +324,10 @@ export function Home() {
           ))}
         </ol>
         <p className="how__fine">
-          Every token sold here has a fixed supply: its mint and freeze rights are revoked before the auction
-          opens. An NFT collection is created with its auction and only winners' NFTs are ever minted. If the
-          private network ever stalls, bidders can take back their deposits and sellers their tokens three days
-          after the end. <a href="#/docs">Read the details</a>.
+          A new token is made only if its sale sells out, and its mint closes for good right after. An NFT
+          collection is created with its auction and only winners' NFTs are ever minted. If the private network
+          ever stalls, bidders can take back their deposits, a day after the end for a token and three days for a
+          collection. <a href="#/docs">Read the details</a>.
         </p>
       </section>
 
@@ -375,10 +375,10 @@ export function Home() {
         <div className="bento">
           <div className="card3d">
             <Scene boxes={TOKENS} height={230} className="scene--dots" />
-            <h3>Token sales</h3>
+            <h3>New tokens</h3>
             <p>
-              Sell a fixed supply to up to 1,024 bidders. Set a minimum price, a minimum raise and, with an
-              allowlist, a cap per wallet.
+              50% of the supply sold to up to 1,024 bidders in 1, 2 or 5 hours. The token is made only if the
+              sale sells out; if not, every bid is refunded in full.
             </p>
           </div>
           <div className="card3d">
@@ -393,9 +393,8 @@ export function Home() {
             <Scene boxes={POOL} height={230} className="scene--dots" />
             <h3>A pool at the price</h3>
             <p>
-              Part of a token sale's proceeds and the matching tokens can open a Meteora pool at exactly the
-              clearing price, locked for good. Trading starts with a 50% fee that falls to the pool's own fee
-              over ten minutes.
+              Every SOL a new token raises opens its Meteora pool at exactly the clearing price, locked for good.
+              Trading starts with a 50% fee that falls to the pool's own fee over ten minutes.
             </p>
           </div>
         </div>

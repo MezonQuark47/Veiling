@@ -1,15 +1,12 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { PublicKey, type Transaction } from "@solana/web3.js";
 import type { BN } from "@anchor-lang/core";
-import { TOKEN_2022_PROGRAM_ID, getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
   FEATURE_CONTACT,
   FREE_UPLOAD_ITEM_BYTES,
   FREE_UPLOAD_TOTAL_BYTES,
   MAX_COLLECTION_NAME_LEN,
   MAX_COLLECTION_SIZE,
-  MAX_IMAGE_BYTES,
-  MAX_TOKEN_BIDS,
   MAX_ITEM_NAME_LEN,
   MAX_ITEMS,
   MAX_COLLECTION_BIDS,
@@ -18,21 +15,12 @@ import {
   MAX_UPLOADED_ITEMS,
   MAX_URI_LEN,
   NFT_MINT_COST_LAMPORTS,
-  NFT_PRICE_SCALE,
   PAGE_BIDS,
   REVEAL_DELAY_SECS,
   MAX_START_DELAY_SECS,
-  ANTI_SNIPER_FEE_BPS,
-  ANTI_SNIPER_MINUTES,
-  DAMM_PROTOCOL_FEE_PERCENT,
-  LP_RENT_DEPOSIT,
-  MAX_LP_BPS,
-  MIN_LP_BPS,
-  POOL_FEE_TIERS,
-  SELLER_POOL_FEE_BPS,
 } from "../config";
 import { DemandChart } from "../components/DemandChart";
-import { FairLaunchForm } from "../components/FairLaunchForm";
+import { TokenLaunchForm } from "../components/TokenLaunchForm";
 import { ImagePicker, ImageSetPicker, isSmallImage, useImageUrl } from "../components/ImagePicker";
 import {
   type ChosenSheet,
@@ -52,29 +40,18 @@ import {
 import { type StorageOption, StorageChoice } from "../components/StorageChoice";
 import { Button, Notice, useAction, useLoader, useMetadataImage, useNow } from "../components/ui";
 import {
-  buildCreateAuction,
-  type LiquidityTerms,
-  type SaleRules,
-  NO_RULES,
-  buildSetAllowlist,
   buildCreateCollectionAuction,
-  buildCreateToken,
   buildItemList,
 } from "../lib/actions";
 import { UploadError, freeTarget, paidTarget } from "../lib/arweave";
-import { MAX_ALLOWLIST, allowlistRoot, parseWallets, publishAllowlist } from "../lib/allowlist";
 import {
-  type TokenInfo,
   auctionAddress,
   bidCrankFee,
-  connection,
   fetchAuction,
   fetchCrankRewards,
   fetchFeeConfig,
   fetchItemList,
-  fetchTokenInfo,
   formatPercent,
-  poolSol,
   randomU64,
   sellerCrankFee,
 } from "../lib/chain";
@@ -83,27 +60,20 @@ import {
   formatDateTime,
   formatDuration,
   formatSol,
-  formatTokens,
   nowSecs,
-  parseDecimal,
-  parseSol,
   plural,
 } from "../lib/format";
-import { type PreparedImage, formatKb } from "../lib/images";
+import type { PreparedImage } from "../lib/images";
 import { type ListedItem, itemBatches, numberedName } from "../lib/items";
 import {
-  choosePriceUnit,
   formatDecimal,
   nftPrice,
   nftPriceToTicks,
   parseAmount,
-  roundUpSignificant,
-  sameDecimal,
-  tokenPrice,
 } from "../lib/price";
 import { revealKey } from "../lib/sealed";
 import { creditFor, ensureCredit, fetchStorageRates, quoteStorage, walletSignature, walletUploadKey } from "../lib/storage";
-import { sendTransaction, sendTransactions } from "../lib/tx";
+import { sendTransactions } from "../lib/tx";
 import {
   type CollectionUpload,
   type NftFile,
@@ -111,7 +81,6 @@ import {
   type SealOptions,
   collectionUploadSizes,
   uploadCollection,
-  uploadTokenMetadata,
 } from "../lib/uploads";
 import { byteLength, isDisplayText, isMetadataUri } from "../lib/validate";
 import { useWallet } from "../lib/wallet";
@@ -232,39 +201,31 @@ function BiddingWindow({
 }
 
 /**
- * Room for bids: it grows on its own, 256 at a time, up to 1,024 bids for a
- * token sale and 10,240 for a collection, so the seller chooses nothing. Once
- * it is all taken, a new bid must out-deposit the smallest.
+ * Room for bids: it grows on its own, 256 at a time, up to 10,240 bids for a
+ * collection, so the seller chooses nothing. Once it is all taken, a new bid
+ * must out-deposit the smallest.
  */
-function BidRoom({ collection }: { collection: boolean }) {
-  const most = collection ? MAX_COLLECTION_BIDS : MAX_TOKEN_BIDS;
+function BidRoom() {
   return (
     <div className="field">
       <span className="field__label">Room for bids</span>
       <p className="hint">
-        Up to {formatCount(most)} bids, at no cost to you up front{collection ? ", enough for a 10,000-NFT collection to sell out at one NFT a bid" : ""}.
-        The auction starts with room for {formatCount(PAGE_BIDS)}; each time that fills, the next bid opens room for{" "}
-        {formatCount(PAGE_BIDS)} more. However many bids come, it stays one auction with one price for everyone. Bids
-        on the extra room pay a small room fee for it, and its rent comes back to you when you close the auction; only
-        a last, partly filled stretch of room can cost you something, out of the proceeds. Once{" "}
-        {formatCount(most)} bids are in, larger deposits replace the smallest.
+        Up to {formatCount(MAX_COLLECTION_BIDS)} bids, at no cost to you up front, enough for a 10,000-NFT collection to
+        sell out at one NFT a bid. The auction starts with room for {formatCount(PAGE_BIDS)}; each time that fills, the
+        next bid opens room for {formatCount(PAGE_BIDS)} more. However many bids come, it stays one auction with one
+        price for everyone. Bids on the extra room pay a small room fee for it, and its rent comes back to you when you
+        close the auction; only a last, partly filled stretch of room can cost you something, out of the proceeds.
+        Once {formatCount(MAX_COLLECTION_BIDS)} bids are in, larger deposits replace the smallest.
       </p>
     </div>
   );
 }
 
-const U64_MAX = (1n << 64n) - 1n;
-/**
- * The smallest default for the smallest bid: 0.1 SOL. The seller can set any
- * lower amount; the default keeps throwaway bids from taking places.
- */
-const MIN_SUGGESTED_DEPOSIT = 100_000_000n;
 /** Rent-exempt lamports per byte of account data, with the 128 bytes every account carries. */
 const RENT_PER_BYTE = 6_960n;
 /** An item list's size: its header, then one entry per item (see `ItemList`). */
 const itemListRent = (items: number) => (128n + 82n + 29n * BigInt(items)) * RENT_PER_BYTE;
 
-type TokenSource = "new" | "existing";
 /** Whether the app uploads the art and metadata, or the seller links to files they host. */
 type Files = "upload" | "link";
 /** A drop's NFTs each have their own image, or all show the same one. */
@@ -366,27 +327,31 @@ type NftPlan = {
   notes: string[];
 };
 
+/**
+ * The Launch page: a drop, a collection built item by item, or a new token.
+ * A new token sells through `TokenLaunchForm`; drops and collections here.
+ */
 export function Launch() {
-  const { signer, publicKey } = useWallet();
+  const [kind, setKind] = useState<Kind>("drop");
+  return (
+    <main className="page">
+      <h1 className="page__title">Launch a sealed auction</h1>
+      <p className="page__lede">
+        Release a drop, build a collection item by item, or launch a new token. However you put it together, it
+        sells through sealed bids: buyers name their own price in secret, and everyone who wins pays one clearing
+        price.
+      </p>
+      <KindChooser value={kind} onChange={setKind} />
+      {kind === "token" ? <TokenLaunchForm /> : <CollectionLaunch kind={kind} />}
+    </main>
+  );
+}
+
+function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
+  const { signer } = useWallet();
   const action = useAction();
   const fees = useLoader(fetchFeeConfig, []);
   const crank = useLoader(fetchCrankRewards, []);
-  const [kind, setKind] = useState<Kind>("drop");
-  const [source, setSource] = useState<TokenSource>("new");
-
-  const [name, setName] = useState("");
-  const [symbol, setSymbol] = useState("");
-  const [tokenFiles, setTokenFiles] = useState<Files>("upload");
-  const [tokenImage, setTokenImage] = useState<PreparedImage | null>(null);
-  const [tokenDescription, setTokenDescription] = useState("");
-  const [uri, setUri] = useState("");
-  const [supply, setSupply] = useState("1000000");
-  const [decimals, setDecimals] = useState("6");
-
-  const [mintInput, setMintInput] = useState("");
-  const [existing, setExisting] = useState<TokenInfo | null>(null);
-  const [existingBalance, setExistingBalance] = useState<bigint | null>(null);
-  const [existingError, setExistingError] = useState<string | null>(null);
 
   // Drops and collections share their details.
   const [details, setDetails] = useState<Details>(emptyDetails);
@@ -407,27 +372,13 @@ export function Launch() {
   // Collections built item by item.
   const [items, setItems] = useState<DraftItem[]>([]);
 
-  const [forSale, setForSale] = useState("500000");
   const [nfts, setNfts] = useState("100");
   const [maxPerBidInput, setMaxPerBid] = useState<string | null>(null);
-  const [minPriceInput, setMinPrice] = useState("0.0001");
   const [nftMinPriceInput, setNftMinPrice] = useState("0.1");
-  const [minDepositInput, setMinDeposit] = useState<string | null>(null);
   const [duration, setDuration] = useState(DURATIONS[1].secs);
-  /** Pages of the bid book: 256 bids each. */
-  // Auto-liquidity: a Meteora pool at the clearing price (token sales only).
-  const [lpOn, setLpOn] = useState(false);
-  const [lpPercent, setLpPercent] = useState("30");
-  const [lpFloor, setLpFloor] = useState("1");
-  const [lpFee, setLpFee] = useState<number>(100);
-  // Sale rules (token sales only): a minimum raise, an allowlist and a cap per wallet.
-  const [minRaiseInput, setMinRaiseInput] = useState("");
-  const [allowOn, setAllowOn] = useState(false);
-  const [allowText, setAllowText] = useState("");
-  const [capInput, setCapInput] = useState("");
   /** When bidding opens, as a `datetime-local` value; null for right away. */
   const [startAt, setStartAt] = useState<string | null>(null);
-  const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "token" | "auction">("form");
+  const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "auction">("form");
   const [uploadProgress, setUploadProgress] = useState<[number, number] | null>(null);
   const [txProgress, setTxProgress] = useState<[number, number] | null>(null);
   const [quality, setQuality] = useState<Quality>("compressed");
@@ -436,30 +387,15 @@ export function Launch() {
   /** The address a collection launch uses, kept across tries so sealed art and item lists are not made twice. */
   const seedRef = useRef<BN | null>(null);
 
-  const collection = kind === "drop" || kind === "collection";
-  const unit = collection ? "NFT" : "token";
   const linked = kind === "drop" && dropFiles === "link";
-  const uploadingCollection = collection && !linked;
-  const uploadingToken = !collection && source === "new" && tokenFiles === "upload";
+  const uploadingCollection = !linked;
   // Hiding the art needs one file per NFT: uploaded one image each, or a folder of files.
   const canHide = kind === "drop" && (linked ? uriPerItem : dropArt === "unique");
   const hidden = canHide && hiddenChoice;
   const rates = useLoader(() => (uploadingCollection ? fetchStorageRates() : Promise.resolve(null)), [uploadingCollection], 120_000);
 
-  // The preview shows the chosen image, or the one a metadata link points to.
-  const chosenArt = useImageUrl(uploadingToken ? tokenImage : null);
-  const linkedArt = useMetadataImage(
-    collection
-      ? linked && isMetadataUri(collectionUri.trim(), MAX_URI_LEN)
-        ? collectionUri.trim()
-        : null
-      : source === "new"
-        ? tokenFiles === "link" && isMetadataUri(uri.trim(), MAX_URI_LEN)
-          ? uri.trim()
-          : null
-        : existing?.uri ?? null
-  );
-  const tokenArt = chosenArt ?? linkedArt;
+  // The preview shows the logo, or the image the collection's metadata link points to.
+  const linkedArt = useMetadataImage(linked && isMetadataUri(collectionUri.trim(), MAX_URI_LEN) ? collectionUri.trim() : null);
 
   const nftCount = Number.parseInt(nfts, 10);
 
@@ -636,155 +572,62 @@ export function Launch() {
   }, [collectionDraft, storageSample, freeUsedUp, rates.data]);
   const chosenStorage = storage[quality];
   const payingForStorage = uploadingCollection && chosenStorage.bytes !== null && !chosenStorage.free;
-  const tokenHasMetadata = uploadingToken ? Boolean(tokenImage || tokenDescription.trim()) : uri.trim() !== "";
   // Sealing a hidden drop's art needs a key made from a wallet signature.
   const needsSignature = (uploadingCollection && hidden) || payingForStorage;
   const listTxs = nftPlan.listed ? itemBatches(nftPlan.listed).length : 0;
 
-  // Load an existing token as the user types its address.
-  useEffect(() => {
-    setExisting(null);
-    setExistingBalance(null);
-    setExistingError(null);
-    if (kind !== "token" || source !== "existing" || mintInput.trim() === "") return;
-    let mint: PublicKey;
-    try {
-      mint = new PublicKey(mintInput.trim());
-    } catch {
-      setExistingError("That is not a valid token address.");
-      return;
-    }
-    let cancelled = false;
-    fetchTokenInfo(mint)
-      .then(async (info) => {
-        if (cancelled) return;
-        setExisting(info);
-        if (publicKey) {
-          const ata = getAssociatedTokenAddressSync(mint, publicKey, false, info.programId);
-          const account = await getAccount(connection, ata, "confirmed", info.programId).catch(() => null);
-          if (!cancelled) setExistingBalance(account ? account.amount : 0n);
-        }
-      })
-      .catch(() => !cancelled && setExistingError("No token was found at that address."));
-    return () => {
-      cancelled = true;
-    };
-  }, [kind, source, mintInput, publicKey]);
-
-  const tokenDecimals = source === "new" ? Number.parseInt(decimals, 10) : existing?.decimals ?? NaN;
-  const saleCount = collection ? nftPlan.count : 0;
+  const saleCount = nftPlan.count;
   const maxPerBid = maxPerBidInput ?? String(saleCount > 0 ? Math.min(10, saleCount) : 1);
 
   const plan = useMemo(() => {
     const problems: string[] = [];
-    let sellAmount = 0n;
-    let priceUnit = 1n;
-    let minTicks = 0n;
+    if (!isDisplayText(details.name, MAX_COLLECTION_NAME_LEN))
+      problems.push(`Give the collection a name of up to ${MAX_COLLECTION_NAME_LEN} bytes.`);
+    if (linked) {
+      if (!isMetadataUri(collectionUri.trim(), MAX_URI_LEN))
+        problems.push("Add the collection's metadata link (https://, ipfs:// or ar://).");
+      if (!isMetadataUri(itemUri.trim(), MAX_URI_LEN))
+        problems.push(`Add the NFTs' metadata ${uriPerItem ? "folder" : "link"} (https://, ipfs:// or ar://).`);
+    } else {
+      if (!details.logo) problems.push("Choose the collection's logo.");
+      if (details.description.length > MAX_DESCRIPTION_LEN)
+        problems.push(`Keep the description to ${formatCount(MAX_DESCRIPTION_LEN)} characters.`);
+      if (!isLinkOrEmpty(details.website) || !isLinkOrEmpty(details.x)) problems.push("Links must start with https://.");
+    }
+    problems.push(...nftPlan.problems);
+    const perBid = Number.parseInt(maxPerBid, 10);
+    if (!Number.isInteger(perBid) || perBid < 1 || (saleCount > 0 && perBid > saleCount) || perBid > 65_535)
+      problems.push("The most NFTs per bid must be between 1 and the number for sale.");
+    const typed = parseAmount(nftMinPriceInput);
+    const minTicks = typed ? nftPriceToTicks(typed, "up") : 0n;
     let minPriceShown: string | null = null;
     let rounded = false;
-    let saleValue = 0n;
-
-    if (collection) {
-      if (!isDisplayText(details.name, MAX_COLLECTION_NAME_LEN))
-        problems.push(`Give the collection a name of up to ${MAX_COLLECTION_NAME_LEN} bytes.`);
-      if (linked) {
-        if (!isMetadataUri(collectionUri.trim(), MAX_URI_LEN))
-          problems.push("Add the collection's metadata link (https://, ipfs:// or ar://).");
-        if (!isMetadataUri(itemUri.trim(), MAX_URI_LEN))
-          problems.push(`Add the NFTs' metadata ${uriPerItem ? "folder" : "link"} (https://, ipfs:// or ar://).`);
-      } else {
-        if (!details.logo) problems.push("Choose the collection's logo.");
-        if (details.description.length > MAX_DESCRIPTION_LEN)
-          problems.push(`Keep the description to ${formatCount(MAX_DESCRIPTION_LEN)} characters.`);
-        if (!isLinkOrEmpty(details.website) || !isLinkOrEmpty(details.x)) problems.push("Links must start with https://.");
-      }
-      problems.push(...nftPlan.problems);
-      const perBid = Number.parseInt(maxPerBid, 10);
-      if (!Number.isInteger(perBid) || perBid < 1 || (saleCount > 0 && perBid > saleCount) || perBid > 65_535)
-        problems.push("The most NFTs per bid must be between 1 and the number for sale.");
-      const typed = parseAmount(nftMinPriceInput);
-      minTicks = typed ? nftPriceToTicks(typed, "up") : 0n;
-      if (!typed || minTicks < 1n) problems.push("Enter a minimum price per NFT above zero.");
-      else if (minTicks > MAX_PRICE_TICKS)
-        problems.push(`The minimum price can be at most ${formatDecimal(nftPrice(MAX_PRICE_TICKS))} SOL per NFT.`);
-      else {
-        minPriceShown = formatDecimal(nftPrice(minTicks));
-        rounded = nftPriceToTicks(typed, "down") !== minTicks;
-      }
-      sellAmount = BigInt(saleCount);
-      saleValue = sellAmount * minTicks * NFT_PRICE_SCALE;
-
-      if (uploadingCollection && chosenStorage.problem)
-        problems.push(`${chosenStorage.problem}. Choose compressed storage, or another file.`);
-      else if (payingForStorage && !chosenStorage.quote)
-        problems.push(rates.error ? "Storage prices could not be loaded. Try again in a minute." : "Checking storage prices…");
-      if (needsSignature && signer && !signer.signMessage) {
-        problems.push(
-          hidden
-            ? "Your wallet cannot sign messages, which hiding the art needs. Use another wallet, or show the art."
-            : "Your wallet cannot sign messages, which paid storage needs. Use another wallet, or free storage."
-        );
-      }
-      const royaltyBps = Math.round(Number.parseFloat(royalty || "0") * 100);
-      if (!Number.isFinite(royaltyBps) || royaltyBps < 0 || royaltyBps > MAX_ROYALTY_BPS)
-        problems.push(`Creator earnings must be between 0 and ${MAX_ROYALTY_BPS / 100}%.`);
-    } else {
-      const d = tokenDecimals;
-      if (!Number.isInteger(d) || d < 0 || d > 9) problems.push("Decimals must be between 0 and 9.");
-      const amount = Number.isInteger(d) ? parseDecimal(forSale, d) : null;
-      if (!amount || amount <= 0n || amount > U64_MAX) problems.push("Enter how many tokens are for sale.");
-      sellAmount = amount && amount > 0n && amount <= U64_MAX ? amount : 0n;
-      const typed = parseAmount(minPriceInput);
-      const chosen = typed && Number.isInteger(d) ? choosePriceUnit(typed, d) : null;
-      if (!typed || typed.mantissa === 0n) problems.push("Enter a minimum price per token above zero.");
-      else if (!chosen) problems.push("That minimum price is too high for a token with these decimals.");
-      else {
-        priceUnit = chosen.priceUnit;
-        minTicks = chosen.minTicks;
-        const effective = tokenPrice(minTicks, priceUnit, d);
-        minPriceShown = formatDecimal(effective);
-        rounded = !sameDecimal(effective, typed);
-      }
-      saleValue = priceUnit > 0n ? (sellAmount * minTicks + priceUnit - 1n) / priceUnit : 0n;
-      if (source === "new") {
-        if (name.trim().length === 0 || name.length > 32) problems.push("Give the token a name of up to 32 characters.");
-        if (symbol.trim().length === 0 || symbol.length > 10) problems.push("Give the token a symbol of up to 10 characters.");
-        if (tokenFiles === "link") {
-          if (uri.length > MAX_URI_LEN) problems.push("The metadata link is too long.");
-          else if (uri.trim() !== "" && !isMetadataUri(uri.trim(), MAX_URI_LEN))
-            problems.push("The metadata link must start with https://, ipfs:// or ar://.");
-        } else if (tokenDescription.length > MAX_DESCRIPTION_LEN) {
-          problems.push(`Keep the description to ${formatCount(MAX_DESCRIPTION_LEN)} characters.`);
-        }
-        const total = Number.isInteger(d) ? parseDecimal(supply, d) : null;
-        if (!total || total <= 0n || total > U64_MAX) problems.push("Enter the total supply.");
-        else if (sellAmount > total) problems.push("The sale needs more tokens than the total supply.");
-      } else {
-        if (!existing) problems.push("Enter the address of a token you hold.");
-        else {
-          if (existing.mintAuthority) problems.push("This token can still be minted. Revoke its mint authority first.");
-          if (existing.freezeAuthority) problems.push("This token can be frozen. Revoke its freeze authority first.");
-          if (existingBalance !== null && sellAmount > existingBalance)
-            problems.push(`You hold ${formatTokens(existingBalance, existing.decimals)}; the sale needs more.`);
-        }
-      }
+    if (!typed || minTicks < 1n) problems.push("Enter a minimum price per NFT above zero.");
+    else if (minTicks > MAX_PRICE_TICKS)
+      problems.push(`The minimum price can be at most ${formatDecimal(nftPrice(MAX_PRICE_TICKS))} SOL per NFT.`);
+    else {
+      minPriceShown = formatDecimal(nftPrice(minTicks));
+      rounded = nftPriceToTicks(typed, "down") !== minTicks;
     }
 
-    // The smallest token bid: its deposit and its sealed budget. By default it is
-    // the sale's worth at the minimum price split across every bid place,
-    // so nobody can take every place for less than the whole sale.
-    // Spread over the first page's places: filling just those costs the sale's worth.
-    const places = BigInt(PAGE_BIDS);
-    let suggested = saleValue > 0n ? (saleValue + places - 1n) / places : MIN_SUGGESTED_DEPOSIT;
-    suggested = suggested < MIN_SUGGESTED_DEPOSIT ? MIN_SUGGESTED_DEPOSIT : roundUpSignificant(suggested, 2);
-    const minDepositText = minDepositInput ?? formatSol(suggested, 9).replace(/,/g, "");
-    const minDeposit = collection ? minTicks * NFT_PRICE_SCALE : parseSol(minDepositText);
-    if (!collection && (!minDeposit || minDeposit <= 0n)) problems.push("Enter the smallest bid in SOL, above zero.");
+    if (uploadingCollection && chosenStorage.problem)
+      problems.push(`${chosenStorage.problem}. Choose compressed storage, or another file.`);
+    else if (payingForStorage && !chosenStorage.quote)
+      problems.push(rates.error ? "Storage prices could not be loaded. Try again in a minute." : "Checking storage prices…");
+    if (needsSignature && signer && !signer.signMessage) {
+      problems.push(
+        hidden
+          ? "Your wallet cannot sign messages, which hiding the art needs. Use another wallet, or show the art."
+          : "Your wallet cannot sign messages, which paid storage needs. Use another wallet, or free storage."
+      );
+    }
+    const royaltyBps = Math.round(Number.parseFloat(royalty || "0") * 100);
+    if (!Number.isFinite(royaltyBps) || royaltyBps < 0 || royaltyBps > MAX_ROYALTY_BPS)
+      problems.push(`Creator earnings must be between 0 and ${MAX_ROYALTY_BPS / 100}%.`);
 
     if (fees.data === null) problems.push("The platform's fees are not set up yet, so auctions cannot open.");
-    return { problems, sellAmount, priceUnit, minTicks, minPriceShown, rounded, saleValue, minDeposit, minDepositText };
+    return { problems, minTicks, minPriceShown, rounded };
   }, [
-    collection,
     details,
     linked,
     collectionUri,
@@ -802,87 +645,8 @@ export function Launch() {
     hidden,
     signer,
     royalty,
-    tokenDecimals,
-    forSale,
-    minPriceInput,
-    minDepositInput,
-    source,
-    name,
-    symbol,
-    tokenFiles,
-    tokenDescription,
-    uri,
-    supply,
-    existing,
-    existingBalance,
     fees.data,
   ]);
-
-  const lp = useMemo(() => {
-    const none = { problems: [] as string[], terms: null as LiquidityTerms | null, atMin: null as { net: bigint; sol: bigint } | null };
-    if (collection || !lpOn) return none;
-    const problems: string[] = [];
-    const percent = Number.parseFloat(lpPercent);
-    const lpBps = Math.round(percent * 100);
-    if (!Number.isFinite(percent) || lpBps < MIN_LP_BPS || lpBps > MAX_LP_BPS)
-      problems.push(`The pool's share must be between ${MIN_LP_BPS / 100}% and ${MAX_LP_BPS / 100}% of the proceeds.`);
-    const floor = parseSol(lpFloor);
-    if (!floor || floor <= 0n) problems.push("Enter the pool's minimum in SOL, above zero.");
-    // The pool's reserve: as many tokens again as are for sale.
-    const needed = plan.sellAmount * 2n;
-    if (plan.sellAmount > 0n && Number.isInteger(tokenDecimals)) {
-      if (source === "new") {
-        const total = parseDecimal(supply, tokenDecimals);
-        if (total && needed > total)
-          problems.push("With auto-liquidity the total supply must cover the sale twice: the tokens for sale and as many again for the pool's reserve.");
-      } else if (existingBalance !== null && needed > existingBalance) {
-        problems.push(`With auto-liquidity you need twice the tokens for sale, ${formatTokens(needed, tokenDecimals)} in all.`);
-      }
-    }
-    // What the pool would get if the sale only fills at the minimum price.
-    let atMin = null;
-    if (fees.data && floor && floor > 0n && plan.saleValue > 0n && lpBps >= MIN_LP_BPS && lpBps <= MAX_LP_BPS) {
-      const net = plan.saleValue - (plan.saleValue * BigInt(fees.data.saleFeeBps)) / 10_000n;
-      atMin = { net, sol: poolSol(net, lpBps, floor) };
-    }
-    const terms = problems.length === 0 && floor ? { lpBps, floor, tradeFeeBps: lpFee } : null;
-    return { problems, terms, atMin };
-  }, [collection, lpOn, lpPercent, lpFloor, lpFee, plan.sellAmount, plan.saleValue, tokenDecimals, source, supply, existingBalance, fees.data]);
-
-  const rules = useMemo(() => {
-    const problems: string[] = [];
-    if (collection) return { problems, value: NO_RULES, wallets: null, invalid: [] as string[] };
-    let minRaise = 0n;
-    if (minRaiseInput.trim() !== "") {
-      const typed = parseSol(minRaiseInput);
-      if (!typed || typed <= 0n) problems.push("Enter the minimum raise in SOL, above zero, or leave it empty.");
-      else minRaise = typed;
-    }
-    let walletCap = 0n;
-    let wallets = null;
-    let invalid: string[] = [];
-    if (allowOn) {
-      const parsed = parseWallets(allowText);
-      wallets = parsed.wallets;
-      invalid = parsed.invalid;
-      if (wallets.length === 0) problems.push("Add the wallets that may bid to the allowlist.");
-      if (wallets.length > MAX_ALLOWLIST) problems.push(`An allowlist holds at most ${formatCount(MAX_ALLOWLIST)} wallets.`);
-      if (invalid.length > 0)
-        problems.push(
-          invalid.length === 1
-            ? "One entry in the allowlist is not a wallet address."
-            : `${formatCount(invalid.length)} entries in the allowlist are not wallet addresses.`
-        );
-      if (capInput.trim() !== "") {
-        const typed = parseSol(capInput);
-        if (!typed || typed <= 0n) problems.push("Enter the most a wallet may deposit in SOL, above zero, or leave it empty.");
-        else if (plan.minDeposit && typed < plan.minDeposit) problems.push("The most per wallet must allow at least the smallest bid.");
-        else walletCap = typed;
-      }
-    }
-    const value: SaleRules = { minRaise, walletCap, allowlist: allowOn };
-    return { problems, value, wallets, invalid };
-  }, [collection, minRaiseInput, allowOn, allowText, capInput, plan.minDeposit]);
 
   const onUploadProgress = (done: number, total: number) => setUploadProgress([done, total]);
 
@@ -899,8 +663,6 @@ export function Launch() {
   const crankIssue = crank.data === null ? "The platform's settlement rewards are not set up yet." : null;
   const problems = [
     ...plan.problems,
-    ...lp.problems,
-    ...rules.problems,
     ...(startIssue ? [startIssue] : []),
     ...(crankIssue ? [crankIssue] : []),
   ];
@@ -979,829 +741,427 @@ export function Launch() {
   };
 
   const launch = () =>
-    action.run("launch", async () => {
-      if (!signer) throw new Error("Connect a wallet first");
-      if (problems.length > 0 || !plan.minDeposit) throw new Error(problems[0]);
-      if (!fees.data) throw new Error("The platform's fees are not set up yet.");
-      let auction: PublicKey;
-      if (collection) {
-        auction = await launchCollection();
-      } else {
-        let mint: PublicKey;
-        let tokenProgram: PublicKey;
-        // The allowlist is published first, so a failed upload never leaves
-        // a sale that nobody can join.
-        let list: { root: Uint8Array; uri: string } | null = null;
-        if (rules.value.allowlist && rules.wallets) {
-          setStepState("upload");
-          list = { root: allowlistRoot(rules.wallets), uri: await publishAllowlist(rules.wallets, freeTarget()) };
-        }
-        if (source === "new") {
-          let metadataUri = tokenFiles === "link" ? uri.trim() : "";
-          if (uploadingToken && tokenHasMetadata) {
-            setStepState("upload");
-            metadataUri = await uploadTokenMetadata(
-              {
-                name: name.trim(),
-                symbol: symbol.trim().toUpperCase(),
-                description: tokenDescription,
-                image: tokenImage,
-              },
-              onUploadProgress,
-              freeTarget()
-            );
-          }
-          setStepState("token");
-          const total = parseDecimal(supply, tokenDecimals)!;
-          const { tx, mint: mintKeypair } = await buildCreateToken(signer.publicKey, {
-            name: name.trim(),
-            symbol: symbol.trim().toUpperCase(),
-            uri: metadataUri,
-            decimals: tokenDecimals,
-            supply: total,
-          });
-          await sendTransaction(tx, signer, [mintKeypair]);
-          mint = mintKeypair.publicKey;
-          tokenProgram = TOKEN_2022_PROGRAM_ID;
-        } else {
-          mint = existing!.mint;
-          tokenProgram = existing!.programId;
-        }
-        setStepState("auction");
-        const built = await buildCreateAuction(
-          signer.publicKey,
-          mint,
-          tokenProgram,
-          {
-            supply: plan.sellAmount,
-            priceUnit: plan.priceUnit,
-            minPrice: plan.minTicks,
-            minDeposit: plan.minDeposit,
-            durationSecs: duration,
-            startTime: chosenStart(),
-          },
-          fees.data,
-          lp.terms,
-          rules.value
-        );
-        if (list) {
-          // The sale and then its list; until the list is set nobody can bid.
-          const setList = await buildSetAllowlist(signer.publicKey, built.auction, list.root, list.uri);
-          await sendTransactions([built.tx, setList], signer);
-        } else {
-          await sendTransaction(built.tx, signer);
-        }
-        auction = built.auction;
-      }
-      window.location.hash = `#/auction/${auction.toBase58()}`;
-    }).finally(() => {
-      setStepState("form");
-      setUploadProgress(null);
-      setTxProgress(null);
-    });
+    action
+      .run("launch", async () => {
+        if (!signer) throw new Error("Connect a wallet first");
+        if (problems.length > 0) throw new Error(problems[0]);
+        if (!fees.data) throw new Error("The platform's fees are not set up yet.");
+        const auction = await launchCollection();
+        window.location.hash = `#/auction/${auction.toBase58()}`;
+      })
+      .finally(() => {
+        setStepState("form");
+        setUploadProgress(null);
+        setTxProgress(null);
+      });
 
-  const symbolText = source === "new" ? symbol.trim().toUpperCase() || "tokens" : existing?.symbol ?? "tokens";
-  const touched = collection
-    ? Boolean(details.name || details.logo || itemName || items.length > 0 || itemImages.length > 0)
-    : Boolean(name || symbol || source === "existing");
+  const touched = Boolean(details.name || details.logo || itemName || items.length > 0 || itemImages.length > 0);
   const baseLabel = itemName.trim() || "Name";
-  const saleText = collection
-    ? saleCount > 0
-      ? `${formatCount(saleCount)} NFTs for sale`
-      : "Supply"
-    : plan.sellAmount > 0n && Number.isInteger(tokenDecimals)
-      ? `${formatTokens(plan.sellAmount, tokenDecimals)} ${symbolText} for sale`
-      : "Supply";
+  const saleText = saleCount > 0 ? `${formatCount(saleCount)} NFTs for sale` : "Supply";
   const revealDays = REVEAL_DELAY_SECS / 86_400;
   const countFixed = kind === "collection" || (kind === "drop" && !linked && dropArt === "unique");
 
   // What the wallet will be asked, in order, for the hint under the button.
   const walletSteps = (): string => {
     const parts: string[] = [];
-    if (collection) {
-      if (needsSignature) {
-        parts.push(
-          `Your wallet first asks you to sign a message, which costs nothing and makes ${
-            hidden && payingForStorage
-              ? "your upload key and the key that seals your art"
-              : hidden
-                ? "the key that seals your art"
-                : "your upload key"
-          }.`
-        );
-      }
-      if (payingForStorage) {
-        parts.push(
-          `Then you approve paying ${chosenStorage.quote ? `${formatSol(chosenStorage.quote.lamports)} SOL` : "for storage"}, less any credit left from before.`
-        );
-      }
-      if (uploadingCollection) {
-        parts.push(
-          hidden
-            ? "Your art is sealed and stored, unseen; the logo and details are published."
-            : "Your images and metadata upload, with no wallet prompt."
-        );
-      }
-      const txCount = listTxs + 1;
+    if (needsSignature) {
       parts.push(
-        txCount === 1
-          ? "Then your wallet asks you to approve one transaction, which opens the auction and pays the listing fee."
-          : `Then your wallet asks you to approve ${txCount} transactions at once: ${listTxs === 1 ? "one writes" : `${listTxs} write`} the item list, the last opens the auction and pays the listing fee.`
+        `Your wallet first asks you to sign a message, which costs nothing and makes ${
+          hidden && payingForStorage
+            ? "your upload key and the key that seals your art"
+            : hidden
+              ? "the key that seals your art"
+              : "your upload key"
+        }.`
       );
-      return parts.join(" ");
     }
-    if (uploadingToken && tokenHasMetadata) parts.push("Your token's details upload first, with no wallet prompt.");
+    if (payingForStorage) {
+      parts.push(
+        `Then you approve paying ${chosenStorage.quote ? `${formatSol(chosenStorage.quote.lamports)} SOL` : "for storage"}, less any credit left from before.`
+      );
+    }
+    if (uploadingCollection) {
+      parts.push(
+        hidden
+          ? "Your art is sealed and stored, unseen; the logo and details are published."
+          : "Your images and metadata upload, with no wallet prompt."
+      );
+    }
+    const txCount = listTxs + 1;
     parts.push(
-      source === "new"
-        ? "Your wallet asks you to approve two transactions: one creates the token, the next opens the auction and pays the listing fee."
-        : "Your wallet asks you to approve one transaction, which opens the auction and pays the listing fee."
+      txCount === 1
+        ? "Then your wallet asks you to approve one transaction, which opens the auction and pays the listing fee."
+        : `Then your wallet asks you to approve ${txCount} transactions at once: ${listTxs === 1 ? "one writes" : `${listTxs} write`} the item list, the last opens the auction and pays the listing fee.`
     );
     return parts.join(" ");
   };
 
   return (
-    <main className="page">
-      <h1 className="page__title">Launch a sealed auction</h1>
-      <p className="page__lede">
-        Release a drop, build a collection item by item, sell a token, or launch a new one. However you put it
-        together, it sells through sealed bids: buyers name their own price in secret, and everyone who wins pays
-        one clearing price.
-      </p>
-      <KindChooser value={kind} onChange={setKind} />
-      {kind === "launch" ? <FairLaunchForm /> : (
-      <div className="launch">
-        <form
-          className="launch__form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            launch();
-          }}
-        >
-          {collection ? (
-            <fieldset className="group">
-              <legend className="group__title">Collection details</legend>
-              {kind === "drop" ? (
+    <div className="launch">
+      <form
+        className="launch__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          launch();
+        }}
+      >
+        <fieldset className="group">
+          <legend className="group__title">Collection details</legend>
+          {kind === "drop" ? (
+            <div className="field">
+              <span className="field__label">Files</span>
+              <Segmented
+                label="Files"
+                value={dropFiles}
+                options={[
+                  ["upload", "Upload them here"],
+                  ["link", "Link to my files"],
+                ]}
+                onChange={setDropFiles}
+              />
+            </div>
+          ) : null}
+          <DetailsFields value={details} onChange={setDetails} linked={linked} />
+          {linked ? (
+            <div className="field">
+              <label htmlFor="curi">Collection metadata link</label>
+              <input id="curi" value={collectionUri} onChange={(e) => setCollectionUri(e.target.value)} placeholder="https://…/collection.json" spellCheck={false} />
+              <p className="hint">A JSON file with the collection's description and image, on https, IPFS or Arweave.</p>
+            </div>
+          ) : null}
+          <p className="hint">
+            The collection is created when the auction opens, and NFTs are minted straight to their winners when
+            they collect them; NFTs nobody wins are never minted. Once the sale is closed, the collection is yours
+            to manage.
+          </p>
+        </fieldset>
+
+        {kind === "drop" ? (
+          <fieldset className="group">
+            <legend className="group__title">NFTs</legend>
+            {linked ? (
+              <>
                 <div className="field">
-                  <span className="field__label">Files</span>
+                  <label htmlFor="iname">NFT name</label>
+                  <input id="iname" value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Delft Tile" />
+                  <p className="hint">The NFTs are {baseLabel} #1, {baseLabel} #2 and so on.</p>
+                </div>
+                <div className="field">
+                  <span className="field__label">NFT metadata</span>
                   <Segmented
-                    label="Files"
-                    value={dropFiles}
+                    label="NFT metadata"
+                    value={uriPerItem ? "each" : "same"}
                     options={[
-                      ["upload", "Upload them here"],
-                      ["link", "Link to my files"],
+                      ["each", "One file per NFT"],
+                      ["same", "Same file for all"],
                     ]}
-                    onChange={setDropFiles}
+                    onChange={(v) => setUriPerItem(v === "each")}
+                  />
+                  <input
+                    className="field__extra"
+                    aria-label={uriPerItem ? "Metadata folder link" : "Metadata link"}
+                    value={itemUri}
+                    onChange={(e) => setItemUri(e.target.value)}
+                    placeholder={uriPerItem ? "https://…/metadata/" : "https://…/nft.json"}
+                    spellCheck={false}
+                  />
+                  <p className="hint">
+                    {uriPerItem
+                      ? `#1 reads ${itemUri.trim() || "…/"}0.json, #2 reads ${itemUri.trim() || "…/"}1.json, and so on.`
+                      : "Every NFT shows this file."}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="field">
+                  <span className="field__label">Art</span>
+                  <Segmented
+                    label="Art"
+                    value={dropArt}
+                    options={[
+                      ["unique", "One image per NFT"],
+                      ["same", "Same image for all"],
+                    ]}
+                    onChange={setDropArt}
                   />
                 </div>
-              ) : null}
-              <DetailsFields value={details} onChange={setDetails} linked={linked} />
-              {linked ? (
-                <div className="field">
-                  <label htmlFor="curi">Collection metadata link</label>
-                  <input id="curi" value={collectionUri} onChange={(e) => setCollectionUri(e.target.value)} placeholder="https://…/collection.json" spellCheck={false} />
-                  <p className="hint">A JSON file with the collection's description and image, on https, IPFS or Arweave.</p>
-                </div>
-              ) : null}
-              <p className="hint">
-                The collection is created when the auction opens, and NFTs are minted straight to their winners when
-                they collect them; NFTs nobody wins are never minted. Once the sale is closed, the collection is yours
-                to manage.
-              </p>
-            </fieldset>
-          ) : null}
-
-          {kind === "drop" ? (
-            <fieldset className="group">
-              <legend className="group__title">NFTs</legend>
-              {linked ? (
-                <>
-                  <div className="field">
-                    <label htmlFor="iname">NFT name</label>
-                    <input id="iname" value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Delft Tile" />
-                    <p className="hint">The NFTs are {baseLabel} #1, {baseLabel} #2 and so on.</p>
-                  </div>
-                  <div className="field">
-                    <span className="field__label">NFT metadata</span>
-                    <Segmented
-                      label="NFT metadata"
-                      value={uriPerItem ? "each" : "same"}
-                      options={[
-                        ["each", "One file per NFT"],
-                        ["same", "Same file for all"],
-                      ]}
-                      onChange={(v) => setUriPerItem(v === "each")}
-                    />
-                    <input
-                      className="field__extra"
-                      aria-label={uriPerItem ? "Metadata folder link" : "Metadata link"}
-                      value={itemUri}
-                      onChange={(e) => setItemUri(e.target.value)}
-                      placeholder={uriPerItem ? "https://…/metadata/" : "https://…/nft.json"}
-                      spellCheck={false}
-                    />
-                    <p className="hint">
-                      {uriPerItem
-                        ? `#1 reads ${itemUri.trim() || "…/"}0.json, #2 reads ${itemUri.trim() || "…/"}1.json, and so on.`
-                        : "Every NFT shows this file."}
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="field">
-                    <span className="field__label">Art</span>
-                    <Segmented
-                      label="Art"
-                      value={dropArt}
-                      options={[
-                        ["unique", "One image per NFT"],
-                        ["same", "Same image for all"],
-                      ]}
-                      onChange={setDropArt}
-                    />
-                  </div>
-                  {dropArt === "unique" ? (
-                    <>
-                      <ImageSetPicker id="iimages" label="Images" value={itemImages} onChange={setItemImages} />
-                      <SheetPicker value={sheet} onChange={setSheet} fileNames={itemImages.map((image) => image.name)} />
-                      {sheet?.sheet.hasNames && !hidden ? null : (
-                        <div className="field">
-                          <label htmlFor="iname">NFT name</label>
-                          <input id="iname" value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Delft Tile" />
-                          <p className="hint">
-                            The NFTs are {baseLabel} #1, {baseLabel} #2 and so on, numbered{" "}
-                            {sheet ? "by the sheet's tokenID" : "in file-name order"}. Name them one by one in a sheet
-                            instead, for drops of up to {formatCount(MAX_ITEMS)}.
-                          </p>
-                        </div>
-                      )}
-                      {nftPlan.notes.map((note) => (
-                        <p key={note} className="hint hint--warn">
-                          {note}
-                        </p>
-                      ))}
-                      <NftPreview nfts={nftPlan.problems.length === 0 ? nftPlan.files : []} />
-                    </>
-                  ) : (
-                    <>
-                      <div className="field">
-                        <span className="field__label">Image every NFT shows</span>
-                        <Segmented
-                          label="Image every NFT shows"
-                          value={sameUsesLogo ? "logo" : "other"}
-                          options={[
-                            ["logo", "The logo"],
-                            ["other", "Another image"],
-                          ]}
-                          onChange={(v) => setSameUsesLogo(v === "logo")}
-                        />
-                      </div>
-                      {sameUsesLogo ? null : (
-                        <ImagePicker id="iimage" label="Image for every NFT" value={itemImage} onChange={setItemImage} showOriginal />
-                      )}
+                {dropArt === "unique" ? (
+                  <>
+                    <ImageSetPicker id="iimages" label="Images" value={itemImages} onChange={setItemImages} />
+                    <SheetPicker value={sheet} onChange={setSheet} fileNames={itemImages.map((image) => image.name)} />
+                    {sheet?.sheet.hasNames && !hidden ? null : (
                       <div className="field">
                         <label htmlFor="iname">NFT name</label>
                         <input id="iname" value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Delft Tile" />
-                        <p className="hint">The NFTs are {baseLabel} #1, {baseLabel} #2 and so on, all with the same image.</p>
+                        <p className="hint">
+                          The NFTs are {baseLabel} #1, {baseLabel} #2 and so on, numbered{" "}
+                          {sheet ? "by the sheet's tokenID" : "in file-name order"}. Name them one by one in a sheet
+                          instead, for drops of up to {formatCount(MAX_ITEMS)}.
+                        </p>
                       </div>
-                    </>
-                  )}
-                </>
-              )}
-              <p className="hint">Which NFTs each winner gets is drawn at random after the sale, so nobody can pick the rare ones.</p>
-            </fieldset>
-          ) : null}
-
-          {kind === "collection" ? (
-            <fieldset className="group">
-              <legend className="group__title">Items</legend>
-              <ItemsEditor value={items} onChange={setItems} />
-            </fieldset>
-          ) : null}
-
-          {kind === "drop" ? (
-            <fieldset className="group">
-              <legend className="group__title">Reveal</legend>
-              <label className={`check${canHide ? "" : " check--off"}`}>
-                <input type="checkbox" checked={hidden} disabled={!canHide} onChange={(e) => setHidden(e.target.checked)} />
-                <span>
-                  <span className="check__title">Hide the art until the sale ends</span>
-                  <span className="check__text">
-                    {canHide
-                      ? linked
-                        ? "Your metadata folder only has to be online when you reveal. Bidders see the collection's details, not its NFTs."
-                        : "Bidders see the collection's details and your preview image, not the NFTs. Your art is sealed with a key only your wallet can make, and published when you reveal it."
-                      : linked
-                        ? "Hiding needs one metadata file per NFT."
-                        : "Hiding needs one image per NFT."}
-                  </span>
-                </span>
-              </label>
-              {hidden ? (
-                <>
-                  {linked ? null : (
-                    <ImagePicker id="preview" label="Preview image (optional)" value={preview} onChange={setPreview} showOriginal />
-                  )}
-                  <p className="hint hint--warn">
-                    After bidding ends you have {revealDays} days to reveal from this wallet. Until you do, no NFT can be
-                    minted and you are not paid; if you do not, every winner takes their payment back.
-                  </p>
-                </>
-              ) : null}
-            </fieldset>
-          ) : null}
-
-          {uploadingCollection ? (
-            <fieldset className="group">
-              <legend className="group__title" id="storage-title">
-                Storage
-              </legend>
-              <p className="hint">
-                Your images and their metadata are stored on Arweave, where they are public and permanent: they cannot
-                be changed or deleted.
-                {hidden ? " Hidden art is stored twice: sealed now, and in the open when you reveal it." : ""}
-              </p>
-              <StorageChoice
-                value={quality}
-                onChange={setQuality}
-                options={storage}
-                nfts={nftPlan.perNft && nftPlan.count > 0 ? nftPlan.count : null}
-                sample={storageSample}
-                sampleLabel={sampleLabel}
-                sampleKey={nftPlan.perNft ? "#1" : "Image"}
-                labelledBy="storage-title"
-                prices={{
-                  loading: rates.loading,
-                  error: rates.error,
-                  at: rates.data?.at ?? null,
-                  retry: rates.reload,
-                }}
-              />
-            </fieldset>
-          ) : null}
-
-          {kind === "token" ? (
-            <fieldset className="group">
-              <legend className="group__title">Token</legend>
-              <Segmented
-                label="Token source"
-                value={source}
-                options={[
-                  ["new", "Create a new token"],
-                  ["existing", "Use a token I hold"],
-                ]}
-                onChange={setSource}
-              />
-              {source === "new" ? (
-                <>
-                  <div className="field-row">
-                    <div className="field">
-                      <label htmlFor="name">Name</label>
-                      <input id="name" value={name} maxLength={32} onChange={(e) => setName(e.target.value)} placeholder="Tulip Coin" />
-                    </div>
-                    <div className="field field--narrow">
-                      <label htmlFor="symbol">Symbol</label>
-                      <input id="symbol" value={symbol} maxLength={10} onChange={(e) => setSymbol(e.target.value.toUpperCase())} placeholder="TULIP" />
-                    </div>
-                  </div>
-                  <div className="field">
-                    <span className="field__label">Image and description</span>
-                    <Segmented
-                      label="Image and description"
-                      value={tokenFiles}
-                      options={[
-                        ["upload", "Upload an image"],
-                        ["link", "Link to my file"],
-                      ]}
-                      onChange={setTokenFiles}
-                    />
-                  </div>
-                  {tokenFiles === "upload" ? (
-                    <>
-                      <ImagePicker id="timage" label="Token image (optional)" value={tokenImage} onChange={setTokenImage} />
-                      <div className="field">
-                        <label htmlFor="tdesc">Description (optional)</label>
-                        <textarea
-                          id="tdesc"
-                          rows={3}
-                          maxLength={MAX_DESCRIPTION_LEN}
-                          value={tokenDescription}
-                          onChange={(e) => setTokenDescription(e.target.value)}
-                          placeholder="What the token is for."
-                        />
-                      </div>
-                      <p className="hint">
-                        Stored on Arweave with the token's name and symbol, public and permanent. The image is made{" "}
-                        {formatKb(MAX_IMAGE_BYTES)} or smaller so storing it is free. Neither can be changed later.
-                      </p>
-                    </>
-                  ) : (
-                    <div className="field">
-                      <label htmlFor="uri">Metadata link (optional)</label>
-                      <input id="uri" value={uri} maxLength={MAX_URI_LEN} onChange={(e) => setUri(e.target.value)} placeholder="https://…/metadata.json" spellCheck={false} />
-                      <p className="hint">A JSON file with an image, if you have one. It cannot be changed later.</p>
-                    </div>
-                  )}
-                  <div className="field-row">
-                    <div className="field">
-                      <label htmlFor="supply">Total supply</label>
-                      <input id="supply" inputMode="decimal" value={supply} onChange={(e) => setSupply(e.target.value)} />
-                    </div>
-                    <div className="field field--narrow">
-                      <label htmlFor="decimals">Decimals</label>
-                      <input id="decimals" inputMode="numeric" value={decimals} onChange={(e) => setDecimals(e.target.value.replace(/[^0-9]/g, ""))} />
-                    </div>
-                  </div>
-                  <p className="hint">
-                    The whole supply is minted to you once. Minting and metadata changes are then switched off for
-                    good, so buyers know no more can appear.
-                  </p>
-                </>
-              ) : (
-                <div className="field">
-                  <label htmlFor="mint">Token address</label>
-                  <input id="mint" value={mintInput} onChange={(e) => setMintInput(e.target.value)} placeholder="Token mint address" spellCheck={false} />
-                  {existingError ? <p className="hint hint--error">{existingError}</p> : null}
-                  {existing ? (
-                    <p className="hint">
-                      {existing.name ?? "Token"} {existing.symbol ? `(${existing.symbol})` : ""}
-                      {existingBalance !== null ? `, you hold ${formatTokens(existingBalance, existing.decimals)}` : ""}.
-                    </p>
-                  ) : null}
-                </div>
-              )}
-            </fieldset>
-          ) : null}
-
-          <fieldset className="group">
-            <legend className="group__title">Sale</legend>
-            {collection ? (
-              <>
-                <div className="field-row">
-                  <div className="field">
-                    <label htmlFor="nfts">NFTs for sale</label>
-                    {countFixed ? (
-                      <input id="nfts" value={saleCount > 0 ? formatCount(saleCount) : "—"} readOnly aria-describedby="nfts-hint" />
-                    ) : (
-                      <input id="nfts" inputMode="numeric" value={nfts} onChange={(e) => setNfts(e.target.value.replace(/[^0-9]/g, ""))} />
                     )}
-                  </div>
-                  <div className="field">
-                    <label htmlFor="perbid">Most NFTs per bid</label>
-                    <input id="perbid" inputMode="numeric" value={maxPerBid} onChange={(e) => setMaxPerBid(e.target.value.replace(/[^0-9]/g, ""))} />
-                  </div>
-                </div>
-                {countFixed ? (
-                  <p id="nfts-hint" className="hint">
-                    {kind === "collection" ? "Every edition of every item." : sheet ? "One per row of the sheet." : "One per image."}
-                  </p>
-                ) : null}
-                <div className="field">
-                  <label htmlFor="nftmin">Minimum price per NFT (SOL)</label>
-                  <input id="nftmin" inputMode="decimal" value={nftMinPriceInput} onChange={(e) => setNftMinPrice(e.target.value.replace(/[^0-9.]/g, ""))} />
-                  <p className="hint">
-                    {plan.rounded && plan.minPriceShown
-                      ? `Prices go in steps of 0.000001 SOL, so this becomes ${plan.minPriceShown} SOL. `
-                      : ""}
-                    Bids below it do not count. The smallest bid is one NFT at this price
-                    {plan.minPriceShown ? `, ${plan.minPriceShown} SOL` : ""}.
-                  </p>
-                </div>
-                <p className="hint">
-                  Up to {formatCount(MAX_COLLECTION_SIZE)} NFTs. Each winner pays about{" "}
-                  {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT in rent and Metaplex fees when collecting.
-                </p>
-              </>
-            ) : (
-              <>
-                <div className="field-row">
-                  <div className="field">
-                    <label htmlFor="forsale">Tokens for sale</label>
-                    <input id="forsale" inputMode="decimal" value={forSale} onChange={(e) => setForSale(e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="minprice">Minimum price per token (SOL)</label>
-                    <input id="minprice" inputMode="decimal" value={minPriceInput} onChange={(e) => setMinPrice(e.target.value.replace(/[^0-9.]/g, ""))} />
-                  </div>
-                </div>
-                <p className="hint">
-                  {plan.sellAmount > 0n && Number.isInteger(tokenDecimals)
-                    ? `${formatTokens(plan.sellAmount, tokenDecimals)} ${symbolText} go into escrow when the auction opens; any not sold come back to you. `
-                    : ""}
-                  {plan.rounded && plan.minPriceShown ? `The minimum price is rounded to ${plan.minPriceShown} SOL. ` : ""}
-                  Bids below the minimum price do not count.
-                </p>
-                <div className="field field--narrow">
-                  <label htmlFor="mindeposit">Smallest bid (SOL)</label>
-                  <input
-                    id="mindeposit"
-                    inputMode="decimal"
-                    value={plan.minDepositText}
-                    onChange={(e) => setMinDeposit(e.target.value.replace(/[^0-9.]/g, ""))}
-                    aria-describedby="mindeposit-hint"
-                  />
-                </div>
-                <p id="mindeposit-hint" className="hint">
-                  The least a bidder can deposit, and the smallest sealed budget a bid can name. The auction takes up
-                  to {formatCount(MAX_TOKEN_BIDS)} bids (see Room for bids); after that, larger deposits
-                  replace the smallest. The suggestion splits the sale's worth at your minimum price across every place, so nobody
-                  can take them all for less, and is at least {formatSol(MIN_SUGGESTED_DEPOSIT)} SOL. You can set a
-                  lower amount.
-                </p>
+                    {nftPlan.notes.map((note) => (
+                      <p key={note} className="hint hint--warn">
+                        {note}
+                      </p>
+                    ))}
+                    <NftPreview nfts={nftPlan.problems.length === 0 ? nftPlan.files : []} />
+                  </>
+                ) : (
+                  <>
+                    <div className="field">
+                      <span className="field__label">Image every NFT shows</span>
+                      <Segmented
+                        label="Image every NFT shows"
+                        value={sameUsesLogo ? "logo" : "other"}
+                        options={[
+                          ["logo", "The logo"],
+                          ["other", "Another image"],
+                        ]}
+                        onChange={(v) => setSameUsesLogo(v === "logo")}
+                      />
+                    </div>
+                    {sameUsesLogo ? null : (
+                      <ImagePicker id="iimage" label="Image for every NFT" value={itemImage} onChange={setItemImage} showOriginal />
+                    )}
+                    <div className="field">
+                      <label htmlFor="iname">NFT name</label>
+                      <input id="iname" value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Delft Tile" />
+                      <p className="hint">The NFTs are {baseLabel} #1, {baseLabel} #2 and so on, all with the same image.</p>
+                    </div>
+                  </>
+                )}
               </>
             )}
+            <p className="hint">Which NFTs each winner gets is drawn at random after the sale, so nobody can pick the rare ones.</p>
           </fieldset>
+        ) : null}
 
-          <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration}>
-            <BidRoom collection={collection} />
-          </BiddingWindow>
-
-          {collection ? null : (
-            <fieldset className="group">
-              <legend className="group__title">Auto-liquidity</legend>
-              <label className="check">
-                <input type="checkbox" checked={lpOn} onChange={(e) => setLpOn(e.target.checked)} />
-                <span>
-                  <span className="check__title">Open a Meteora pool at the clearing price</span>
-                  <span className="check__text">
-                    When the sale settles, part of what it raised and the {symbolText} that buys open a trading pool
-                    at exactly the price every winner paid. The pool is locked forever: winners can always sell, and
-                    nobody can pull the liquidity out.
-                  </span>
-                </span>
-              </label>
-              {lpOn ? (
-                <>
-                  <div className="field-row">
-                    <div className="field">
-                      <label htmlFor="lppercent">Share of the proceeds (%)</label>
-                      <input
-                        id="lppercent"
-                        inputMode="decimal"
-                        value={lpPercent}
-                        onChange={(e) => setLpPercent(e.target.value.replace(/[^0-9.]/g, ""))}
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="lpfloor">Pool minimum (SOL)</label>
-                      <input
-                        id="lpfloor"
-                        inputMode="decimal"
-                        value={lpFloor}
-                        onChange={(e) => setLpFloor(e.target.value.replace(/[^0-9.]/g, ""))}
-                      />
-                    </div>
-                  </div>
-                  <p className="hint">
-                    From {MIN_LP_BPS / 100}% to {MAX_LP_BPS / 100}% of what the sale raises after the platform fee. The
-                    share rises as needed to reach the minimum; a sale that cannot reach it does not go ahead, and every
-                    bid is refunded in full.
-                    {lp.atMin
-                      ? lp.atMin.net < (parseSol(lpFloor) ?? 0n)
-                        ? ` Filling only at the minimum price would raise ${formatSol(lp.atMin.net)} SOL after fees, short of the minimum.`
-                        : ` Filling only at the minimum price, the pool would get ${formatSol(lp.atMin.sol)} SOL.`
-                      : ""}
-                  </p>
-                  <div className="field">
-                    <span className="field__label">Pool fee</span>
-                    <Segmented
-                      label="Pool fee"
-                      value={String(lpFee)}
-                      options={POOL_FEE_TIERS.map((bps) => [String(bps), formatPercent(bps)] as [string, string])}
-                      onChange={(v) => setLpFee(Number(v))}
-                    />
-                  </div>
-                  <p className="hint">
-                    What traders pay once trading has settled: it opens at {formatPercent(ANTI_SNIPER_FEE_BPS)} against
-                    snipers and falls to this over {ANTI_SNIPER_MINUTES} minutes. Meteora keeps{" "}
-                    {DAMM_PROTOCOL_FEE_PERCENT}% of every fee; of the rest, {formatPercent(SELLER_POOL_FEE_BPS)} goes to
-                    you and {formatPercent(10_000 - SELLER_POOL_FEE_BPS)} to Veiling, for as long as the pool trades.
-                  </p>
-                  <p className="hint">
-                    {plan.sellAmount > 0n && Number.isInteger(tokenDecimals)
-                      ? `You also escrow ${formatTokens(plan.sellAmount, tokenDecimals)} ${symbolText} as the pool's reserve`
-                      : "You also escrow as many tokens again as the pool's reserve"}{" "}
-                    and {formatSol(LP_RENT_DEPOSIT)} SOL for its rent. The pool takes only the tokens its SOL buys at
-                    the clearing price; the rest, and the rent it does not use, come back to you.
-                  </p>
-                </>
-              ) : null}
-            </fieldset>
-          )}
-
-          {collection ? null : (
-            <fieldset className="group">
-              <legend className="group__title">Sale rules</legend>
-              <div className="field">
-                <label htmlFor="minraise">Minimum raise (SOL, optional)</label>
-                <input
-                  id="minraise"
-                  className="field__short"
-                  inputMode="decimal"
-                  value={minRaiseInput}
-                  placeholder="None"
-                  onChange={(e) => setMinRaiseInput(e.target.value.replace(/[^0-9.]/g, ""))}
-                  aria-describedby="minraise-hint"
-                />
-                <p id="minraise-hint" className="hint">
-                  The least the winners must pay in all. If the bids would raise less, the sale does not go ahead:
-                  every bidder gets their whole deposit back and you keep your {symbolText}.
-                </p>
-              </div>
-              <label className="check">
-                <input type="checkbox" checked={allowOn} onChange={(e) => setAllowOn(e.target.checked)} />
-                <span>
-                  <span className="check__title">Only wallets on an allowlist can bid</span>
-                  <span className="check__text">
-                    The list is published with the sale and cannot change; each wallet proves it is on it the first
-                    time it bids.
-                  </span>
-                </span>
-              </label>
-              {allowOn ? (
-                <>
-                  <div className="field">
-                    <label htmlFor="allowlist">Wallets (one per line, or separated by commas)</label>
-                    <textarea
-                      id="allowlist"
-                      rows={6}
-                      value={allowText}
-                      onChange={(e) => setAllowText(e.target.value)}
-                      aria-describedby="allowlist-hint"
-                      spellCheck={false}
-                    />
-                    <input
-                      type="file"
-                      accept=".csv,.txt,text/csv,text/plain"
-                      aria-label="Load wallets from a file"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (file) setAllowText(await file.text());
-                        e.target.value = "";
-                      }}
-                    />
-                    <p id="allowlist-hint" className={`hint${rules.invalid.length > 0 ? " hint--error" : ""}`}>
-                      {rules.wallets && rules.wallets.length > 0
-                        ? `${plural(rules.wallets.length, "wallet")} on the list.`
-                        : `Up to ${formatCount(MAX_ALLOWLIST)} wallets; repeats count once.`}
-                      {rules.invalid.length > 0
-                        ? ` Not wallet addresses: ${rules.invalid.slice(0, 3).join(", ")}${rules.invalid.length > 3 ? ", …" : ""}.`
-                        : ""}
-                    </p>
-                  </div>
-                  <div className="field">
-                    <label htmlFor="walletcap">Most a wallet may deposit (SOL, optional)</label>
-                    <input
-                      id="walletcap"
-                      className="field__short"
-                      inputMode="decimal"
-                      value={capInput}
-                      placeholder="No cap"
-                      onChange={(e) => setCapInput(e.target.value.replace(/[^0-9.]/g, ""))}
-                      aria-describedby="walletcap-hint"
-                    />
-                    <p id="walletcap-hint" className="hint">
-                      Counted across all of a wallet's bids, so no single buyer can take most of the sale. A budget
-                      can never be larger than its deposit.
-                    </p>
-                  </div>
-                </>
-              ) : null}
-            </fieldset>
-          )}
-
-          {collection ? (
-            <fieldset className="group">
-              <legend className="group__title">Earnings</legend>
-              <p className="hint">The proceeds of the sale go to the wallet that opens the auction, less the platform fee below.</p>
-              <div className="field">
-                <label htmlFor="royalty">Creator earnings (%)</label>
-                <input
-                  id="royalty"
-                  className="field__short"
-                  inputMode="decimal"
-                  value={royalty}
-                  onChange={(e) => setRoyalty(e.target.value.replace(/[^0-9.]/g, ""))}
-                />
-              </div>
-              <p className="hint">
-                A royalty paid to you on resales by marketplaces that honour royalties, up to {MAX_ROYALTY_BPS / 100}%.
-              </p>
-            </fieldset>
-          ) : null}
-
+        {kind === "collection" ? (
           <fieldset className="group">
-            <legend className="group__title">Fees</legend>
-            {fees.data ? (
-              <dl className="fees">
-                <div>
-                  <dt>Listing</dt>
-                  <dd>
-                    <span className="fees__amount">
-                      {fees.data.listingFee > 0n ? `${formatSol(fees.data.listingFee)} SOL` : "Free"}
-                    </span>
-                    <span className="fees__note">Paid when the auction opens; not refunded if you cancel.</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Sale</dt>
-                  <dd>
-                    <span className="fees__amount">{formatPercent(fees.data.saleFeeBps)}</span>
-                    <span className="fees__note">Of the proceeds, taken when you claim them. Fixed for this auction.</span>
-                  </dd>
-                </div>
-                {crank.data ? (
-                  <div>
-                    <dt>Settlement fund</dt>
-                    <dd>
-                      <span className="fees__amount">
-                        {formatSol(sellerCrankFee(crank.data, collection ? "collection" : "token"))} SOL
-                      </span>
-                      <span className="fees__note">
-                        Pays whoever runs the private steps that find the price{collection ? " and shuffle the NFTs" : ""}, so
-                        your sale settles without you. Each bid adds {formatSol(bidCrankFee(crank.data))} SOL for its
-                        own steps. What is not used comes back when you close the auction.
-                      </span>
-                    </dd>
-                  </div>
-                ) : null}
-              </dl>
-            ) : fees.loading ? (
-              <p className="muted">Loading the platform's fees…</p>
-            ) : (
-              <p className="hint hint--error">{fees.error ?? "The platform's fees are not set up yet."}</p>
-            )}
-            {nftPlan.listed && collection ? (
-              <p className="hint">
-                The item list holds {formatSol(itemListRent(nftPlan.listed.length))} SOL of rent while the sale runs; it
-                comes back when you close the auction.
-              </p>
-            ) : null}
-            <p className="hint">
-              Featured spots on the front page are picked by hand. To ask for one, message{" "}
-              <a href={FEATURE_CONTACT.href} target="_blank" rel="noreferrer noopener">
-                {FEATURE_CONTACT.label}
-              </a>{" "}
-              on X.
-            </p>
+            <legend className="group__title">Items</legend>
+            <ItemsEditor value={items} onChange={setItems} />
           </fieldset>
+        ) : null}
 
-          {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
-          <div className="launch__submit">
-            <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
-              {!signer
-                ? "Connect a wallet to launch"
-                : kind === "drop"
-                  ? "Launch drop and open auction"
-                  : kind === "collection"
-                    ? "Create collection and open auction"
-                    : source === "new"
-                      ? "Create token and open auction"
-                      : "Open auction"}
-            </Button>
+        {kind === "drop" ? (
+          <fieldset className="group">
+            <legend className="group__title">Reveal</legend>
+            <label className={`check${canHide ? "" : " check--off"}`}>
+              <input type="checkbox" checked={hidden} disabled={!canHide} onChange={(e) => setHidden(e.target.checked)} />
+              <span>
+                <span className="check__title">Hide the art until the sale ends</span>
+                <span className="check__text">
+                  {canHide
+                    ? linked
+                      ? "Your metadata folder only has to be online when you reveal. Bidders see the collection's details, not its NFTs."
+                      : "Bidders see the collection's details and your preview image, not the NFTs. Your art is sealed with a key only your wallet can make, and published when you reveal it."
+                    : linked
+                      ? "Hiding needs one metadata file per NFT."
+                      : "Hiding needs one image per NFT."}
+                </span>
+              </span>
+            </label>
+            {hidden ? (
+              <>
+                {linked ? null : (
+                  <ImagePicker id="preview" label="Preview image (optional)" value={preview} onChange={setPreview} showOriginal />
+                )}
+                <p className="hint hint--warn">
+                  After bidding ends you have {revealDays} days to reveal from this wallet. Until you do, no NFT can be
+                  minted and you are not paid; if you do not, every winner takes their payment back.
+                </p>
+              </>
+            ) : null}
+          </fieldset>
+        ) : null}
+
+        {uploadingCollection ? (
+          <fieldset className="group">
+            <legend className="group__title" id="storage-title">
+              Storage
+            </legend>
             <p className="hint">
-              {walletSteps()}
-              {action.busy && step === "key" ? " Waiting for your wallet to sign…" : ""}
-              {action.busy && step === "pay" ? " Waiting for you to approve the storage payment…" : ""}
-              {action.busy && step === "credit" ? " Waiting for Turbo to count the payment…" : ""}
-              {action.busy && step === "upload"
-                ? uploadProgress && uploadProgress[1] > 1
-                  ? ` ${hidden ? "Sealing and storing" : "Uploading"} ${formatCount(Math.min(uploadProgress[0] + 1, uploadProgress[1]))} of ${formatCount(uploadProgress[1])}…`
-                  : " Uploading…"
+              Your images and their metadata are stored on Arweave, where they are public and permanent: they cannot
+              be changed or deleted.
+              {hidden ? " Hidden art is stored twice: sealed now, and in the open when you reveal it." : ""}
+            </p>
+            <StorageChoice
+              value={quality}
+              onChange={setQuality}
+              options={storage}
+              nfts={nftPlan.perNft && nftPlan.count > 0 ? nftPlan.count : null}
+              sample={storageSample}
+              sampleLabel={sampleLabel}
+              sampleKey={nftPlan.perNft ? "#1" : "Image"}
+              labelledBy="storage-title"
+              prices={{
+                loading: rates.loading,
+                error: rates.error,
+                at: rates.data?.at ?? null,
+                retry: rates.reload,
+              }}
+            />
+          </fieldset>
+        ) : null}
+
+        <fieldset className="group">
+          <legend className="group__title">Sale</legend>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="nfts">NFTs for sale</label>
+              {countFixed ? (
+                <input id="nfts" value={saleCount > 0 ? formatCount(saleCount) : "—"} readOnly aria-describedby="nfts-hint" />
+              ) : (
+                <input id="nfts" inputMode="numeric" value={nfts} onChange={(e) => setNfts(e.target.value.replace(/[^0-9]/g, ""))} />
+              )}
+            </div>
+            <div className="field">
+              <label htmlFor="perbid">Most NFTs per bid</label>
+              <input id="perbid" inputMode="numeric" value={maxPerBid} onChange={(e) => setMaxPerBid(e.target.value.replace(/[^0-9]/g, ""))} />
+            </div>
+          </div>
+          {countFixed ? (
+            <p id="nfts-hint" className="hint">
+              {kind === "collection" ? "Every edition of every item." : sheet ? "One per row of the sheet." : "One per image."}
+            </p>
+          ) : null}
+          <div className="field">
+            <label htmlFor="nftmin">Minimum price per NFT (SOL)</label>
+            <input id="nftmin" inputMode="decimal" value={nftMinPriceInput} onChange={(e) => setNftMinPrice(e.target.value.replace(/[^0-9.]/g, ""))} />
+            <p className="hint">
+              {plan.rounded && plan.minPriceShown
+                ? `Prices go in steps of 0.000001 SOL, so this becomes ${plan.minPriceShown} SOL. `
                 : ""}
-              {action.busy && step === "token" ? " Creating the token…" : ""}
-              {action.busy && step === "auction"
-                ? txProgress && txProgress[1] > 1
-                  ? ` Sending transaction ${formatCount(Math.min(txProgress[0] + 1, txProgress[1]))} of ${formatCount(txProgress[1])}…`
-                  : " Opening the auction…"
-                : ""}
+              Bids below it do not count. The smallest bid is one NFT at this price
+              {plan.minPriceShown ? `, ${plan.minPriceShown} SOL` : ""}.
             </p>
           </div>
-          {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-        </form>
-        <aside className="launch__preview" aria-label="How the price will be found">
-          {collection ? (
-            <CollectionCard details={details} linkedArt={linkedArt} count={saleCount} hidden={hidden} preview={preview} />
-          ) : tokenArt ? (
-            <img
-              className={`launch__art launch__art--token${chosenArt && isSmallImage(tokenImage) ? " launch__art--pixels" : ""}`}
-              src={tokenArt}
-              alt="Token image"
-              referrerPolicy="no-referrer"
-            />
-          ) : null}
-          <DemandChart
-            priceLabel={`Price per ${unit}`}
-            supplyLabel={saleText}
-            minLabel={plan.minPriceShown ? `Minimum ${plan.minPriceShown} SOL` : "Minimum price"}
-          />
-          <p className="muted launch__preview-note">
-            Example bids. Buyers name any price at or above your minimum. When bidding closes, the highest bids
-            that cover your supply win, and all of them pay the price where they meet it.
+          <p className="hint">
+            Up to {formatCount(MAX_COLLECTION_SIZE)} NFTs. Each winner pays about{" "}
+            {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT in rent and Metaplex fees when collecting.
           </p>
-        </aside>
-      </div>
-      )}
-    </main>
+        </fieldset>
+
+        <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration}>
+          <BidRoom />
+        </BiddingWindow>
+
+        <fieldset className="group">
+          <legend className="group__title">Earnings</legend>
+          <p className="hint">The proceeds of the sale go to the wallet that opens the auction, less the platform fee below.</p>
+          <div className="field">
+            <label htmlFor="royalty">Creator earnings (%)</label>
+            <input
+              id="royalty"
+              className="field__short"
+              inputMode="decimal"
+              value={royalty}
+              onChange={(e) => setRoyalty(e.target.value.replace(/[^0-9.]/g, ""))}
+            />
+          </div>
+          <p className="hint">
+            A royalty paid to you on resales by marketplaces that honour royalties, up to {MAX_ROYALTY_BPS / 100}%.
+          </p>
+        </fieldset>
+
+        <fieldset className="group">
+          <legend className="group__title">Fees</legend>
+          {fees.data ? (
+            <dl className="fees">
+              <div>
+                <dt>Listing</dt>
+                <dd>
+                  <span className="fees__amount">
+                    {fees.data.listingFee > 0n ? `${formatSol(fees.data.listingFee)} SOL` : "Free"}
+                  </span>
+                  <span className="fees__note">Paid when the auction opens; not refunded if you cancel.</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Sale</dt>
+                <dd>
+                  <span className="fees__amount">{formatPercent(fees.data.saleFeeBps)}</span>
+                  <span className="fees__note">Of the proceeds, taken when you claim them. Fixed for this auction.</span>
+                </dd>
+              </div>
+              {crank.data ? (
+                <div>
+                  <dt>Settlement fund</dt>
+                  <dd>
+                    <span className="fees__amount">
+                      {formatSol(sellerCrankFee(crank.data, "collection"))} SOL
+                    </span>
+                    <span className="fees__note">
+                      Pays whoever runs the private steps that find the price and shuffle the NFTs, so
+                      your sale settles without you. Each bid adds {formatSol(bidCrankFee(crank.data))} SOL for its
+                      own steps. What is not used comes back when you close the auction.
+                    </span>
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : fees.loading ? (
+            <p className="muted">Loading the platform's fees…</p>
+          ) : (
+            <p className="hint hint--error">{fees.error ?? "The platform's fees are not set up yet."}</p>
+          )}
+          {nftPlan.listed ? (
+            <p className="hint">
+              The item list holds {formatSol(itemListRent(nftPlan.listed.length))} SOL of rent while the sale runs; it
+              comes back when you close the auction.
+            </p>
+          ) : null}
+          <p className="hint">
+            Featured spots on the front page are picked by hand. To ask for one, message{" "}
+            <a href={FEATURE_CONTACT.href} target="_blank" rel="noreferrer noopener">
+              {FEATURE_CONTACT.label}
+            </a>{" "}
+            on X.
+          </p>
+        </fieldset>
+
+        {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
+        <div className="launch__submit">
+          <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
+            {!signer
+              ? "Connect a wallet to launch"
+              : kind === "drop"
+                ? "Launch drop and open auction"
+                : "Create collection and open auction"}
+          </Button>
+          <p className="hint">
+            {walletSteps()}
+            {action.busy && step === "key" ? " Waiting for your wallet to sign…" : ""}
+            {action.busy && step === "pay" ? " Waiting for you to approve the storage payment…" : ""}
+            {action.busy && step === "credit" ? " Waiting for Turbo to count the payment…" : ""}
+            {action.busy && step === "upload"
+              ? uploadProgress && uploadProgress[1] > 1
+                ? ` ${hidden ? "Sealing and storing" : "Uploading"} ${formatCount(Math.min(uploadProgress[0] + 1, uploadProgress[1]))} of ${formatCount(uploadProgress[1])}…`
+                : " Uploading…"
+              : ""}
+            {action.busy && step === "auction"
+              ? txProgress && txProgress[1] > 1
+                ? ` Sending transaction ${formatCount(Math.min(txProgress[0] + 1, txProgress[1]))} of ${formatCount(txProgress[1])}…`
+                : " Opening the auction…"
+              : ""}
+          </p>
+        </div>
+        {action.error ? <Notice tone="error">{action.error}</Notice> : null}
+      </form>
+      <aside className="launch__preview" aria-label="How the price will be found">
+        <CollectionCard details={details} linkedArt={linkedArt} count={saleCount} hidden={hidden} preview={preview} />
+        <DemandChart
+          priceLabel="Price per NFT"
+          supplyLabel={saleText}
+          minLabel={plan.minPriceShown ? `Minimum ${plan.minPriceShown} SOL` : "Minimum price"}
+        />
+        <p className="muted launch__preview-note">
+          Example bids. Buyers name any price at or above your minimum. When bidding closes, the highest bids
+          that cover your supply win, and all of them pay the price where they meet it.
+        </p>
+      </aside>
+    </div>
   );
 }

@@ -33,6 +33,7 @@ import {
   PAGE_BIDS,
   LAUNCH_DECIMALS,
   LAUNCH_SALE_SUPPLY,
+  LAUNCH_SUPPLY,
 } from "../config";
 import { type Decimal, choosePriceUnit, formatDecimal, nftPrice, nftPriceToTicks, tokenPrice, tokenPriceToTicks } from "./price";
 
@@ -1255,8 +1256,18 @@ export function nftMetadataUri(a: Auction, number: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Fair launches
+// New tokens (fair launches)
 // ---------------------------------------------------------------------------
+
+/**
+ * An amount of a new token as a share of its whole supply: "50%", "49.5%",
+ * "0.02%". Rounded to two decimals; anything above zero shows at least "<0.01%".
+ */
+export function supplyShare(amount: bigint): string {
+  const hundredths = Number((amount * 10_000n + LAUNCH_SUPPLY / 2n) / LAUNCH_SUPPLY);
+  if (amount > 0n && hundredths === 0) return "<0.01%";
+  return `${(hundredths / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+}
 
 /** A fair launch's token before it is made. */
 export interface LaunchTokenInfo {

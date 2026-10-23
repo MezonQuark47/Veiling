@@ -19,6 +19,7 @@ import {
   poolReady,
   poolSol,
   saleFee,
+  supplyShare,
 } from "../lib/chain";
 import { formatDuration, formatSol, nowSecs } from "../lib/format";
 import { sendTransaction } from "../lib/tx";
@@ -33,7 +34,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   const { signer, publicKey } = useWallet();
   const action = useAction();
   const loaded = useLoader(() => fetchLiquidityPlan(auction), [auction.address.toBase58(), auction.liquidity]);
-  // A fair launch's token-to-be: there until the token is made (or the launch closes).
+  // A new token's record: there until the token is made (or the sale closes).
   const unmade = useLoader(
     () => (auction.launch ? fetchLaunchToken(auction.address) : Promise.resolve(null)),
     [auction.address.toBase58(), auction.liquidity, auction.resolvedCount]
@@ -91,7 +92,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
       refresh();
       return (
         <>
-          The launch is closed. Your deposit and every rent came back to you. <TxLink signature={sig} />
+          The sale is closed. Your deposit and every rent came back to you. <TxLink signature={sig} />
         </>
       );
     });
@@ -113,7 +114,14 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
       );
     });
 
-  const terms = plan ? (
+  const terms = launch ? (
+    <p>
+      Every SOL raised, less the sale fee, opens a Meteora pool at exactly the clearing price, with the {asset.goods}{" "}
+      that SOL buys there. The pool is locked forever: nobody can take its liquidity out. Trading starts with a{" "}
+      {formatPercent(ANTI_SNIPER_FEE_BPS)} fee against snipers, which falls to{" "}
+      {plan ? formatPercent(plan.tradeFeeBps) : "the pool's fee"} over {ANTI_SNIPER_MINUTES} minutes.
+    </p>
+  ) : plan ? (
     <p>
       {formatPercent(plan.lpBps)} of the net proceeds, and at least {formatSol(plan.floor)} SOL, opens a Meteora
       pool at exactly the clearing price, with the {asset.goods} that SOL buys there. The pool is locked forever:
@@ -123,7 +131,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   ) : null;
 
   let body = null;
-  // A fair launch's own story: the token waits for the sale.
+  // A new token's own story: the token waits for the sale.
   const ended = now >= auction.endTime;
   const nothingLeft = auction.liveBids === 0 && auction.sold === 0n;
   const canCloseLaunch =
@@ -134,9 +142,9 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
     (auction.status === "cancelled" || ended || (auction.status === "open" && auction.bidCount === 0));
   const closeButton = canCloseLaunch ? (
     <>
-      <p>No token was made, and no bid is left. Close the launch to get your deposit and every rent back.</p>
+      <p>No token was made, and no bid is left. Close the sale to get your deposit and every rent back.</p>
       <Button variant="primary" onClick={closeLaunch} busy={action.busy === "close-launch"}>
-        {auction.bidCount === 0 && !ended ? "Withdraw the launch" : "Close the launch"}
+        {auction.bidCount === 0 && !ended ? "Withdraw the sale" : "Close the sale"}
       </Button>
     </>
   ) : null;
@@ -146,11 +154,12 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
     body = (
       <>
         <p>
-          Nothing is minted yet. If bids cover all {goodsAmount(auction.supply, asset)} at{" "}
+          Nothing is minted yet. If bids cover the {supplyShare(auction.supply)} of the supply for sale at{" "}
           {formatPrice(auction, auction.minPrice, asset.decimals)} per {asset.unit} or more, the sale raises its{" "}
           {formatSol(auction.minRaise)} SOL target and the token is made: what was sold goes to the winners, and every
-          SOL raised less the sale fee opens a Meteora pool at the clearing price, locked for good. If not, no token is
-          ever made and every bid is refunded in full.
+          SOL raised less the sale fee opens a Meteora pool at the clearing price, with up to the other{" "}
+          {supplyShare(auction.supply)}, locked for good. If not, no token is ever made and every bid is refunded in
+          full.
         </p>
         {!ended ? (
           <p className="muted">
@@ -168,7 +177,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
         {poolReady(auction) ? (
           <>
             <p>
-              The launch sold out. Anyone can make its token now; the creator's deposit pays for it.
+              The sale sold out. Anyone can make its token now; the creator's deposit pays for it.
             </p>
             <Button variant="primary" onClick={graduate} busy={action.busy === "graduate"} disabled={!signer || unmade.loading}>
               Make the token
@@ -182,7 +191,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
     body = (
       <>
         <p>
-          The launch missed its {formatSol(auction.minRaise)} SOL target, so its token is never made: every bid gets its
+          The sale missed its {formatSol(auction.minRaise)} SOL target, so its token is never made: every bid gets its
           whole deposit back.
         </p>
         {closeButton}
@@ -206,9 +215,10 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
         {poolReady(auction) ? (
           <>
             <p>
-              The sale is settled: the pool gets {formatSol(sol)} SOL and {goodsAmount(tokens, asset)} at{" "}
-              {formatPrice(auction, auction.clearingPrice, asset.decimals)} per {asset.unit}. Anyone can open it; it
-              also pays the seller the rest of the proceeds.
+              The sale is settled: the pool gets {formatSol(sol)} SOL and{" "}
+              {launch ? `${supplyShare(tokens)} of the supply` : goodsAmount(tokens, asset)} at{" "}
+              {formatPrice(auction, auction.clearingPrice, asset.decimals)} per {asset.unit}. Anyone can open it
+              {launch ? "." : "; it also pays the seller the rest of the proceeds."}
             </p>
             <Button variant="primary" onClick={open} busy={action.busy === "open-pool"} disabled={!signer || !plan}>
               Open the pool
@@ -252,7 +262,8 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
           <div>
             <dt>Opened with</dt>
             <dd>
-              {formatSol(plan.poolSol)} SOL and {goodsAmount(plan.poolTokens, asset)}, at{" "}
+              {formatSol(plan.poolSol)} SOL and{" "}
+              {launch ? `${supplyShare(plan.poolTokens)} of the supply` : goodsAmount(plan.poolTokens, asset)}, at{" "}
               {formatPrice(auction, auction.clearingPrice, asset.decimals)} per {asset.unit}
             </dd>
           </div>
@@ -285,7 +296,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   return (
     <section className="panel" aria-labelledby="liquidity-title">
       <h2 id="liquidity-title" className="panel__title">
-        {launch ? "Fair launch" : "Auto-liquidity"}
+        {launch ? "Token and pool" : "Auto-liquidity"}
       </h2>
       {loaded.error ? <Notice tone="error">{loaded.error}</Notice> : body}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}

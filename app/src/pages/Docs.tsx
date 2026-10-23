@@ -21,8 +21,6 @@ import {
   ANTI_SNIPER_FEE_BPS,
   ANTI_SNIPER_MINUTES,
   DAMM_PROTOCOL_FEE_PERCENT,
-  MAX_LP_BPS,
-  MIN_LP_BPS,
   POOL_FEE_TIERS,
   SELLER_POOL_FEE_BPS,
   LAUNCH_DECIMALS,
@@ -33,7 +31,7 @@ import {
   LAUNCH_SUPPLY,
 } from "../config";
 import { useLoader } from "../components/ui";
-import { bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee } from "../lib/chain";
+import { bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee, supplyShare } from "../lib/chain";
 import { formatCount, formatSol, formatTokens } from "../lib/format";
 import { formatKb, formatMb } from "../lib/images";
 
@@ -47,9 +45,8 @@ export const DOC_SECTIONS: [string, string][] = [
   ["price", "The clearing price"],
   ["launch", "Drops and collections"],
   ["nfts", "NFT collections"],
-  ["rules", "Sale rules"],
-  ["fair", "Fair launches"],
-  ["liquidity", "Auto-liquidity"],
+  ["token", "New tokens"],
+  ["liquidity", "The token's pool"],
   ["fees", "Fees"],
   ["privacy", "What stays private"],
   ["safety", "If settlement stalls"],
@@ -77,6 +74,7 @@ export function Docs({ section }: { section: string }) {
   const bidFee = crank.data ? `${formatSol(bidCrankFee(crank.data))} SOL` : "…";
   const days = EMERGENCY_DELAY_SECS / 86_400;
   const revealDays = REVEAL_DELAY_SECS / 86_400;
+  const saleShare = supplyShare(LAUNCH_SALE_SUPPLY);
 
   useEffect(() => {
     if (section) document.getElementById(section)?.scrollIntoView({ block: "start" });
@@ -109,9 +107,9 @@ export function Docs({ section }: { section: string }) {
               <li>
                 <h3>The seller opens it</h3>
                 <p>
-                  A token sale puts the tokens in escrow; a collection sale creates the collection. The seller sets
-                  how much is for sale, a minimum price and, for a token, the smallest budget a bid may bring, or for
-                  a collection, the most NFTs one bid may ask for.
+                  A new token's sale names the token and sets a target, which fixes its minimum price; nothing is
+                  minted yet. A collection sale creates the collection and sets how many NFTs are for sale, a minimum
+                  price and the most NFTs one bid may ask for.
                 </p>
               </li>
               <li>
@@ -147,7 +145,8 @@ export function Docs({ section }: { section: string }) {
                 <h3>Everyone collects</h3>
                 <p>
                   Winners receive their tokens or NFTs and every bidder gets the unused part of their deposit back.
-                  The seller claims the proceeds, then closes the auction to get its rent back.
+                  A new token is made first and its pool opened with what the sale raised; a collection's seller
+                  claims the proceeds. The seller then closes the auction to get its rent back.
                 </p>
               </li>
             </ol>
@@ -159,7 +158,8 @@ export function Docs({ section }: { section: string }) {
 
           <Section id="bidding" title="Bidding">
             <p>
-              A seller can open bidding right away or schedule it up to 30 days ahead. A scheduled auction is listed
+              A new token's bidding opens right away and runs for {LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")}{" "}
+              hours. A collection's seller can open bidding right away or schedule it up to 30 days ahead. A scheduled auction is listed
               as upcoming, with its terms public and its tokens already held by the program; bids are taken only from
               its start, for its full bidding time. Until the first bid, the seller can still cancel it.
             </p>
@@ -233,14 +233,15 @@ export function Docs({ section }: { section: string }) {
               </li>
               <li>
                 Bids exactly at the clearing price share what is left: token bids by budget, collection bids by
-                size. Shares are rounded down. Tokens lost to rounding go back to the seller; NFTs lost to rounding
+                size. Shares are rounded down. Tokens lost to rounding are never made; NFTs lost to rounding
                 go to the earliest of those bids, one each, so every NFT is sold. Three NFTs and four bids of one
                 each at that price: the first three bids win.
               </li>
               <li>Bids below it win nothing and get their whole deposit back.</li>
               <li>
-                If the bids never cover the supply, every valid bid wins at the minimum price, and what is left goes
-                back to the seller.
+                If the bids never cover the supply, a new token's sale does not go ahead: no token is made and every
+                bid is refunded in full. In a collection sale every valid bid then wins at the minimum price, and the
+                NFTs nobody won are never minted.
               </li>
             </ul>
             <p>
@@ -402,99 +403,64 @@ export function Docs({ section }: { section: string }) {
             </ul>
           </Section>
 
-          <Section id="rules" title="Sale rules">
-            <p>A token sale can open with up to three rules. They are fixed when it opens and nobody can change them.</p>
-            <ul className="doc__bullets">
-              <li>
-                <strong>Minimum raise.</strong> The least the winners must pay in all. When the price is found, if
-                the sale would raise less, it does not go ahead: every bidder gets their whole deposit back, with no
-                computation, and the seller keeps their tokens. The minimum is part of the terms a bid commits to.
-              </li>
-              <li>
-                <strong>Allowlist.</strong> Only the wallets the seller lists can bid. The list is published with the
-                sale, and the program keeps only its fingerprint (a Merkle root), so it can never be swapped. A
-                listed wallet proves it is on the list the first time it bids, in a small transaction of its own;
-                that admission's rent comes back once bidding is over.
-              </li>
-              <li>
-                <strong>Most per wallet.</strong> With an allowlist, the seller can cap what one wallet deposits across
-                all its bids. A budget can never exceed its deposit, so this also caps what one wallet can buy.
-                Without an allowlist a cap would mean little, since anyone could split their bids across wallets.
-              </li>
-            </ul>
-          </Section>
-
-          <Section id="fair" title="Fair launches">
+          <Section id="token" title="New tokens">
             <p>
-              A fair launch sells a new token that only exists if its sale succeeds. The creator gives it a name, a
-              symbol and an image, picks a graduation target of at least {formatSol(LAUNCH_MIN_RAISE)} SOL, and
-              bidding runs for {LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours.
+              A new token is sold before it exists, and only comes into being if its sale succeeds. The creator gives
+              it a name, a symbol and an image, and picks a target of at least {formatSol(LAUNCH_MIN_RAISE)} SOL.
             </p>
             <ul className="doc__bullets">
               <li>
-                <strong>Half a billion for sale.</strong> {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} tokens
-                are sold by sealed bid, from {formatSol(LAUNCH_MIN_BID)} SOL a bid. The lowest price is the target
-                divided by that supply, so the launch graduates only if it sells out.
+                <strong>{saleShare} of the supply for sale.</strong> Every new token has a total supply of at most{" "}
+                {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. {saleShare} of it is sold by sealed bid, from{" "}
+                {formatSol(LAUNCH_MIN_BID)} SOL a bid. The minimum price is the target divided by that share, so the
+                token is made only if the sale sells out.
               </li>
               <li>
-                <strong>Born with its pool.</strong> If it graduates, anyone can make the token: exactly the tokens sold
-                and the tokens its pool takes are minted, and the mint closes for good, never past{" "}
-                {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. Every SOL raised, less the sale fee, then opens a
-                Meteora pool at the clearing price, locked forever. Winners collect their tokens once the pool is open,
-                so nobody holds any before it.
+                <strong>Born with its pool.</strong> If it sells out, anyone can make the token: exactly the share
+                that was sold and the share its pool takes are minted, and the mint closes for good. Every SOL raised,
+                less the sale fee, opens a Meteora pool at the clearing price with up to the other {saleShare} of the
+                supply. What the pool does not take is never made. Winners collect their tokens once the pool is
+                open, so nobody holds any before it.
               </li>
               <li>
                 <strong>Or never at all.</strong> If it misses the target, no token is ever made and every bid is
-                refunded in full. The creator closes the launch and gets their deposit and rents back; only the listing
+                refunded in full. The creator closes the sale and gets their deposit and rents back; only the listing
                 fee and what settlement used are spent.
               </li>
               <li>
-                <strong>No creator allocation.</strong> The creator holds no tokens and takes no SOL from the sale.
-                They earn {SELLER_POOL_FEE_BPS / 100}% of the pool's trading fees, for good.
-              </li>
-              <li>
-                <strong>A shorter safety net.</strong> If settlement stalls, deposits can be taken back one day after
-                bidding ends instead of three.
+                <strong>No creator allocation.</strong> The creator holds none of the supply and takes no SOL from the
+                sale. They earn {formatPercent(SELLER_POOL_FEE_BPS)} of the pool's trading fees after Meteora's share,
+                for good.
               </li>
             </ul>
           </Section>
 
-          <Section id="liquidity" title="Auto-liquidity">
+          <Section id="liquidity" title="The token's pool">
             <p>
-              A token sale can open a trading pool on Meteora the moment it settles, at exactly the clearing price.
-              Winners can trade right away, and the market starts from the price everyone paid.
+              A new token's pool opens on Meteora as soon as its sale settles, at exactly the clearing price. Winners
+              can trade right away, and the market starts from the price everyone paid.
             </p>
-            <ul>
+            <ul className="doc__bullets">
               <li>
-                <strong>Fixed before any bid.</strong> The seller chooses a share of the proceeds after the platform
-                fee, from {MIN_LP_BPS / 100}% to {MAX_LP_BPS / 100}%, the least SOL the pool gets, and its trading
-                fee ({POOL_FEE_TIERS.map((bps) => formatPercent(bps)).join(", ")}). Bidders see all of it on the
-                auction page, and it cannot change.
-              </li>
-              <li>
-                <strong>A minimum that holds.</strong> The pool's share rises as needed to reach its minimum. If the
-                sale cannot raise it, the sale does not go ahead: every bid gets its whole deposit back, and the
-                seller their tokens.
+                <strong>Every SOL raised.</strong> All of the proceeds after the platform fee go into the pool, with
+                the share of the supply that SOL buys at the clearing price. The creator picks the pool's trading fee (
+                {POOL_FEE_TIERS.map((bps) => formatPercent(bps)).join(", ")}) before any bid, and it cannot change.
               </li>
               <li>
                 <strong>Locked forever.</strong> The pool belongs to the program, which has no way to withdraw it.
-                Nobody, the seller included, can pull the liquidity.
+                Nobody, the creator included, can pull the liquidity.
               </li>
               <li>
                 <strong>No snipers.</strong> Trading opens with a {formatPercent(ANTI_SNIPER_FEE_BPS)} fee that falls
-                to the pool's fee over {ANTI_SNIPER_MINUTES} minutes, so bots gain nothing by buying first.
+                to the pool's fee over {ANTI_SNIPER_MINUTES} minutes, so bots gain nothing by buying first. Nobody
+                holds the token before the pool opens, so nobody can open a pool of their own first.
               </li>
               <li>
                 <strong>Fees for as long as it trades.</strong> Meteora keeps {DAMM_PROTOCOL_FEE_PERCENT}% of every
-                trading fee. Anyone can pay out the rest, in SOL: {formatPercent(SELLER_POOL_FEE_BPS)} to the seller
+                trading fee. Anyone can pay out the rest, in SOL: {formatPercent(SELLER_POOL_FEE_BPS)} to the creator
                 and {formatPercent(10_000 - SELLER_POOL_FEE_BPS)} to Veiling.
               </li>
             </ul>
-            <p>
-              The seller escrows as many tokens again as are for sale. The pool takes only the tokens its SOL buys at
-              the clearing price; the rest comes back when it opens. If Meteora's pool for the token already exists
-              by then, no pool is added and the seller simply receives everything.
-            </p>
           </Section>
 
           <Section id="fees" title="Fees">
@@ -515,7 +481,10 @@ export function Docs({ section }: { section: string }) {
                 <tr>
                   <th scope="row">Sale</th>
                   <td>{saleFee} of the proceeds</td>
-                  <td>The seller, out of the proceeds when claiming them. Buyers pay nothing extra.</td>
+                  <td>
+                    Out of the proceeds: when a collection's seller claims them, or when a new token's pool opens.
+                    Buyers pay nothing extra.
+                  </td>
                 </tr>
                 <tr>
                   <th scope="row">Settlement fund</th>
@@ -597,9 +566,10 @@ export function Docs({ section }: { section: string }) {
 
           <Section id="safety" title="If settlement stalls">
             <p>
-              If Arcium's network stops answering, nothing stays locked. {days} days after bidding ends, anyone
-              can return an unsettled bid's whole deposit to its owner, and the seller can take back the tokens and
-              any proceeds already paid. Settled bids can always be collected.
+              If Arcium's network stops answering, nothing stays locked. {days} days after bidding ends, or one day
+              for a new token, anyone can return an unsettled bid's whole deposit to its owner. Settled bids can
+              always be collected: a collection's seller can claim what they paid, and a new token is made with
+              what its settled bids bought.
             </p>
             <p>
               A hidden drop that its seller does not reveal within {revealDays} days of the end of bidding pays

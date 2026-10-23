@@ -11,7 +11,7 @@ import {
 } from "../config";
 import { buildCreateLaunch } from "../lib/actions";
 import { freeTarget } from "../lib/arweave";
-import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchSaleTerms, sellerCrankFee } from "../lib/chain";
+import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchSaleTerms, sellerCrankFee, supplyShare } from "../lib/chain";
 import { formatSol, formatTokens, parseDecimal } from "../lib/format";
 import type { PreparedImage } from "../lib/images";
 import { formatDecimal, tokenPrice } from "../lib/price";
@@ -59,12 +59,12 @@ function Choice<T extends string | number>({
 }
 
 /**
- * A fair launch: a new token that only exists if its sale succeeds. Half of
- * a billion tokens is sold by sealed bid; if it sells out, the token is made
- * and every SOL raised goes with the other half into its pool. If not, no
- * token is made and every bid is refunded.
+ * A new token, sold before it exists (a fair launch): 50% of its supply is
+ * sold by sealed bid; if it sells out, the token is made and every SOL raised
+ * opens its pool with up to the other 50%. If not, no token is made and every
+ * bid is refunded.
  */
-export function FairLaunchForm() {
+export function TokenLaunchForm() {
   const { signer } = useWallet();
   const action = useAction();
   const fees = useLoader(fetchFeeConfig, []);
@@ -100,6 +100,7 @@ export function FairLaunchForm() {
   const net = terms && fees.data ? terms.target - (terms.target * BigInt(fees.data.saleFeeBps)) / 10_000n : null;
   const pooledTokens = net && terms ? (net * terms.priceUnit) / terms.minPrice : null;
   const goods = ticker || "tokens";
+  const saleShare = supplyShare(LAUNCH_SALE_SUPPLY);
 
   const launch = () =>
     action
@@ -137,8 +138,8 @@ export function FairLaunchForm() {
         <fieldset className="group">
           <legend className="group__title">Token</legend>
           <p className="hint">
-            Nothing is minted now. The token is made only if its sale sells out, and then never more than{" "}
-            {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)} of it. You hold none: buy at the sale like everyone else.
+            Nothing is minted now. The token is made only if its sale sells out, with a total supply of at most{" "}
+            {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. You hold none: buy at the sale like everyone else.
           </p>
           <div className="field-row">
             <div className="field">
@@ -167,11 +168,11 @@ export function FairLaunchForm() {
         <fieldset className="group">
           <legend className="group__title">Sale</legend>
           <div className="field">
-            <label htmlFor="fl-target">Graduation target (SOL)</label>
+            <label htmlFor="fl-target">Target (SOL)</label>
             <input id="fl-target" inputMode="decimal" value={targetInput} onChange={(e) => setTargetInput(e.target.value)} />
             <p className="hint">
-              What selling all {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} {goods} must raise, at least{" "}
-              {formatSol(LAUNCH_MIN_RAISE)} SOL. It sets the lowest price: {price ? `${price} SOL per ${ticker || "token"}` : "…"}.
+              What selling {saleShare} of the supply must raise, at least {formatSol(LAUNCH_MIN_RAISE)} SOL. It sets
+              the lowest price: {price ? `${price} SOL per ${ticker || "token"}` : "…"}.
               Bids can go higher; everyone who wins pays the one price where demand meets the supply.
             </p>
           </div>
@@ -180,7 +181,7 @@ export function FairLaunchForm() {
               Bidding time
             </span>
             <Choice label="Bidding time" value={hours} options={LAUNCH_HOURS.map((h) => [h, `${h} hour${h > 1 ? "s" : ""}`])} onChange={setHours} />
-            <p className="hint">Bids start at {formatSol(LAUNCH_MIN_BID)} SOL. Bidding opens as soon as the launch does.</p>
+            <p className="hint">Bids start at {formatSol(LAUNCH_MIN_BID)} SOL. Bidding opens as soon as the sale does.</p>
           </div>
           <div className="field">
             <span className="field__label">Pool trading fee</span>
@@ -195,19 +196,17 @@ export function FairLaunchForm() {
         <fieldset className="group">
           <legend className="group__title">If it sells out</legend>
           <ul className="launch-facts">
-            <li>
-              The token is made: the {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} sold go to the winners.
-            </li>
+            <li>The token is made: the {saleShare} of the supply that was sold goes to the winners.</li>
             <li>
               Every SOL raised, less the {fees.data ? formatPercent(fees.data.saleFeeBps) : "…"} sale fee
               {net ? ` (${formatSol(net, 2)} SOL at the target)` : ""}, opens a Meteora pool at the clearing price with
-              the {pooledTokens ? formatTokens(pooledTokens, LAUNCH_DECIMALS, 0) : "…"} {goods} it buys there. The pool
-              is locked for good.
+              the {goods} it buys there, {pooledTokens ? `${supplyShare(pooledTokens)} of the supply` : "…"} at the
+              target. The pool is locked for good.
             </li>
-            <li>Then the mint closes: nobody can ever make more.</li>
+            <li>Then the mint closes: what the pool does not take is never made, and nobody can ever make more.</li>
           </ul>
           <p className="hint">
-            If it does not sell out, no token is ever made, every bid is refunded in full, and you close the launch to
+            If it does not sell out, no token is ever made, every bid is refunded in full, and you close the sale to
             get your deposit and rents back.
           </p>
         </fieldset>
@@ -242,7 +241,7 @@ export function FairLaunchForm() {
         {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
         <div className="launch__submit">
           <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
-            {!signer ? "Connect a wallet to launch" : step === "upload" ? "Uploading the token's details…" : "Open fair launch"}
+            {!signer ? "Connect a wallet to launch" : step === "upload" ? "Uploading the token's details…" : "Launch the token sale"}
           </Button>
           <p className="hint">The token's image and details upload first, with no wallet prompt. Then your wallet approves one transaction.</p>
         </div>
@@ -254,7 +253,7 @@ export function FairLaunchForm() {
           <figcaption>
             <span className="launchcard__name">{name.trim() || "Token name"}</span>
             <span className="launchcard__meta">
-              {ticker || "SYMBOL"}, fair launch, {hours} hour{hours > 1 ? "s" : ""}
+              {ticker || "SYMBOL"}, {saleShare} for sale, {hours} hour{hours > 1 ? "s" : ""}
             </span>
           </figcaption>
         </figure>
@@ -266,8 +265,8 @@ export function FairLaunchForm() {
           </li>
           <li>
             <span>
-              <strong>One price is found.</strong> It sells out if bids cover {formatTokens(LAUNCH_SALE_SUPPLY, LAUNCH_DECIMALS, 0)} {goods} at{" "}
-              {price ?? "…"} SOL or more.
+              <strong>One price is found.</strong> It sells out if bids cover {saleShare} of the supply at {price ?? "…"}{" "}
+              SOL or more.
             </span>
           </li>
           <li>

@@ -192,6 +192,10 @@ bidding (`EMERGENCY_DELAY_SECS`):
 
 ### Sale rules
 
+The web app sells tokens only as new tokens (see New tokens below); the
+program still supports sales of existing tokens with these rules and
+auto-liquidity, for scripts and integrations.
+
 A token sale can open with rules (`SaleRules`, fixed in `create_auction`):
 
 - **Minimum raise** (`min_raise`, lamports): when the price is found,
@@ -262,16 +266,17 @@ paid is where the market starts (`programs/sealed_auction/src/liquidity.rs`).
 Measured on devnet: opening the pool takes about 300,000 compute units and
 about 0.017 SOL of rent, paid from the seller's deposit.
 
-### Fair launches
+### New tokens (fair launches)
 
-A fair launch sells a token that does not exist yet and only comes into being
-if its sale succeeds, after pump.fun's graduation but by sealed bid
-(`programs/sealed_auction/src/launch.rs`).
+The app's token sale: a token that does not exist yet and only comes into
+being if its sale succeeds, after pump.fun's graduation but by sealed bid
+(`programs/sealed_auction/src/launch.rs`). The app shows its amounts as shares
+of the total supply: 50% for sale, up to the other 50% for the pool.
 
 - **Opening.** `create_launch` takes the token's name, symbol and metadata
   URI, a graduation target of at least 10 SOL, a bidding time of 1, 2 or 5
-  hours and the pool's trading fee. It opens a `Launch` auction for half of a
-  fixed 1,000,000,000-token supply (6 decimals) with no mint behind it, plans
+  hours and the pool's trading fee. It opens a `Launch` auction for 50% of a
+  1,000,000,000-token maximum supply (6 decimals) with no mint behind it, plans
   a pool of all the net proceeds (`lp_bps` 100%), and records the token in a
   `LaunchToken` account (`[b"launch", auction]`). The creator deposits 0.04
   SOL for the token's accounts and pool; what is not used comes back.
@@ -582,7 +587,7 @@ Docs page (`#/docs`) explains auctions, fees and privacy for users.
 
 ### Uploading art
 
-The Launch page offers four kinds of launch; all of
+The Launch page offers three kinds of launch; all of
 them sell through the same sealed auction:
 
 - **Drop**: a whole collection at once. One image per NFT (up to 10,000), or
@@ -595,9 +600,8 @@ them sell through the same sealed auction:
   after the sale.
 - **Collection**: built item by item, each with its image, name, editions,
   description, link and traits; always named per item through the item list.
-- **Token**: a new or existing fixed-supply token.
-- **Fair launch**: a new token made only if its sale sells out (see Fair
-  launches above).
+- **Token**: a new token, made only if its sale sells out (see New tokens
+  above).
 
 The collection's details (logo, optional banner, description, website and X
 links) go into its metadata file: `image`, `banner_image` and `external_url`

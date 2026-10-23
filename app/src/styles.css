@@ -1612,15 +1612,6 @@ p {
   overflow-wrap: anywhere;
 }
 
-.launch__art {
-  width: 100%;
-  max-width: 220px;
-  aspect-ratio: 1;
-  object-fit: cover;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-}
-
 .field__label {
   font-weight: 500;
 }
@@ -2145,11 +2136,6 @@ p {
   font-size: var(--step--1);
 }
 
-.launch__art--token {
-  max-width: 144px;
-  border-radius: 50%;
-}
-
 .launch__art--pixels,
 .picker__thumb img.picker__img--pixels {
   image-rendering: pixelated;
@@ -2341,7 +2327,7 @@ p {
 
 .kinds {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 28px;
 }
@@ -2746,13 +2732,7 @@ p {
   font-size: var(--step-2);
 }
 
-@media (max-width: 1100px) {
-  .kinds {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
+@media (max-width: 860px) {
   .kinds {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3374,7 +3354,7 @@ p {
   }
 }
 
-/* ---------------------------------------------------------------- Fair launch form */
+/* ---------------------------------------------------------------- New token form */
 
 .launchcard {
   width: 100%;

@@ -1,5 +1,5 @@
 import type { Auction } from "../lib/chain";
-import { formatPrice, phaseOf } from "../lib/chain";
+import { formatPrice, phaseOf, supplyShare } from "../lib/chain";
 import { formatCount, formatDuration, formatSol, shortAddress } from "../lib/format";
 import { type AssetInfo, goodsAmount, useAssetInfo } from "./ui";
 
@@ -31,6 +31,8 @@ export function statusText(a: Auction, now: number, asset: AssetInfo): string {
 
 /** "1,000,000 TULIP" or "333 NFTs". */
 export function supplyDescription(a: Auction, asset: AssetInfo): string {
+  // A new token's sale is half its supply, which says more than a count.
+  if (a.launch) return `${supplyShare(a.supply)} of the ${asset.goods} supply`;
   return goodsAmount(a.supply, asset);
 }
 
@@ -54,7 +56,7 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
         {auction.featured ? <span className="tag tag--featured">Featured</span> : null}
         {auction.kind === "collection" ? <span className="tag">NFT</span> : null}
         {auction.kind === "collection" && auction.unrevealed ? <span className="tag">Art hidden</span> : null}
-        {auction.launch ? <span className="tag">Fair launch</span> : null}
+        {auction.launch ? <span className="tag">New token</span> : null}
         {auction.hidden ? <span className="tag">Hidden</span> : null}
       </td>
       <td className="num">{supplyDescription(auction, asset)}</td>
