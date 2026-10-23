@@ -82,7 +82,7 @@ import {
   uploadCollection,
 } from "../lib/uploads";
 import { byteLength, isDisplayText, isMetadataUri } from "../lib/validate";
-import { useWallet } from "../lib/wallet";
+import { requestConnect, useWallet } from "../lib/wallet";
 
 const DURATIONS: { label: string; secs: number }[] = [
   { label: "10 min", secs: 600 },
@@ -1120,13 +1120,15 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
 
         {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
         <div className="launch__submit">
-          <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
-            {!signer
-              ? "Connect a wallet to launch"
-              : kind === "drop"
-                ? "Launch drop and open auction"
-                : "Create collection and open auction"}
-          </Button>
+          {signer ? (
+            <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={problems.length > 0}>
+              {kind === "drop" ? "Launch drop and open auction" : "Create collection and open auction"}
+            </Button>
+          ) : (
+            <Button variant="primary" type="button" onClick={requestConnect}>
+              Connect a wallet to launch
+            </Button>
+          )}
           <p className="hint">
             {walletSteps()}
             {action.busy && step === "key" ? " Waiting for your wallet to sign…" : ""}

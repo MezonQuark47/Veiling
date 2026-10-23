@@ -305,7 +305,6 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
       </h2>
       {loaded.error ? <Notice tone="error">{loaded.error}</Notice> : body}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
   );
 }

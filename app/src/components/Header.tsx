@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NETWORK_LABEL } from "../config";
 import { shortAddress } from "../lib/format";
-import { useWallet } from "../lib/wallet";
+import { CONNECT_EVENT, useWallet } from "../lib/wallet";
 import { errorMessage } from "../lib/tx";
 
 /**
@@ -23,6 +23,16 @@ export function Header({ route }: { route: string }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // A "Connect wallet" button elsewhere on the page opens this menu.
+  useEffect(() => {
+    const show = () => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setOpen(true);
+    };
+    window.addEventListener(CONNECT_EVENT, show);
+    return () => window.removeEventListener(CONNECT_EVENT, show);
+  }, []);
 
   useEffect(() => {
     if (!open) return;

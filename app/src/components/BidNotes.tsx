@@ -17,7 +17,8 @@ const CLOSES_PER_TX = 8;
  */
 export function NoteUnlock({ bids, onOpened }: { bids: Bid[]; onOpened: () => void }) {
   const { publicKey, signer } = useWallet();
-  const action = useAction();
+  // Its one message explains a failure, so it stays in place.
+  const action = useAction({ toast: false });
   const mine = publicKey ? bids.filter((b) => b.bidder.equals(publicKey)) : [];
   const missing = mine.filter((b) => !readNote(b.address));
   const ids = missing.map((b) => b.address.toBase58()).join(",");
@@ -61,7 +62,7 @@ export function LeftoverNotes() {
   const action = useAction();
   const left = useLoader(async () => (publicKey ? fetchLeftoverNotes(publicKey) : []), [publicKey?.toBase58()]);
   const notes = left.data ?? [];
-  if (!publicKey || notes.length === 0) return action.done ? <Notice tone="success">{action.done}</Notice> : null;
+  if (!publicKey || notes.length === 0) return null;
   const lamports = BigInt(notes.reduce((sum, n) => sum + n.lamports, 0));
   const reclaim = () =>
     action.run("reclaim-notes", async () => {

@@ -124,7 +124,13 @@ export function Auctions() {
           </div>
         </div>
         {auctions.error ? <Notice tone="error">Could not load auctions: {auctions.error}</Notice> : null}
-        {auctions.loading && !auctions.data ? <p className="muted">Loading auctions…</p> : null}
+        {auctions.loading && !auctions.data ? (
+          <div className="skeletons" aria-label="Loading auctions" role="status">
+            {[0, 1, 2, 3].map((n) => (
+              <span key={n} className="skeleton skeleton--row" />
+            ))}
+          </div>
+        ) : null}
         {auctions.data && filtered.length === 0 ? (
           <div className="empty">
             <p>

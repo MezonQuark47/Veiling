@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { LeftoverNotes, NoteUnlock } from "../components/BidNotes";
-import { Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
+import { Button, Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
 import { statusText } from "../components/AuctionTable";
 import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, revealMissed, waitsForPool } from "../lib/chain";
 import { noteSize, readNote } from "../lib/notes";
 import { formatSol, plural } from "../lib/format";
-import { useWallet } from "../lib/wallet";
+import { requestConnect, useWallet } from "../lib/wallet";
 
 function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; now: number }) {
   const asset = useAssetInfo(auction);
@@ -86,11 +86,20 @@ export function MyBids() {
     <main className="page">
       <h1 className="page__title">My bids</h1>
       {!publicKey ? (
-        <p className="muted">Connect a wallet to see your bids.</p>
+        <div className="empty">
+          <p>Connect the wallet you bid with to see your bids, what they won and what comes back to you.</p>
+          <Button variant="primary" onClick={requestConnect}>
+            Connect wallet
+          </Button>
+        </div>
       ) : loaded.error ? (
         <Notice tone="error">Could not load your bids: {loaded.error}</Notice>
       ) : loaded.loading && !loaded.data ? (
-        <p className="muted">Loading…</p>
+        <div className="skeletons" aria-label="Loading your bids" role="status">
+          {[0, 1, 2].map((n) => (
+            <span key={n} className="skeleton skeleton--row" />
+          ))}
+        </div>
       ) : groups.length === 0 ? (
         <div className="empty">
           <p>You have not bid on anything yet.</p>

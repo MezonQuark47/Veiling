@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { BidTower, type Box, Scene } from "../components/Tower";
 import { statusText } from "../components/AuctionTable";
 import { Button, Notice, useAction, useAssetInfo, useLoader, useNow } from "../components/ui";
@@ -7,6 +7,71 @@ import { type Auction, fetchAdminRoles, fetchAuctions, phaseOf } from "../lib/ch
 import { rank } from "./Auctions";
 import { sendTransaction } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
+
+/** A number that counts up from zero the first time it is scrolled into view. */
+function CountUp({ value, decimals = 0 }: { value: number; decimals?: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [shown, setShown] = useState(value);
+  const started = useRef(false);
+  useEffect(() => {
+    const el = ref.current;
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!el || still || started.current || !("IntersectionObserver" in window)) {
+      setShown(value);
+      return;
+    }
+    setShown(0);
+    let frame = 0;
+    const io = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      io.disconnect();
+      started.current = true;
+      const start = performance.now();
+      const step = (t: number) => {
+        const k = Math.min(1, (t - start) / 1400);
+        setShown(value * (1 - Math.pow(1 - k, 3)));
+        if (k < 1) frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    });
+    io.observe(el);
+    return () => {
+      io.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [value]);
+  return (
+    <span ref={ref}>
+      {shown.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+    </span>
+  );
+}
+
+/** Veiling in numbers, from the sales on chain. */
+function Stats({ auctions, now }: { auctions: Auction[]; now: number }) {
+  const listed = auctions.filter((a) => !a.hidden);
+  const live = listed.filter((a) => phaseOf(a, now) === "bidding").length;
+  const bids = listed.reduce((sum, a) => sum + a.bidCount, 0);
+  const deposited = Number(listed.reduce((sum, a) => sum + a.totalDeposited, 0n)) / 1e9;
+  const items: [number, number, string][] = [
+    [live, 0, "Live sales"],
+    [listed.length, 0, "Sales held"],
+    [bids, 0, "Sealed bids"],
+    [deposited, deposited < 100 ? 1 : 0, "SOL deposited"],
+  ];
+  return (
+    <section className="stats" aria-label="Veiling in numbers">
+      {items.map(([value, decimals, label], i) => (
+        <div key={label} className="stat" data-reveal style={{ "--i": i } as CSSProperties}>
+          <span className="stat__value">
+            <CountUp value={value} decimals={decimals} />
+          </span>
+          <span className="stat__label">{label}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
 
 /** Shown to the wallet the admin has offered the role to, until it accepts. */
 function AdminOffer({ accepted, onAccepted }: { accepted: boolean; onAccepted: () => void }) {
@@ -191,13 +256,15 @@ export function Home() {
         <BidTower />
       </section>
 
+      {auctions.data && auctions.data.length > 0 ? <Stats auctions={auctions.data} now={now} /> : null}
+
       <section className="section" id="how" aria-labelledby="how-title">
-        <h2 id="how-title" className="section__title section__title--wide">
+        <h2 id="how-title" className="section__title section__title--wide" data-reveal>
           From your bid to your tokens
         </h2>
         <ol className="steps3d">
           {STEPS.map((s, i) => (
-            <li key={s.title} className="card3d">
+            <li key={s.title} className="card3d" data-reveal style={{ "--i": i } as CSSProperties}>
               <Scene boxes={s.boxes} className="scene--scroll" />
               <h3>
                 <span className="card3d__n">{i + 1}</span>
@@ -216,7 +283,7 @@ export function Home() {
       </section>
 
       <section className="section" aria-labelledby="private-title">
-        <div className="section__intro">
+        <div className="section__intro" data-reveal>
           <h2 id="private-title" className="section__title section__title--wide">
             No one sees your bid. Not the seller, not other bidders, not us.
           </h2>
@@ -226,13 +293,13 @@ export function Home() {
           </p>
         </div>
         <div className="split">
-          <div className="split__card">
+          <div className="split__card" data-reveal style={{ "--i": 0 } as CSSProperties}>
             <h3 className="split__head">On chain, for anyone</h3>
             <p>Who bid, how many bids, and each deposit</p>
             <p>The clearing price and the demand at it</p>
             <p>What each winner won and paid</p>
           </div>
-          <div className="split__card split__card--sealed">
+          <div className="split__card split__card--sealed" data-reveal style={{ "--i": 1 } as CSSProperties}>
             <h3 className="split__head">Sealed, for everyone</h3>
             <p>The price of every bid, winning or not</p>
             <p>The budget of every losing token bid</p>
@@ -242,7 +309,7 @@ export function Home() {
       </section>
 
       <section className="section" aria-labelledby="sellers-title">
-        <div className="section__head section__head--end">
+        <div className="section__head section__head--end" data-reveal>
           <div className="section__intro">
             <h2 id="sellers-title" className="section__title">
               For sellers
@@ -257,7 +324,7 @@ export function Home() {
           </a>
         </div>
         <div className="bento">
-          <div className="card3d">
+          <div className="card3d" data-reveal style={{ "--i": 0 } as CSSProperties}>
             <Scene boxes={TOKENS} height={230} className="scene--dots" />
             <h3>New tokens</h3>
             <p>
@@ -265,7 +332,7 @@ export function Home() {
               out; if not, every deposit comes back in full.
             </p>
           </div>
-          <div className="card3d">
+          <div className="card3d" data-reveal style={{ "--i": 1 } as CSSProperties}>
             <Scene boxes={NFTS} height={230} className="scene--dots" />
             <h3>NFT collections</h3>
             <p>
@@ -273,7 +340,7 @@ export function Home() {
               and the art can stay hidden until the sale ends.
             </p>
           </div>
-          <div className="card3d">
+          <div className="card3d" data-reveal style={{ "--i": 2 } as CSSProperties}>
             <Scene boxes={POOL} height={230} className="scene--dots" />
             <h3>A pool at the price</h3>
             <p>

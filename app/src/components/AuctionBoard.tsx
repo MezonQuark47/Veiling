@@ -133,6 +133,18 @@ function SupplyBar({ auction, asset }: { auction: Auction; asset: AssetInfo }) {
   );
 }
 
+/** Time left: "2h 14m", or a ticking "34:07" in the last hour. */
+function Countdown({ secs }: { secs: number }) {
+  const left = Math.max(0, Math.floor(secs));
+  if (left >= 3_600) return <p className="board__value">{formatDuration(left)}</p>;
+  const clock = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  return (
+    <p className={`board__value board__value--clock${left < 300 ? " board__value--live" : ""}`} aria-label={formatDuration(left)}>
+      {clock}
+    </p>
+  );
+}
+
 /** The auction's headline: time left while bidding, then the price everyone pays. */
 export function AuctionBoard({
   auction,
@@ -154,7 +166,7 @@ export function AuctionBoard({
         {phase === "upcoming" ? (
           <>
             <p className="board__label">Bidding opens in</p>
-            <p className="board__value">{formatDuration(auction.startTime - now)}</p>
+            <Countdown secs={auction.startTime - now} />
             <p className="board__sub">
               {formatDateTime(auction.startTime)}, then runs until {formatDateTime(auction.endTime)}.
             </p>
@@ -162,7 +174,7 @@ export function AuctionBoard({
         ) : phase === "bidding" ? (
           <>
             <p className="board__label">Bidding closes in</p>
-            <p className="board__value">{formatDuration(auction.endTime - now)}</p>
+            <Countdown secs={auction.endTime - now} />
             <p className="board__sub">
               {formatDateTime(auction.endTime)}. Every price stays sealed until then, and after.
               {auction.extendedSecs > 0

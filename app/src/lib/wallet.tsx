@@ -175,6 +175,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }
 
+/** Opens the wallet menu in the top bar, from anywhere a wallet is needed. */
+export const CONNECT_EVENT = "veiling:connect";
+export function requestConnect() {
+  window.dispatchEvent(new Event(CONNECT_EVENT));
+}
+
 export function useWallet(): WalletState {
   const value = useContext(WalletContext);
   if (!value) throw new Error("useWallet must be used inside WalletProvider");

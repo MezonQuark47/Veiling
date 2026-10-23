@@ -98,7 +98,7 @@ import { NoteUnlock } from "../components/BidNotes";
 import { formatCount, formatDateTime, formatDuration, formatSol, parseSol, plural } from "../lib/format";
 import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/price";
 import { errorMessage, sendTransaction, sendTransactions, waitUntil, type WalletSigner } from "../lib/tx";
-import { useWallet } from "../lib/wallet";
+import { requestConnect, useWallet } from "../lib/wallet";
 
 // ---------------------------------------------------------------------------
 
@@ -123,6 +123,37 @@ async function collectBid(signer: WalletSigner, auction: Auction, bid: Bid): Pro
       throw e;
     }
   }
+}
+
+/** Budgets offered one click away: round amounts from the smallest bid up. */
+function quickBudgets(min: bigint): bigint[] {
+  const SOL = 1_000_000_000n;
+  const round = [SOL / 10n, SOL / 2n, SOL, 5n * SOL, 10n * SOL, 50n * SOL].filter((v) => v >= min);
+  return (round.length >= 3 ? round : [min, 2n * min, 5n * min, 10n * min]).slice(0, 4);
+}
+
+/** A row of one-click values for a field. */
+function QuickPicks({
+  label,
+  options,
+  value,
+  onPick,
+}: {
+  label: string;
+  options: [string, string][];
+  value: string;
+  onPick: (value: string) => void;
+}) {
+  if (options.length < 2) return null;
+  return (
+    <div className="chips" role="group" aria-label={label}>
+      {options.map(([v, text]) => (
+        <button key={v} type="button" className={`chip${value === v ? " chip--on" : ""}`} aria-pressed={value === v} onClick={() => onPick(v)}>
+          {text}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** A full auction only takes a bid that out-deposits the smallest one. */
@@ -285,6 +316,12 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
           aria-invalid={budgetInput !== "" && !budgetValid}
           aria-describedby="budget-hint"
         />
+        <QuickPicks
+          label="Quick budgets"
+          options={quickBudgets(auction.minDeposit).map((v) => [formatSol(v, 9).replace(/,/g, ""), `${formatSol(v)} SOL`])}
+          value={budgetInput}
+          onPick={setBudgetInput}
+        />
         <p id="budget-hint" className={`hint${budgetInput !== "" && !budgetValid ? " hint--error" : ""}`}>
           The most SOL you want to spend, at least {formatSol(auction.minDeposit)} SOL. Sealed: only a winning
           budget is ever shown.
@@ -366,16 +403,16 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
         budget buys. You can raise a bid until bidding closes, but not lower or cancel it.
       </p>
       <SaleRulesHint auction={auction} admission={admission.data} loading={admission.loading} error={admission.error} room={room} deposit={deposit} />
-      <Button
-        variant="primary"
-        onClick={place}
-        busy={action.busy === "place"}
-        disabled={!signer || !valid || !admitted || !withinCap}
-      >
-        {signer ? "Seal and place bid" : "Connect a wallet to bid"}
-      </Button>
+      {signer ? (
+        <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!valid || !admitted || !withinCap}>
+          Seal and place bid
+        </Button>
+      ) : (
+        <Button variant="primary" onClick={requestConnect}>
+          Connect a wallet to bid
+        </Button>
+      )}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
   );
 }
@@ -589,7 +626,6 @@ function RaiseBid({
         Raise the bid
       </Button>
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </div>
   );
 }
@@ -658,6 +694,14 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
           onChange={(e) => setQuantityInput(e.target.value.replace(/[^0-9]/g, ""))}
           aria-invalid={!quantityValid}
           aria-describedby="quantity-hint"
+        />
+        <QuickPicks
+          label="Quick sizes"
+          options={[1, 2, 5, 10, auction.maxPerBid]
+            .filter((n, i, all) => n <= auction.maxPerBid && all.indexOf(n) === i)
+            .map((n) => [String(n), n === auction.maxPerBid && n > 1 ? `Most (${formatCount(n)})` : String(n)])}
+          value={quantityInput}
+          onPick={setQuantityInput}
         />
         <p id="quantity-hint" className={`hint${quantityValid ? "" : " hint--error"}`}>
           {auction.maxPerBid === 1 ? "One NFT per bid." : `Between 1 and ${formatCount(auction.maxPerBid)} NFTs.`}{" "}
@@ -735,16 +779,32 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         Every winner pays the same price per NFT, never more than their own. You can raise a bid until bidding
         closes, but not lower or cancel it.
       </p>
-      <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!signer || !valid}>
-        {signer ? "Seal and place bid" : "Connect a wallet to bid"}
-      </Button>
+      {signer ? (
+        <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!valid}>
+          Seal and place bid
+        </Button>
+      ) : (
+        <Button variant="primary" onClick={requestConnect}>
+          Connect a wallet to bid
+        </Button>
+      )}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
   );
 }
 
 // ---------------------------------------------------------------------------
+
+/** While bidding is open the settlement steps are folded away, one click from view. */
+function Fold({ folded, children }: { folded: boolean; children: ReactNode }) {
+  if (!folded) return <>{children}</>;
+  return (
+    <details className="fold">
+      <summary>See the steps</summary>
+      {children}
+    </details>
+  );
+}
 
 function Step({ state, title, children }: { state: "done" | "active" | "waiting"; title: string; children?: ReactNode }) {
   return (
@@ -1097,6 +1157,7 @@ function Progress({
           {phase === "upcoming" || phase === "bidding" ? "No bids yet." : "Bidding closed without bids."}
         </p>
       ) : (
+        <Fold folded={phase === "bidding" || phase === "upcoming"}>
         <ol className="progress">
           <Step state={checkState} title="Check the sealed bids">
             <p className="muted">
@@ -1270,6 +1331,7 @@ function Progress({
             ) : null}
           </Step>
         </ol>
+        </Fold>
       )}
 
       {isSeller && !auction.launch && auction.status === "open" && auction.bidCount === 0 && (phase === "upcoming" || phase === "bidding" || phase === "no-bids") ? (
@@ -1397,7 +1459,6 @@ function Progress({
       ) : null}
 
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
   );
 }
@@ -1544,7 +1605,6 @@ function YourBids({
       </ul>
       <NoteUnlock bids={mine} onOpened={() => setNotesOpened((n) => n + 1)} />
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
-      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
     </section>
   );
 }
@@ -1724,7 +1784,17 @@ export function AuctionPage({ address }: { address: string }) {
   const entries = itemList.data?.entries ?? null;
 
   if (!key) return <main className="page"><Notice tone="error">That is not a valid auction address.</Notice></main>;
-  if (loaded.loading && !loaded.data) return <main className="page"><p className="muted">Loading auction…</p></main>;
+  if (loaded.loading && !loaded.data) {
+    return (
+      <main className="page" aria-label="Loading auction" role="status">
+        <span className="skeleton skeleton--title" />
+        <div className="auction-grid">
+          <span className="skeleton skeleton--card" />
+          <span className="skeleton skeleton--card" />
+        </div>
+      </main>
+    );
+  }
   if (!auction) {
     return (
       <main className="page">
@@ -1785,7 +1855,7 @@ export function AuctionPage({ address }: { address: string }) {
           {auction.launch && failed ? null : (
             <p className="auction-head__mint">
               {collection ? "Collection address" : auction.launch ? "Token address, once made" : "Token address"}{" "}
-              <AddressLink address={auction.mint} label={auction.mint.toBase58()} />
+              <AddressLink address={auction.mint} label={auction.mint.toBase58()} copy />
             </p>
           )}
           <p className="auction-head__status">{statusText(auction, now, asset)}</p>
@@ -1939,14 +2009,14 @@ export function AuctionPage({ address }: { address: string }) {
               <div>
                 <dt>Token</dt>
                 <dd>
-                  <AddressLink address={auction.mint} />
+                  <AddressLink address={auction.mint} copy />
                 </dd>
               </div>
             )}
             <div>
               <dt>{auction.launch ? "Creator" : "Seller"}</dt>
               <dd>
-                <AddressLink address={auction.seller} />
+                <AddressLink address={auction.seller} copy />
               </dd>
             </div>
             <div>
@@ -1961,6 +2031,34 @@ export function AuctionPage({ address }: { address: string }) {
             </div>
         </dl>
         <div className="auction-grid__side">
+          {/* On a phone the full facts sit at the end; these few come first. */}
+          <dl className="keyfacts">
+            <div>
+              <dt>For sale</dt>
+              <dd>{supplyDescription(auction, asset)}</dd>
+            </div>
+            <div>
+              <dt>Minimum price</dt>
+              <dd>
+                {minPrice} <span className="muted">per {asset.unit}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>{collection ? "Most per bid" : "Smallest bid"}</dt>
+              <dd>{collection ? plural(auction.maxPerBid, "NFT") : `${formatSol(auction.minDeposit)} SOL`}</dd>
+            </div>
+            {auction.minRaise > 0n ? (
+              <div>
+                <dt>{auction.launch ? "Target" : "Minimum raise"}</dt>
+                <dd>{formatSol(auction.minRaise)} SOL</dd>
+              </div>
+            ) : (
+              <div>
+                <dt>Bids</dt>
+                <dd>{formatCount(auction.bidCount)}</dd>
+              </div>
+            )}
+          </dl>
           {phase === "upcoming" ? (
             <section className="panel" aria-labelledby="opens-title">
               <h2 id="opens-title" className="panel__title">

@@ -232,9 +232,42 @@ export function Notice({ tone = "info", children }: { tone?: "info" | "error" | 
   );
 }
 
-export function AddressLink({ address, label }: { address: PublicKey; label?: string }) {
-  const value = address.toBase58();
+/** Copies a value, and says so for a moment. */
+export function CopyButton({ value, label = "Copy address" }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
   return (
+    <button
+      type="button"
+      className={`copy${copied ? " copy--done" : ""}`}
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        } catch {
+          // Clipboard access can be refused; the address is still selectable.
+        }
+      }}
+    >
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        {copied ? (
+          <path d="M4.5 10.5 8.5 14.5 15.5 6" />
+        ) : (
+          <>
+            <rect x="7" y="7" width="9" height="9" rx="2" />
+            <path d="M13 4.5H6a1.5 1.5 0 0 0-1.5 1.5v7" />
+          </>
+        )}
+      </svg>
+    </button>
+  );
+}
+
+export function AddressLink({ address, label, copy = false }: { address: PublicKey; label?: string; copy?: boolean }) {
+  const value = address.toBase58();
+  const link = (
     <a
       className="address"
       href={`https://explorer.solana.com/address/${value}${EXPLORER_CLUSTER}`}
@@ -244,6 +277,13 @@ export function AddressLink({ address, label }: { address: PublicKey; label?: st
     >
       {label ?? shortAddress(value)}
     </a>
+  );
+  if (!copy) return link;
+  return (
+    <span className="address-copy">
+      {link}
+      <CopyButton value={value} />
+    </span>
   );
 }
 
@@ -261,24 +301,86 @@ export function TxLink({ signature }: { signature: string }) {
 }
 
 /** Runs an async action with busy state, error capture and a success note. */
-export function useAction() {
+// ---------------------------------------------------------------------------
+// Toasts: what an action did, in the corner of the screen.
+
+interface Toast {
+  id: number;
+  body: ReactNode;
+}
+
+let toasts: Toast[] = [];
+let nextToast = 1;
+const toastListeners = new Set<(list: Toast[]) => void>();
+const setToasts = (list: Toast[]) => {
+  toasts = list;
+  toastListeners.forEach((listener) => listener(toasts));
+};
+
+/** Shows a message in the corner for a few seconds. */
+export function pushToast(body: ReactNode) {
+  const id = nextToast++;
+  setToasts([...toasts.slice(-2), { id, body }]);
+  window.setTimeout(() => dismissToast(id), 8_000);
+}
+
+function dismissToast(id: number) {
+  setToasts(toasts.filter((t) => t.id !== id));
+}
+
+/** The corner where toasts appear; rendered once, by the app. */
+export function Toaster() {
+  const [list, setList] = useState<Toast[]>(toasts);
+  useEffect(() => {
+    toastListeners.add(setList);
+    return () => {
+      toastListeners.delete(setList);
+    };
+  }, []);
+  return (
+    <div className="toaster" role="status" aria-live="polite">
+      {list.map((t) => (
+        <div key={t.id} className="toast">
+          <span className="toast__icon" aria-hidden="true" />
+          <div className="toast__body">{t.body}</div>
+          <button className="toast__close" onClick={() => dismissToast(t.id)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Runs one action at a time and keeps its error. What a successful action
+ * returns shows as a toast, or, with `toast: false`, stays in `done` for the
+ * caller to show in place.
+ */
+export function useAction({ toast = true }: { toast?: boolean } = {}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<ReactNode | null>(null);
 
-  const run = useCallback(async (key: string, action: () => Promise<ReactNode | void>) => {
-    setBusy(key);
-    setError(null);
-    setDone(null);
-    try {
-      const result = await action();
-      if (result) setDone(result);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(null);
-    }
-  }, []);
+  const run = useCallback(
+    async (key: string, action: () => Promise<ReactNode | void>) => {
+      setBusy(key);
+      setError(null);
+      setDone(null);
+      try {
+        const result = await action();
+        if (result) {
+          if (toast) pushToast(result);
+          else setDone(result);
+        }
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [toast]
+  );
 
   return { busy, error, done, run, clear: () => (setError(null), setDone(null)) };
 }

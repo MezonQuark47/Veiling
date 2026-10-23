@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Header, Logo } from "./components/Header";
 import { AuctionPage } from "./pages/AuctionPage";
 import { Docs } from "./pages/Docs";
@@ -7,6 +7,7 @@ import { Home } from "./pages/Home";
 import { Launch } from "./pages/Launch";
 import { MyBids } from "./pages/MyBids";
 import { FEATURE_CONTACT } from "./config";
+import { Toaster } from "./components/ui";
 
 function currentRoute(): string {
   // The app's pages live in the hash (#/launch); "#/" is the front page.
@@ -73,6 +74,42 @@ export function App({ route: fixed }: { route?: string }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  // Parts of a page marked data-reveal rise into view as they are scrolled to.
+  // The static pages (prerender.tsx) show everything: only the app hides them first.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add("js-reveal");
+    const seen = new WeakSet<Element>();
+    const pending = () => [...document.querySelectorAll<HTMLElement>("[data-reveal]:not(.is-in)")].filter((el) => !seen.has(el));
+    if (!("IntersectionObserver" in window)) {
+      pending().forEach((el) => el.classList.add("is-in"));
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          entry.target.classList.add("is-in");
+          io.unobserve(entry.target);
+        }
+      },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.12 }
+    );
+    const watch = () =>
+      pending().forEach((el) => {
+        seen.add(el);
+        io.observe(el);
+      });
+    watch();
+    // Parts that appear later, once their data loads, are watched too.
+    const mo = new MutationObserver(watch);
+    mo.observe(document.getElementById("root") ?? document.body, { childList: true, subtree: true });
+    return () => {
+      io.disconnect();
+      mo.disconnect();
+    };
+  }, [route]);
+
   // Each page's own title, as the static pages have (scripts/prerender.mjs).
   useEffect(() => {
     document.title = route.startsWith("docs")
@@ -99,7 +136,9 @@ export function App({ route: fixed }: { route?: string }) {
   return (
     <>
       <Header route={route} />
-      {page}
+      {/* A new route mounts a new page, which fades in. */}
+      <Fragment key={route}>{page}</Fragment>
+      <Toaster />
       <Footer />
     </>
   );

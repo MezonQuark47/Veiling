@@ -18,7 +18,7 @@ import type { PreparedImage } from "../lib/images";
 import { formatDecimal, tokenPrice } from "../lib/price";
 import { sendTransaction } from "../lib/tx";
 import { uploadTokenMetadata } from "../lib/uploads";
-import { useWallet } from "../lib/wallet";
+import { requestConnect, useWallet } from "../lib/wallet";
 import { ImagePicker, isSmallImage, useImageUrl } from "./ImagePicker";
 import { MAX_DESCRIPTION_LEN } from "./LaunchParts";
 import { Button, Notice, useAction, useLoader } from "./ui";
@@ -245,9 +245,15 @@ export function TokenLaunchForm() {
 
         {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
         <div className="launch__submit">
-          <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={!signer || problems.length > 0}>
-            {!signer ? "Connect a wallet to launch" : step === "upload" ? "Uploading the token's details…" : "Launch the token sale"}
-          </Button>
+          {signer ? (
+            <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={problems.length > 0}>
+              {step === "upload" ? "Uploading the token's details…" : "Launch the token sale"}
+            </Button>
+          ) : (
+            <Button variant="primary" type="button" onClick={requestConnect}>
+              Connect a wallet to launch
+            </Button>
+          )}
           <p className="hint">The token's image and details upload first, with no wallet prompt. Then your wallet approves one transaction.</p>
         </div>
         {action.error ? <Notice tone="error">{action.error}</Notice> : null}

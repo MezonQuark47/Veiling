@@ -58,6 +58,50 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+/* The footer stays at the bottom of short pages. */
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+#root > main {
+  flex: 1 0 auto;
+  width: 100%;
+}
+
+/* Loading placeholders: the shape of what is coming, with light passing over it. */
+.skeleton {
+  display: block;
+  border-radius: 12px;
+  background: linear-gradient(100deg, var(--surface) 40%, var(--raised) 50%, var(--surface) 60%) 0 0 / 300% 100%;
+}
+
+.skeleton--title {
+  width: 40%;
+  height: 52px;
+}
+
+.skeleton--line {
+  height: 18px;
+}
+
+.skeleton--card {
+  height: 220px;
+  border-radius: var(--radius-lg);
+}
+
+.skeleton--row {
+  height: 72px;
+}
+
+.skeletons {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
 body {
   margin: 0;
   background: var(--paper);
@@ -1198,6 +1242,65 @@ p {
   gap: 24px;
 }
 
+/* The key terms, shown above the bid form on small screens only. */
+.keyfacts {
+  display: none;
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.keyfacts > div {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.keyfacts dt {
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.keyfacts dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Settlement steps folded away while bidding is open. */
+.fold > summary {
+  cursor: pointer;
+  width: max-content;
+  color: var(--cobalt-soft);
+  font-weight: 500;
+  list-style: none;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 10px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-3px) rotate(45deg);
+  transition: transform 200ms var(--ease-out);
+}
+
+.fold[open] > summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.fold[open] > summary {
+  margin-bottom: 16px;
+}
+
 .facts {
   width: 100%;
   margin: 0;
@@ -1871,6 +1974,9 @@ p {
       "side"
       "facts";
   }
+  .keyfacts {
+    display: grid;
+  }
   .launch__preview {
     position: static;
     order: -1;
@@ -1938,22 +2044,29 @@ p {
   }
   .auctions tr {
     display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 4px 12px;
-    padding: 12px 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 16px;
+    padding: 16px 0;
     border-bottom: 1px solid var(--line);
   }
   .auctions td {
     border: 0;
     padding: 0 4px;
+    min-width: 0;
   }
   .auctions td.num {
     text-align: left;
+    white-space: normal;
     color: var(--muted);
     font-size: var(--step--1);
   }
-  .auctions td:first-child {
+  .auctions td:first-child,
+  .auctions td.status {
     grid-column: 1 / -1;
+  }
+  .auctions td.status {
+    margin-top: 4px;
+    font-weight: 600;
   }
   .row__unit {
     position: static;
@@ -3368,6 +3481,27 @@ p {
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  main.page {
+    animation: page-in 380ms var(--ease-out) both;
+  }
+  .js-reveal [data-reveal] {
+    opacity: 0;
+    transform: translateY(28px);
+    transition:
+      opacity 700ms ease,
+      transform 800ms var(--ease-out);
+    transition-delay: calc(var(--i, 0) * 90ms);
+  }
+  .js-reveal [data-reveal].is-in {
+    opacity: 1;
+    transform: none;
+  }
+  .skeleton {
+    animation: shimmer 1600ms ease-in-out infinite;
+  }
+  .board__value--live {
+    animation: tick-glow 1000ms ease-in-out infinite;
+  }
   .stage__line > span {
     animation: line-up 900ms var(--ease-out) both;
   }
@@ -3423,6 +3557,28 @@ p {
   .cube__move.is-away,
   .cube__move.is-out {
     transform: none;
+  }
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+@keyframes tick-glow {
+  50% {
+    color: var(--cobalt-soft);
   }
 }
 
@@ -3573,4 +3729,207 @@ p {
   padding-left: 20px;
   display: grid;
   gap: 8px;
+}
+
+/* An empty state right under a page title. */
+.page__title + .empty {
+  margin-top: 24px;
+}
+
+/* The last hour counts down by the second, in even-width digits. */
+.board__value--clock {
+  font-variant-numeric: tabular-nums;
+}
+
+/* One-click values under a field. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chip {
+  font: inherit;
+  font-size: var(--step--1);
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 160ms var(--ease-out);
+}
+
+.chip:hover {
+  border-color: var(--line-strong);
+}
+
+.chip:active {
+  transform: scale(0.96);
+}
+
+.chip--on {
+  background: var(--cobalt-tint);
+  border-color: var(--cobalt);
+  color: var(--cobalt-soft);
+}
+
+/* An address with a copy button. */
+.address-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.address-copy .address {
+  overflow-wrap: anywhere;
+}
+
+.copy {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.copy:hover {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.copy svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.copy--done {
+  color: #6ee7a8;
+}
+
+/* Toasts: what an action did, in the corner. */
+.toaster {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 50;
+  display: grid;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 14px 14px 16px;
+  border-radius: 16px;
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--line-strong), 0 18px 40px -16px rgba(0, 0, 0, 0.8);
+  font-size: var(--step--1);
+  line-height: 1.5;
+}
+
+.toast__icon {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #6ee7a8;
+  box-shadow: 0 0 0 4px rgba(110, 231, 168, 0.15);
+}
+
+.toast__close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast__close:hover {
+  color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .toaster {
+    right: 16px;
+    left: 16px;
+    bottom: 16px;
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    animation: toast-in 380ms var(--ease-out) both;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+/* Veiling in numbers, under the stage. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.stat {
+  display: grid;
+  gap: 4px;
+  padding: 22px 24px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.stat__value {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat:first-child .stat__value {
+  color: var(--cobalt-soft);
+}
+
+.stat__label {
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
