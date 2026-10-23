@@ -123,6 +123,8 @@ for (const page of PAGES) {
     .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${escape(page.description)}" />`)
     .replace(/<meta property="og:title" content="[^"]*" \/>/, `<meta property="og:title" content="${escape(page.title)}" />`)
     .replace(/<meta property="og:description" content="[^"]*" \/>/, `<meta property="og:description" content="${escape(page.description)}" />`)
+    // Link previews need the image's full address (public/og.png).
+    .replaceAll('content="/og.png"', `content="${escape(url("/og.png"))}"`)
     .replace("</head>", `${[...head, ...structuredData(page).map(jsonLd)].join("\n    ")}\n  </head>`)
     .replace('<div id="root"></div>', `<div id="root">${body}</div>`);
   await mkdir(dirname(join(dist, page.file)), { recursive: true });

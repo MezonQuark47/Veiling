@@ -565,7 +565,8 @@ renders the front page and the docs into static HTML (`dist/index.html`,
 descriptions and schema.org data (Organization, WebSite, WebApplication, and
 the docs' questions as FAQPage), and writes `robots.txt` (search, answer and
 training crawlers all allowed), `llms.txt`, `llms-full.txt` (the docs as
-Markdown) and, with `SITE_URL` set, `sitemap.xml` and canonical links. The
+Markdown) and, with `SITE_URL` set, `sitemap.xml` and canonical links. Link
+previews on X, Telegram and Discord show `public/og.png` (1200×630). The
 host must serve `dist/docs/index.html` at `/docs/`, as static hosts do. In
 the browser the app replaces the static HTML when it starts; the app reads
 its page from the hash (`#/launch`), or from the path when there is none, so
