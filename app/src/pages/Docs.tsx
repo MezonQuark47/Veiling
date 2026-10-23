@@ -3,6 +3,7 @@ import {
   EMERGENCY_DELAY_SECS,
   EVICTION_PREMIUM_PERCENT,
   FEATURE_CONTACT,
+  GITHUB_URL,
   FREE_UPLOAD_TOTAL_BYTES,
   MAX_COLLECTION_BIDS,
   MAX_COLLECTION_SIZE,
@@ -51,6 +52,7 @@ export const DOC_SECTIONS: [string, string][] = [
   ["privacy", "What stays private"],
   ["safety", "If settlement stalls"],
   ["faq", "Questions"],
+  ["source", "Source code"],
   ["featured", "Getting featured"],
 ];
 
@@ -637,6 +639,18 @@ export function Docs({ section }: { section: string }) {
                 </div>
               ))}
             </dl>
+          </Section>
+
+          <Section id="source" title="Source code">
+            <p>
+              Veiling is open source: the Solana program, the Arcium circuits that work with the sealed bids, and
+              this app are all on{" "}
+              <a href={GITHUB_URL} target="_blank" rel="noreferrer noopener">
+                GitHub
+              </a>
+              . Anyone can read how bids are sealed, how the price is found and where every lamport goes, and check
+              them against the program on chain.
+            </p>
           </Section>
 
           <Section id="featured" title="Getting featured">

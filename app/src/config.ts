@@ -158,7 +158,11 @@ export const STORAGE_PRICE_MARGIN_PERCENT = 1n;
 export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, fold: 1_000_000, settle: 400_000, settleBatch: 400_000, draw: 400_000 } as const;
 
 /** Where sellers ask to have an auction featured. */
-export const FEATURE_CONTACT = { label: "@velaryon69", href: "https://x.com/velaryon69" };
+export const FEATURE_CONTACT = { label: "@mezonquark47", href: "https://x.com/mezonquark47" };
+/** The project's source code: the program, the circuits and this app. */
+export const GITHUB_URL = "https://github.com/MezonQuark47/Veiling";
+/** Veiling's own X account. The X icon in the footer shows once this is set. */
+export const PROJECT_X_URL: string | null = null;
 
 // Auto-liquidity: a token sale can open a Meteora DAMM v2 pool at its
 // clearing price. Must match the program's `liquidity` module.

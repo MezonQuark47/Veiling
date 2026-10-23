@@ -10,6 +10,9 @@ import { fetchCrankRewards, fetchFeeConfig } from "./lib/chain";
 import { WalletProvider } from "./lib/wallet";
 import { FAQ } from "./pages/Docs";
 
+/** Veiling's profiles elsewhere, for the Organization data and llms.txt. */
+export { GITHUB_URL, PROJECT_X_URL } from "./config";
+
 /** Loads the platform's fees once, so the static pages show them. */
 export async function loadLiveData(): Promise<{ fees: boolean; crank: boolean }> {
   const fees = await fetchFeeConfig().catch(() => null);

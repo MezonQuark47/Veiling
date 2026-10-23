@@ -479,6 +479,36 @@ p {
   color: var(--band-muted);
 }
 
+.band__social {
+  display: flex;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.band__social a {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: background-color 150ms ease, box-shadow 150ms ease, transform 160ms var(--ease-out);
+}
+
+.band__social a:hover {
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  transform: translateY(-2px);
+}
+
+.band__social svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
 .band__heading {
   font-family: var(--font-display);
   font-size: var(--step-1);

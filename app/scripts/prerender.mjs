@@ -93,7 +93,14 @@ function structuredData(page) {
   }
   const site = SITE ? { url: url("/") } : {};
   return [
-    { "@context": "https://schema.org", "@type": "Organization", name: NAME, ...site, ...(SITE ? { logo: url("/favicon.svg") } : {}) },
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      name: NAME,
+      ...site,
+      ...(SITE ? { logo: url("/favicon.svg") } : {}),
+      sameAs: [ssr.GITHUB_URL, ssr.PROJECT_X_URL].filter(Boolean),
+    },
     { "@context": "https://schema.org", "@type": "WebSite", name: NAME, description: page.description, ...site },
     {
       "@context": "https://schema.org",
@@ -203,6 +210,7 @@ Key facts:
 
 - [How Veiling works](${url("/docs/")}): bidding, the clearing price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
 - [Full docs as text](${url("/llms-full.txt")}): the same docs in one Markdown file
+- [Source code](${ssr.GITHUB_URL}): the Solana program, the Arcium circuits and the app
 
 ## App
 
