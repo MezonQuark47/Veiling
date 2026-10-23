@@ -2902,6 +2902,18 @@ p {
   display: block;
 }
 
+.stage__line--accent > span {
+  color: var(--cobalt-soft);
+}
+
+.stage__tagline {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
 .stage__lede {
   max-width: 30em;
   font-size: var(--step-1);
@@ -3279,6 +3291,9 @@ p {
   }
   .stage__line + .stage__line > span {
     animation-delay: 80ms;
+  }
+  .stage__tagline {
+    animation: fade 700ms ease 220ms both;
   }
   .stage__lede,
   .stage__actions {

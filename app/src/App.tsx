@@ -25,8 +25,8 @@ function Footer() {
             Veiling
           </a>
           <p>
-            Sealed-bid auctions for new tokens and NFT collections on Solana. Bids are never opened: only one
-            clearing price is made public, and every winner pays it.
+            Future of launchpads. Private bids, public price: sealed-bid auctions for new tokens and NFT
+            collections on Solana, where every winner pays one clearing price.
           </p>
         </div>
         <nav className="band__links" aria-label="Auctions">
@@ -82,7 +82,7 @@ export function App({ route: fixed }: { route?: string }) {
           ? "My bids · Veiling"
           : route.startsWith("auction/")
             ? "Auction · Veiling"
-            : "Veiling · Sealed-bid launches for new tokens and NFTs on Solana";
+            : "Veiling, future of launchpads · Private bids. Public price.";
   }, [route]);
 
   let page;

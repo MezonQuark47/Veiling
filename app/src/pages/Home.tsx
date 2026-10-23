@@ -239,12 +239,13 @@ export function Home() {
         <div className="stage__copy">
           <h1 className="stage__title">
             <span className="stage__line">
-              <span>Bid in private.</span>
+              <span>Veiling,</span>
             </span>
-            <span className="stage__line">
-              <span>Pay one fair price.</span>
+            <span className="stage__line stage__line--accent">
+              <span>future of launchpads.</span>
             </span>
           </h1>
+          <p className="stage__tagline">Private bids. Public price.</p>
           <p className="stage__lede">
             Veiling sells new tokens and NFT collections on Solana by sealed bid. Your price stays encrypted from
             the moment you bid. When bidding closes, one clearing price is found, every winner pays it, and

@@ -26,7 +26,7 @@ const PAGES = [
     route: "",
     file: "index.html",
     path: "/",
-    title: "Veiling · Sealed-bid launches for new tokens and NFTs on Solana",
+    title: "Veiling, future of launchpads · Private bids. Public price.",
     description:
       "Veiling sells new tokens and NFT collections on Solana by sealed-bid auction. Bids stay private, every winner pays one clearing price, and a new token is made only if its sale sells out.",
   },
