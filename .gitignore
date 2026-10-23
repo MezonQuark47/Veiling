@@ -7,6 +7,7 @@ target/
 build/
 artifacts/
 dist/
+dist-ssr/
 *.tsbuildinfo
 .anchor/
 test-ledger/

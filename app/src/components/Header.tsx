@@ -55,7 +55,8 @@ export function Header({ route }: { route: string }) {
           {link("#/", "Auctions", (r) => r === "" || r.startsWith("auction"))}
           {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
           {link("#/bids", "My bids", (r) => r.startsWith("bids"))}
-          {link("#/docs", "Docs", (r) => r.startsWith("docs"))}
+          {/* A real path, so crawlers find the docs from every page. */}
+          {link("/docs/", "Docs", (r) => r.startsWith("docs"))}
         </nav>
         <div className="topbar__end">
           {NETWORK_LABEL ? (

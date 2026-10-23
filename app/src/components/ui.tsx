@@ -30,10 +30,22 @@ interface Loaded<T> {
 }
 
 /** Loads data, reloads on demand and, optionally, on an interval. */
+/**
+ * Data rendered into the static pages at build time (`prerender.tsx`), by
+ * loader. Empty in the browser, where every loader fetches as usual.
+ */
+const seeds = new Map<unknown, unknown>();
+
+/** Gives a loader its data up front, so the static pages show real values. */
+export function seedLoader<T>(load: () => Promise<T>, data: T) {
+  seeds.set(load, data);
+}
+
 export function useLoader<T>(load: () => Promise<T>, deps: unknown[], pollMs?: number): Loaded<T> {
-  const [data, setData] = useState<T | undefined>(undefined);
+  const seeded = seeds.get(load) as T | undefined;
+  const [data, setData] = useState<T | undefined>(seeded);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(seeded === undefined);
   const [tick, setTick] = useState(0);
   const loadRef = useRef(load);
   loadRef.current = load;

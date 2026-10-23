@@ -31,7 +31,7 @@ import {
   LAUNCH_SUPPLY,
 } from "../config";
 import { useLoader } from "../components/ui";
-import { bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee, supplyShare } from "../lib/chain";
+import { type FeeConfig, bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee, supplyShare } from "../lib/chain";
 import { formatCount, formatSol, formatTokens } from "../lib/format";
 import { formatKb, formatMb } from "../lib/images";
 
@@ -50,8 +50,58 @@ export const DOC_SECTIONS: [string, string][] = [
   ["fees", "Fees"],
   ["privacy", "What stays private"],
   ["safety", "If settlement stalls"],
+  ["faq", "Questions"],
   ["featured", "Getting featured"],
 ];
+
+/**
+ * Short answers to what people ask most, shown at the end of the docs and
+ * given to search engines as FAQ structured data (`prerender.tsx`).
+ */
+export function FAQ(fees: FeeConfig | null | undefined): { question: string; answer: string }[] {
+  const listing = fees ? (fees.listingFee > 0n ? `a ${formatSol(fees.listingFee)} SOL listing fee` : "no listing fee") : "a small listing fee";
+  const sale = fees ? `${formatPercent(fees.saleFeeBps)} of what the sale raises` : "a small share of what the sale raises";
+  const share = supplyShare(LAUNCH_SALE_SUPPLY);
+  return [
+    {
+      question: "What is Veiling?",
+      answer:
+        "Veiling is a launchpad on Solana that sells new tokens and NFT collections by sealed-bid auction. Buyers bid in private, and when bidding closes one clearing price is found that every winner pays.",
+    },
+    {
+      question: "How does a sealed bid stay private?",
+      answer:
+        "Your price is encrypted in your browser before it leaves it. Arcium's network checks and settles the bids without anyone, Veiling included, seeing them. Only the clearing price is made public.",
+    },
+    {
+      question: "Does every winner pay the same price?",
+      answer:
+        "Yes. Every winner pays the clearing price, which is never above their own bid. Bids below it win nothing and get their whole deposit back.",
+    },
+    {
+      question: "How does a new token launch work?",
+      answer: `${share} of the supply is sold by sealed bid over ${LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours. If it sells out, the token is made and everything raised, less the platform fee, opens a Meteora pool at the clearing price, locked for good. If not, no token is ever made and every deposit comes back in full.`,
+    },
+    {
+      question: "Can a token's creator sell into the market or mint more?",
+      answer:
+        "No. The creator gets no tokens and none of the SOL raised, the pool's liquidity is locked forever, and the token's mint is closed for good right after it is made.",
+    },
+    {
+      question: "What does it cost?",
+      answer: `Sellers pay ${listing} and ${sale}. Each bid pays a small settlement fee for the private steps that settle the sale. Deposits that are not spent come back in full.`,
+    },
+    {
+      question: "What happens if settlement stalls?",
+      answer:
+        "Nothing stays locked. If Arcium's network stops answering, anyone can return every unsettled bid's whole deposit to its owner one day after bidding ends for a new token, or three days for an NFT collection.",
+    },
+    {
+      question: "Which wallets work with Veiling?",
+      answer: "Phantom, Solflare, Backpack and other Solana wallets that support the Wallet Standard.",
+    },
+  ];
+}
 
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
@@ -85,7 +135,7 @@ export function Docs({ section }: { section: string }) {
       <header className="docs__head">
         <h1 className="page__title">How Veiling works</h1>
         <p className="page__lede">
-          Veiling sells tokens and NFT collections through sealed bids and a single clearing price. This page
+          Veiling sells new tokens and NFT collections through sealed bids and a single clearing price. This page
           explains what happens to your bid, your deposit and your sale, and what everyone else can see.
         </p>
       </header>
@@ -576,6 +626,17 @@ export function Docs({ section }: { section: string }) {
               A hidden drop that its seller does not reveal within {revealDays} days of the end of bidding pays
               every winner back in full instead of minting anything; anyone can send those refunds.
             </p>
+          </Section>
+
+          <Section id="faq" title="Questions">
+            <dl className="doc__list">
+              {FAQ(fees.data).map(({ question, answer }) => (
+                <div key={question}>
+                  <dt>{question}</dt>
+                  <dd>{answer}</dd>
+                </div>
+              ))}
+            </dl>
           </Section>
 
           <Section id="featured" title="Getting featured">

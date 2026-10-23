@@ -8,7 +8,11 @@ import { MyBids } from "./pages/MyBids";
 import { FEATURE_CONTACT } from "./config";
 
 function currentRoute(): string {
-  return window.location.hash.replace(/^#\/?/, "");
+  // The app's pages live in the hash (#/launch); "#/" is the front page.
+  if (window.location.hash) return window.location.hash.replace(/^#\/?/, "");
+  // Without one, the path decides: the docs also live at /docs/, a real page
+  // that search engines can read (scripts/prerender.mjs).
+  return window.location.pathname.replace(/^\/+|\/+$/g, "");
 }
 
 function Footer() {
@@ -55,8 +59,9 @@ function Footer() {
   );
 }
 
-export function App() {
-  const [route, setRoute] = useState(currentRoute());
+/** The app; `route` fixes the page when it is rendered ahead of time (`prerender.tsx`). */
+export function App({ route: fixed }: { route?: string }) {
+  const [route, setRoute] = useState(() => fixed ?? currentRoute());
 
   useEffect(() => {
     const onHash = () => {
@@ -66,6 +71,19 @@ export function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  // Each page's own title, as the static pages have (scripts/prerender.mjs).
+  useEffect(() => {
+    document.title = route.startsWith("docs")
+      ? "How Veiling works · Sealed-bid auctions on Solana"
+      : route.startsWith("launch")
+        ? "Launch a sale · Veiling"
+        : route.startsWith("bids")
+          ? "My bids · Veiling"
+          : route.startsWith("auction/")
+            ? "Auction · Veiling"
+            : "Veiling · Sealed-bid launches for new tokens and NFTs on Solana";
+  }, [route]);
 
   let page;
   if (route.startsWith("auction/")) page = <AuctionPage address={route.slice("auction/".length)} />;
