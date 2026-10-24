@@ -1,10 +1,11 @@
+import type { MouseEvent } from "react";
 import type { Auction } from "../lib/chain";
 import { formatPrice, phaseOf, saleFailed, supplyShare } from "../lib/chain";
 import { formatCount, formatDuration, formatSol, shortAddress } from "../lib/format";
 import { type AssetInfo, goodsAmount, useAssetInfo } from "./ui";
 
 export function statusText(a: Auction, now: number, asset: AssetInfo): string {
-  const clearing = formatPrice(a, a.clearingPrice, asset.decimals);
+  const clearing = `${formatPrice(a, a.clearingPrice, asset.decimals)}${a.launch ? " FDV" : ""}`;
   const phase = phaseOf(a, now);
   // A sale that did not reach its target refunds every bid instead of settling.
   if (saleFailed(a) && (phase === "settling" || phase === "settled")) {
@@ -43,15 +44,37 @@ export function supplyDescription(a: Auction, asset: AssetInfo): string {
   return goodsAmount(a.supply, asset);
 }
 
+/**
+ * A click anywhere on a row or card opens `href`. The name inside stays a real
+ * link, for the keyboard, screen readers and "open in new tab"; clicks on
+ * links and buttons inside, and text being selected, are left alone.
+ */
+export function openOnClick(href: string) {
+  return (e: MouseEvent<HTMLElement>) => {
+    if ((e.target as Element).closest("a, button, input, label, summary")) return;
+    if (window.getSelection()?.toString()) return;
+    if (e.metaKey || e.ctrlKey || e.button === 1) window.open(href, "_blank", "noopener");
+    else window.location.hash = href;
+  };
+}
+
 function Row({ auction, now }: { auction: Auction; now: number }) {
   const asset = useAssetInfo(auction);
   const phase = phaseOf(auction, now);
   const live = phase === "bidding";
   const named = auction.kind === "collection" ? asset.collection !== null : Boolean(asset.token?.symbol || asset.token?.name);
+  const href = `#/auction/${auction.address.toBase58()}`;
+  const open = openOnClick(href);
   return (
-    <tr className={live ? "row--live" : undefined}>
+    <tr
+      className={`row--link${live ? " row--live" : ""}`}
+      onClick={open}
+      onAuxClick={(e) => {
+        if (e.button === 1) open(e);
+      }}
+    >
       <td>
-        <a className="row__token" href={`#/auction/${auction.address.toBase58()}`}>
+        <a className="row__token" href={href}>
           <span className="row__symbol">{asset.title}</span>
           <span className="row__name">{asset.sub}</span>
           {named ? (
@@ -69,7 +92,8 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
       <td className="num">{supplyDescription(auction, asset)}</td>
       <td className="num">
         {formatPrice(auction, auction.minPrice, asset.decimals)}
-        <span className="row__unit"> per {asset.unit}</span>
+        {/* A new token's price is its FDV, which the column must say. */}
+        {auction.launch ? <span className="row__fdv"> FDV</span> : <span className="row__unit"> per {asset.unit}</span>}
       </td>
       <td className="num">
         {formatCount(auction.bidCount)}
@@ -79,7 +103,12 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
         {formatSol(auction.totalDeposited, 2)} SOL
         <span className="row__unit"> deposited</span>
       </td>
-      <td className={`status status--${phase}`}>{statusText(auction, now, asset)}</td>
+      <td className={`status status--${phase}`}>
+        {statusText(auction, now, asset)}
+        <svg className="row__go" viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M4 10h11M11 5l5 5-5 5" />
+        </svg>
+      </td>
     </tr>
   );
 }

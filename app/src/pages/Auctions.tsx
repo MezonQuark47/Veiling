@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { AuctionTable, statusText, supplyDescription } from "../components/AuctionTable";
 import { Notice, useAssetInfo, useLoader, useMetadataImage, useNow } from "../components/ui";
-import { type Auction, fetchAdminRoles, fetchAuctions, formatPrice, phaseOf } from "../lib/chain";
+import { type Auction, fetchAdminRoles, fetchAuctions, formatPrice, phaseOf, priceSuffix } from "../lib/chain";
 import { formatCount, formatSol } from "../lib/format";
 import { useWallet } from "../lib/wallet";
 
@@ -52,9 +52,10 @@ function FeaturedCard({ auction, now }: { auction: Auction; now: number }) {
           <dd>{supplyDescription(auction, asset)}</dd>
         </div>
         <div>
-          <dt>Minimum price</dt>
+          <dt>{auction.launch ? "Minimum FDV" : "Minimum price"}</dt>
           <dd>
-            {formatPrice(auction, auction.minPrice, asset.decimals)} <span className="muted">per {asset.unit}</span>
+            {formatPrice(auction, auction.minPrice, asset.decimals)}{" "}
+            <span className="muted">{priceSuffix(auction, asset.unit).trim()}</span>
           </dd>
         </div>
         <div>

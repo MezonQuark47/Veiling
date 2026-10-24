@@ -35,7 +35,7 @@ import {
   LAUNCH_SALE_SUPPLY,
   LAUNCH_SUPPLY,
 } from "../config";
-import { type Decimal, choosePriceUnit, formatDecimal, nftPrice, nftPriceToTicks, tokenPrice, tokenPriceToTicks } from "./price";
+import { type Decimal, choosePriceUnit, formatDecimal, nftPrice, nftPriceToTicks, shift, tokenPrice, tokenPriceToTicks, unitExponent } from "./price";
 
 export const connection = new Connection(RPC_URL, { commitment: "confirmed" });
 
@@ -938,19 +938,44 @@ export async function fetchFeeConfig(): Promise<FeeConfig | null> {
  */
 export function priceOf(a: Auction, ticks: bigint, decimals: number | null): Decimal | null {
   if (a.kind === "collection") return nftPrice(ticks);
+  if (a.launch) return { mantissa: ticks, exponent: fdvExponent(a) };
   return decimals === null ? null : tokenPrice(ticks, a.priceUnit, decimals);
 }
 
-/** "0.0025 SOL", or an ellipsis while a token's decimals load. */
+/**
+ * A new token's prices read as its fully diluted value (FDV): the price per
+ * token times its whole supply of 1,000,000,000, in SOL. A tick of price is
+ * `LAUNCH_SUPPLY / priceUnit` lamports of FDV, so FDV in SOL is
+ * ticks × 10^(15 - 9 - log10(priceUnit)).
+ */
+const fdvExponent = (a: Auction) => unitExponent(LAUNCH_SUPPLY) - 9 - unitExponent(a.priceUnit);
+
+/** "0.0025 SOL", "20 SOL" (a new token's FDV), or an ellipsis while a token's decimals load. */
 export function formatPrice(a: Auction, ticks: bigint, decimals: number | null): string {
   const price = priceOf(a, ticks, decimals);
   return price ? `${formatDecimal(price)} SOL` : "… SOL";
 }
 
-/** The ticks of a typed price per token or per NFT, rounded to a whole tick. */
+/** What a price reads as, whole: "0.0025 SOL per token", or "20 SOL FDV" for a new token. */
+export function priceText(a: Auction, ticks: bigint, decimals: number | null, unit: string): string {
+  return `${formatPrice(a, ticks, decimals)}${priceSuffix(a, unit)}`;
+}
+
+/** What follows a price: " per token", or " FDV" for a new token. */
+export function priceSuffix(a: Auction, unit: string): string {
+  return a.launch ? " FDV" : ` per ${unit}`;
+}
+
+/** The ticks of a typed price per token or per NFT, or a new token's FDV, rounded to a whole tick. */
 export function ticksOf(a: Auction, sol: Decimal, decimals: number | null, round: "down" | "up"): bigint | null {
   if (a.kind === "collection") return nftPriceToTicks(sol, round);
+  if (a.launch) return shift(sol.mantissa, sol.exponent - fdvExponent(a), round);
   return decimals === null ? null : tokenPriceToTicks(sol, a.priceUnit, decimals, round);
+}
+
+/** A new token's FDV in lamports at `ticks`, for terms that are not an auction yet. */
+export function launchFdv(ticks: bigint, priceUnit: bigint): bigint {
+  return (ticks * LAUNCH_SUPPLY) / priceUnit;
 }
 
 /** The highest price a bid can name, in SOL per token or NFT. */

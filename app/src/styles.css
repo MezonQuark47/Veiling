@@ -2026,23 +2026,13 @@ p {
     gap: 28px;
   }
   .docs__nav {
-    position: static;
+    display: none;
   }
-  .docs__nav ul {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 4px;
-    border-left: 0;
+  .docs .docs__menu {
+    display: block;
   }
-  .docs__nav a {
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    margin-left: 0;
-    padding: 4px 12px;
-    font-size: var(--step--1);
-  }
-  .docs__nav a[aria-current="true"] {
-    border-color: var(--cobalt);
+  .doc {
+    scroll-margin-top: calc(var(--topbar-h, 64px) + 64px);
   }
 }
 
@@ -3962,4 +3952,678 @@ p {
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* A new token's price in the auction list is its FDV, said in the cell. */
+.row__fdv {
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* A wallet with no SOL on this network: a thin band under the top bar. */
+.netnotice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 10px var(--gutter);
+  background: #2a2412;
+  color: #f5e2a8;
+  font-size: var(--step--1);
+  border-bottom: 1px solid #4a3f1c;
+}
+
+.netnotice p {
+  margin: 0;
+  max-width: 70em;
+}
+
+.netnotice a {
+  color: #ffe9a8;
+}
+
+.netnotice__close {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Share a sale: two quiet buttons under its status. */
+.share-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.share-row__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line, #2a2d36);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step--1);
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 160ms var(--ease-out), background 160ms var(--ease-out);
+}
+
+.share-row__button:hover {
+  border-color: var(--cobalt);
+  background: var(--raised);
+}
+
+/* The collection form, one step at a time. */
+.formsteps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.formsteps__step {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 12px;
+  border: 0;
+  border-top: 2px solid var(--line);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 160ms var(--ease-out), border-color 160ms var(--ease-out);
+}
+
+.formsteps__step:hover {
+  color: var(--ink);
+}
+
+.formsteps__step.is-current {
+  color: var(--ink);
+  border-top-color: var(--cobalt);
+}
+
+.formsteps__step.is-done {
+  border-top-color: color-mix(in srgb, var(--cobalt) 45%, var(--line));
+}
+
+.formsteps__num {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.formsteps__step.is-current .formsteps__num {
+  background: var(--cobalt);
+  border-color: var(--cobalt);
+  color: var(--paper);
+}
+
+.formsteps__step.is-done .formsteps__num {
+  border-color: var(--cobalt);
+  color: var(--cobalt-soft);
+}
+
+.formsteps__label {
+  font-weight: 600;
+  font-size: var(--step--1);
+}
+
+.formstep {
+  display: grid;
+  gap: 28px;
+  animation: formstep-in 260ms var(--ease-out);
+}
+
+.formstep[hidden] {
+  display: none;
+}
+
+@keyframes formstep-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .formstep {
+    animation: none;
+  }
+}
+
+.formsteps__nav {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.review {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.review > div {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.review dt {
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.review dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.review__fix {
+  margin: 0;
+  padding: 12px 14px 12px 32px;
+  border: 1px solid #4a3f1c;
+  border-radius: 6px;
+  background: #1d1a10;
+  color: #f5e2a8;
+  font-size: var(--step--1);
+  display: grid;
+  gap: 6px;
+}
+
+.linklike {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--cobalt-soft);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .formsteps {
+    gap: 4px;
+  }
+
+  .formsteps__step {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .review {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Docs on small screens: a sticky, folding "On this page" menu that names the section being read. */
+.docs__menu {
+  display: none;
+  position: sticky;
+  top: var(--topbar-h, 64px);
+  z-index: 5;
+  margin: 0 calc(var(--gutter) * -1);
+  padding: 0 var(--gutter);
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.docs__menu[open] {
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+.docs__menu summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.docs__menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.docs__menu summary::after {
+  content: "";
+  margin-left: auto;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 200ms var(--ease-out);
+}
+
+.docs__menu[open] summary::after {
+  transform: translateY(2px) rotate(-135deg);
+}
+
+.docs__menu-label {
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.docs__menu-current {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docs__menu ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 12px;
+  display: grid;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.docs__menu a {
+  display: block;
+  padding: 8px 12px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.docs__menu a[aria-current="true"] {
+  border-left-color: var(--cobalt);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.launch__submit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* ---------------------------------------------------------------- Reminders and live tags */
+
+/* The menu hangs from the row, not the button, so it stays on screen on phones. */
+.share-row {
+  position: relative;
+}
+
+.remind {
+  display: inline-flex;
+}
+
+.remind__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: min(280px, 100%);
+  display: grid;
+  padding: 6px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  transform-origin: top left;
+  animation: menu-in 160ms var(--ease-out);
+}
+
+.remind__note {
+  padding: 6px 10px 8px;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.remind__item {
+  display: block;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step--1);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.remind__item:hover,
+.remind__item:focus-visible {
+  background: var(--surface);
+}
+
+.tag--live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag__dot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tag__dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ---------------------------------------------------------------- Motion on the inner pages */
+
+/* A soft light behind each page's heading, like the front page's stage. */
+main.page:not(.page--home) {
+  position: relative;
+  isolation: isolate;
+}
+
+main.page:not(.page--home)::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -60px;
+  right: 0;
+  width: min(720px, 100%);
+  height: 440px;
+  background: radial-gradient(closest-side, rgba(138, 155, 255, 0.13), rgba(138, 155, 255, 0));
+  pointer-events: none;
+}
+
+/* Primary buttons everywhere get the front page's band of light on hover. */
+.btn--primary {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.btn--primary::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 30%, rgba(138, 155, 255, 0.45) 48%, rgba(180, 191, 255, 0.25) 54%, transparent 70%);
+  transform: translateX(-110%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  main.page:not(.page--home)::before {
+    animation: glow-drift 14s ease-in-out infinite alternate;
+  }
+
+  /* The heading rises in, the lede follows, then the page's parts in turn. */
+  main.page:not(.page--home) > .page__title,
+  .docs__head > .page__title,
+  .auction-head__title {
+    animation: title-rise 760ms var(--ease-out) backwards;
+  }
+
+  main.page:not(.page--home) > .page__lede,
+  .docs__head > .page__lede,
+  .auction-head__text > :not(.auction-head__title) {
+    animation: fade-rise 700ms var(--ease-out) 140ms backwards;
+  }
+
+  .auction-head__tags .tag {
+    animation: pop-in 460ms var(--ease-out) backwards;
+  }
+  .auction-head__tags .tag:nth-child(1) {
+    animation-delay: 90ms;
+  }
+  .auction-head__tags .tag:nth-child(2) {
+    animation-delay: 180ms;
+  }
+  .auction-head__tags .tag:nth-child(3) {
+    animation-delay: 270ms;
+  }
+  .auction-head__tags .tag:nth-child(4) {
+    animation-delay: 360ms;
+  }
+
+  .auctions__featured,
+  .kinds > *,
+  .auction-grid > *,
+  .mybids > li,
+  .formsteps,
+  .launch__preview,
+  .docs__nav,
+  .auctions tbody tr:nth-child(-n + 12) {
+    animation: fade-rise 640ms var(--ease-out) backwards;
+  }
+
+  .auctions__featured {
+    animation-delay: 160ms;
+  }
+  .kinds > *:nth-child(1) {
+    animation-delay: 80ms;
+  }
+  .kinds > *:nth-child(2) {
+    animation-delay: 160ms;
+  }
+  .kinds > *:nth-child(3) {
+    animation-delay: 240ms;
+  }
+  .auction-grid > *:nth-child(1) {
+    animation-delay: 110ms;
+  }
+  .auction-grid > *:nth-child(2) {
+    animation-delay: 220ms;
+  }
+  .auction-grid > *:nth-child(3) {
+    animation-delay: 330ms;
+  }
+  .auction-grid > *:nth-child(4) {
+    animation-delay: 440ms;
+  }
+  .mybids > li:nth-child(1) {
+    animation-delay: 70ms;
+  }
+  .mybids > li:nth-child(2) {
+    animation-delay: 140ms;
+  }
+  .mybids > li:nth-child(3) {
+    animation-delay: 210ms;
+  }
+  .mybids > li:nth-child(4) {
+    animation-delay: 280ms;
+  }
+  .mybids > li:nth-child(5) {
+    animation-delay: 350ms;
+  }
+  .mybids > li:nth-child(6) {
+    animation-delay: 420ms;
+  }
+  .mybids > li:nth-child(7) {
+    animation-delay: 490ms;
+  }
+  .mybids > li:nth-child(8) {
+    animation-delay: 560ms;
+  }
+  .auctions tbody tr:nth-child(1) {
+    animation-delay: 45ms;
+  }
+  .auctions tbody tr:nth-child(2) {
+    animation-delay: 90ms;
+  }
+  .auctions tbody tr:nth-child(3) {
+    animation-delay: 135ms;
+  }
+  .auctions tbody tr:nth-child(4) {
+    animation-delay: 180ms;
+  }
+  .auctions tbody tr:nth-child(5) {
+    animation-delay: 225ms;
+  }
+  .auctions tbody tr:nth-child(6) {
+    animation-delay: 270ms;
+  }
+  .auctions tbody tr:nth-child(7) {
+    animation-delay: 315ms;
+  }
+  .auctions tbody tr:nth-child(8) {
+    animation-delay: 360ms;
+  }
+  .auctions tbody tr:nth-child(9) {
+    animation-delay: 405ms;
+  }
+  .auctions tbody tr:nth-child(10) {
+    animation-delay: 450ms;
+  }
+  .auctions tbody tr:nth-child(11) {
+    animation-delay: 495ms;
+  }
+  .auctions tbody tr:nth-child(12) {
+    animation-delay: 540ms;
+  }
+
+  .formsteps,
+  .launch__preview {
+    animation-delay: 300ms;
+  }
+
+  .docs__nav {
+    animation-delay: 200ms;
+  }
+
+  .tag--live .tag__dot::after {
+    animation: live-ring 1800ms ease-out infinite;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .btn--primary:hover:not(:disabled)::before {
+    transform: translateX(110%);
+    transition: transform 800ms var(--ease-out);
+  }
+
+  .btn--primary:hover:not(:disabled),
+  .btn--secondary:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .feature,
+  .kind {
+    transition:
+      border-color 200ms ease,
+      box-shadow 260ms ease,
+      transform 260ms var(--ease-out);
+  }
+
+  .feature:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 22px 48px -24px rgba(138, 155, 255, 0.55);
+  }
+
+  .kind:hover {
+    transform: translateY(-2px);
+  }
+
+  .auctions tbody tr {
+    transition: background-color 160ms ease;
+  }
+}
+
+@keyframes title-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+    filter: blur(6px);
+  }
+}
+
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+/* Every row of the sales table opens its sale, not just the name. */
+.auctions tbody tr.row--link {
+  cursor: pointer;
+}
+
+.auctions tbody tr.row--link:hover .row__symbol {
+  color: var(--cobalt-soft);
+}
+
+.row__go {
+  width: 16px;
+  height: 16px;
+  margin-left: 10px;
+  vertical-align: -3px;
+  fill: none;
+  stroke: var(--cobalt-soft);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition:
+    opacity 180ms ease,
+    transform 240ms var(--ease-out);
+}
+
+.auctions tbody tr.row--link:hover .row__go,
+.auctions tbody tr.row--link:focus-within .row__go {
+  opacity: 1;
+  transform: none;
+}
+
+@media (hover: none) {
+  .row__go {
+    opacity: 0.6;
+    transform: none;
+  }
+}
+
+/* Each sale on My bids opens its page from anywhere on the card. */
+.mybids__auction--link {
+  cursor: pointer;
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+
+.mybids__auction--link:hover {
+  border-color: var(--line-strong);
+}
+
+.mybids__auction--link:hover .mybids__title strong {
+  color: var(--cobalt-soft);
 }

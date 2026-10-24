@@ -1,16 +1,23 @@
 import { useMemo, useState } from "react";
 import { LeftoverNotes, NoteUnlock } from "../components/BidNotes";
 import { Button, Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
-import { statusText } from "../components/AuctionTable";
-import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, revealMissed, waitsForPool } from "../lib/chain";
+import { openOnClick, statusText } from "../components/AuctionTable";
+import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, priceSuffix, revealMissed, waitsForPool } from "../lib/chain";
 import { noteSize, readNote } from "../lib/notes";
 import { formatSol, plural } from "../lib/format";
 import { requestConnect, useWallet } from "../lib/wallet";
 
 function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; now: number }) {
   const asset = useAssetInfo(auction);
+  const open = openOnClick(`#/auction/${auction.address.toBase58()}`);
   return (
-    <li className="mybids__auction">
+    <li
+      className="mybids__auction mybids__auction--link"
+      onClick={open}
+      onAuxClick={(e) => {
+        if (e.button === 1) open(e);
+      }}
+    >
       <a href={`#/auction/${auction.address.toBase58()}`} className="mybids__title">
         <strong>{asset.title}</strong> <span className="muted">{statusText(auction, now, asset)}</span>
       </a>
@@ -29,7 +36,7 @@ function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; no
               {note && sealedAt ? (
                 <p className="bidlist__note">
                   {auction.kind === "token"
-                    ? `Sealed: a budget of ${formatSol(noteSize(note) > 0n ? noteSize(note) : b.deposit)} SOL at up to ${sealedAt} per ${asset.unit}.`
+                    ? `Sealed: a budget of ${formatSol(noteSize(note) > 0n ? noteSize(note) : b.deposit)} SOL at up to ${sealedAt}${priceSuffix(auction, asset.unit)}.`
                     : `Sealed for ${plural(Number(noteSize(note)), "NFT")} at up to ${sealedAt} each.`}
                 </p>
               ) : null}

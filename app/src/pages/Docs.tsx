@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   EMERGENCY_DELAY_SECS,
   EVICTION_PREMIUM_PERCENT,
@@ -85,6 +85,11 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
       answer: `${share} of the supply is sold by sealed bid over ${LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours. If it sells out, the token is made and everything raised, less the platform fee, opens a Meteora pool at the clearing price, locked for good. If not, no token is ever made and every deposit comes back in full.`,
     },
     {
+      question: "What does FDV mean on Veiling?",
+      answer:
+        "A new token's prices are shown and bid as its fully diluted value (FDV): the price per token times its whole supply of 1,000,000,000 tokens. A bid names the highest FDV it would pay, and the token starts trading at the clearing FDV.",
+    },
+    {
       question: "Can a token's creator sell into the market or mint more?",
       answer:
         "No. The creator gets no tokens and none of the SOL raised, the pool's liquidity is locked forever, and the token's mint is closed for good right after it is made.",
@@ -107,7 +112,7 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
 
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <section className="doc" id={id} aria-labelledby={`${id}-title`}>
+    <section className="doc" id={id} aria-labelledby={`${id}-title`} data-reveal>
       <h2 id={`${id}-title`} className="doc__title">
         {title}
       </h2>
@@ -132,8 +137,59 @@ export function Docs({ section }: { section: string }) {
     if (section) document.getElementById(section)?.scrollIntoView({ block: "start" });
   }, [section]);
 
+  // The section being read: the last one whose top has passed under the top bar.
+  const [active, setActive] = useState(section || DOC_SECTIONS[0][0]);
+  const root = useRef<HTMLElement>(null);
+  const menu = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const bar = (document.querySelector(".topbar") as HTMLElement | null)?.offsetHeight ?? 64;
+      root.current?.style.setProperty("--topbar-h", `${bar}px`);
+      const line = bar + (menu.current?.offsetHeight ?? 0) + 24;
+      let current = DOC_SECTIONS[0][0];
+      for (const [id] of DOC_SECTIONS) {
+        const top = document.getElementById(id)?.getBoundingClientRect().top;
+        if (top !== undefined && top <= line) current = id;
+      }
+      // At the very bottom the last sections can never reach the line.
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) {
+        current = DOC_SECTIONS[DOC_SECTIONS.length - 1][0];
+      }
+      setActive(current);
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
+  const activeTitle = DOC_SECTIONS.find(([id]) => id === active)?.[1] ?? DOC_SECTIONS[0][1];
+  const links = (
+    <ul>
+      {DOC_SECTIONS.map(([id, title]) => (
+        <li key={id}>
+          <a
+            href={`#/docs/${id}`}
+            aria-current={active === id ? "true" : undefined}
+            onClick={() => menu.current?.removeAttribute("open")}
+          >
+            {title}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+
   return (
-    <main className="page docs">
+    <main className="page docs" ref={root}>
       <header className="docs__head">
         <h1 className="page__title">How Veiling works</h1>
         <p className="page__lede">
@@ -143,16 +199,15 @@ export function Docs({ section }: { section: string }) {
       </header>
       <div className="docs__layout">
         <nav className="docs__nav" aria-label="On this page">
-          <ul>
-            {DOC_SECTIONS.map(([id, title]) => (
-              <li key={id}>
-                <a href={`#/docs/${id}`} aria-current={section === id ? "true" : undefined}>
-                  {title}
-                </a>
-              </li>
-            ))}
-          </ul>
+          {links}
         </nav>
+        <details className="docs__menu" ref={menu}>
+          <summary>
+            <span className="docs__menu-label">On this page</span>
+            <span className="docs__menu-current">{activeTitle}</span>
+          </summary>
+          <nav aria-label="On this page, compact">{links}</nav>
+        </details>
         <div className="docs__body">
           <Section id="how" title="How an auction works">
             <ol className="timeline">
@@ -223,7 +278,8 @@ export function Docs({ section }: { section: string }) {
               <div>
                 <dt>Tokens</dt>
                 <dd>
-                  Set the SOL you want to spend and your highest price per token. If you win above the clearing
+                  Set the SOL you want to spend and your highest price per token, which for a new token is the
+                  highest FDV you would pay. If you win above the clearing
                   price, your whole budget buys tokens at that price, so the lower it ends, the more you get. Both
                   are sealed. Your deposit only has to cover the budget, so it does not show it, and a large deposit
                   says nothing about real demand.
@@ -466,6 +522,12 @@ export function Docs({ section }: { section: string }) {
                 {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. {saleShare} of it is sold by sealed bid, from{" "}
                 {formatSol(LAUNCH_MIN_BID)} SOL a bid. The minimum price is the target divided by that share, so the
                 token is made only if the sale sells out.
+              </li>
+              <li>
+                <strong>Priced as FDV.</strong> A new token's prices are shown, and bid, as its fully diluted value:
+                the price per token times its whole supply of {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. A
+                bid names the highest FDV it would pay. The minimum FDV is twice the target, and the token starts
+                trading at the clearing FDV.
               </li>
               <li>
                 <strong>Born with its pool.</strong> If it sells out, anyone can make the token: exactly the share

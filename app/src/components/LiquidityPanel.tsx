@@ -15,7 +15,7 @@ import {
   launchSettleSecs,
   pagesInUse,
   formatPercent,
-  formatPrice,
+  priceText,
   poolReady,
   poolSol,
   saleFee,
@@ -158,7 +158,8 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
             <li>
               <strong>If it sells out,</strong> the token is made. Winners get the {supplyShare(auction.supply)} of the
               supply that was sold, and everything raised, less the platform fee, opens a Meteora pool at the same
-              price, locked for good.
+              price, locked for good. The token starts trading at an FDV of{" "}
+              {priceText(auction, auction.minPrice, asset.decimals, asset.unit).replace(/ FDV$/, "")} or more.
             </li>
             <li>
               <strong>If it does not,</strong> no token is ever made and every deposit comes back in full.
@@ -222,7 +223,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
             <p>
               The sale is settled: the pool gets {formatSol(sol)} SOL and{" "}
               {launch ? `${supplyShare(tokens)} of the supply` : goodsAmount(tokens, asset)} at{" "}
-              {formatPrice(auction, auction.clearingPrice, asset.decimals)} per {asset.unit}. Anyone can open it
+              {priceText(auction, auction.clearingPrice, asset.decimals, asset.unit)}. Anyone can open it
               {launch ? "." : "; it also pays the seller the rest of the proceeds."}
             </p>
             <Button variant="primary" onClick={open} busy={action.busy === "open-pool"} disabled={!signer || !plan}>
@@ -269,7 +270,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
             <dd>
               {formatSol(plan.poolSol)} SOL and{" "}
               {launch ? `${supplyShare(plan.poolTokens)} of the supply` : goodsAmount(plan.poolTokens, asset)}, at{" "}
-              {formatPrice(auction, auction.clearingPrice, asset.decimals)} per {asset.unit}
+              {priceText(auction, auction.clearingPrice, asset.decimals, asset.unit)}
             </dd>
           </div>
           <div>

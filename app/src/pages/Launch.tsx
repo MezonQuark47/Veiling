@@ -343,6 +343,9 @@ export function Launch() {
   );
 }
 
+/** The collection form, one part at a time. */
+const FORM_STEPS = ["Details", "NFTs", "Sale", "Review"] as const;
+
 function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
   const { signer } = useWallet();
   const action = useAction();
@@ -374,6 +377,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
   const [duration, setDuration] = useState(DURATIONS[1].secs);
   /** When bidding opens, as a `datetime-local` value; null for right away. */
   const [startAt, setStartAt] = useState<string | null>(null);
+  const [formStep, setFormStep] = useState(0);
   const [step, setStepState] = useState<"form" | "key" | "pay" | "credit" | "upload" | "auction">("form");
   const [uploadProgress, setUploadProgress] = useState<[number, number] | null>(null);
   const [txProgress, setTxProgress] = useState<[number, number] | null>(null);
@@ -577,41 +581,47 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
 
   const plan = useMemo(() => {
     const problems: string[] = [];
+    // Each problem is shown on the step of the form that fixes it.
+    const byStep: string[][] = FORM_STEPS.map(() => []);
+    const add = (step: number, text: string) => {
+      problems.push(text);
+      byStep[step].push(text);
+    };
     if (!isDisplayText(details.name, MAX_COLLECTION_NAME_LEN))
-      problems.push(`Give the collection a name of up to ${MAX_COLLECTION_NAME_LEN} bytes.`);
+      add(0, `Give the collection a name of up to ${MAX_COLLECTION_NAME_LEN} bytes.`);
     if (linked) {
       if (!isMetadataUri(collectionUri.trim(), MAX_URI_LEN))
-        problems.push("Add the collection's metadata link (https://, ipfs:// or ar://).");
+        add(0, "Add the collection's metadata link (https://, ipfs:// or ar://).");
       if (!isMetadataUri(itemUri.trim(), MAX_URI_LEN))
-        problems.push(`Add the NFTs' metadata ${uriPerItem ? "folder" : "link"} (https://, ipfs:// or ar://).`);
+        add(1, `Add the NFTs' metadata ${uriPerItem ? "folder" : "link"} (https://, ipfs:// or ar://).`);
     } else {
-      if (!details.logo) problems.push("Choose the collection's logo.");
+      if (!details.logo) add(0, "Choose the collection's logo.");
       if (details.description.length > MAX_DESCRIPTION_LEN)
-        problems.push(`Keep the description to ${formatCount(MAX_DESCRIPTION_LEN)} characters.`);
-      if (!isLinkOrEmpty(details.website) || !isLinkOrEmpty(details.x)) problems.push("Links must start with https://.");
+        add(0, `Keep the description to ${formatCount(MAX_DESCRIPTION_LEN)} characters.`);
+      if (!isLinkOrEmpty(details.website) || !isLinkOrEmpty(details.x)) add(0, "Links must start with https://.");
     }
-    problems.push(...nftPlan.problems);
+    for (const text of nftPlan.problems) add(text.startsWith("NFTs for sale") ? 2 : 1, text);
     const perBid = Number.parseInt(maxPerBid, 10);
     if (!Number.isInteger(perBid) || perBid < 1 || (saleCount > 0 && perBid > saleCount) || perBid > 65_535)
-      problems.push("The most NFTs per bid must be between 1 and the number for sale.");
+      add(2, "The most NFTs per bid must be between 1 and the number for sale.");
     const typed = parseAmount(nftMinPriceInput);
     const minTicks = typed ? nftPriceToTicks(typed, "up") : 0n;
     let minPriceShown: string | null = null;
     let rounded = false;
-    if (!typed || minTicks < 1n) problems.push("Enter a minimum price per NFT above zero.");
+    if (!typed || minTicks < 1n) add(2, "Enter a minimum price per NFT above zero.");
     else if (minTicks > MAX_PRICE_TICKS)
-      problems.push(`The minimum price can be at most ${formatDecimal(nftPrice(MAX_PRICE_TICKS))} SOL per NFT.`);
+      add(2, `The minimum price can be at most ${formatDecimal(nftPrice(MAX_PRICE_TICKS))} SOL per NFT.`);
     else {
       minPriceShown = formatDecimal(nftPrice(minTicks));
       rounded = nftPriceToTicks(typed, "down") !== minTicks;
     }
 
     if (uploadingCollection && chosenStorage.problem)
-      problems.push(`${chosenStorage.problem}. Choose compressed storage, or another file.`);
+      add(1, `${chosenStorage.problem}. Choose compressed storage, or another file.`);
     else if (payingForStorage && !chosenStorage.quote)
-      problems.push(rates.error ? "Storage prices could not be loaded. Try again in a minute." : "Checking storage prices…");
+      add(1, rates.error ? "Storage prices could not be loaded. Try again in a minute." : "Checking storage prices…");
     if (needsSignature && signer && !signer.signMessage) {
-      problems.push(
+      add(3, 
         hidden
           ? "Your wallet cannot sign messages, which hiding the art needs. Use another wallet, or show the art."
           : "Your wallet cannot sign messages, which paid storage needs. Use another wallet, or free storage."
@@ -619,10 +629,10 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
     }
     const royaltyBps = Math.round(Number.parseFloat(royalty || "0") * 100);
     if (!Number.isFinite(royaltyBps) || royaltyBps < 0 || royaltyBps > MAX_ROYALTY_BPS)
-      problems.push(`Creator earnings must be between 0 and ${MAX_ROYALTY_BPS / 100}%.`);
+      add(2, `Creator earnings must be between 0 and ${MAX_ROYALTY_BPS / 100}%.`);
 
-    if (fees.data === null) problems.push("The platform's fees are not set up yet, so auctions cannot open.");
-    return { problems, minTicks, minPriceShown, rounded };
+    if (fees.data === null) add(3, "The platform's fees are not set up yet, so auctions cannot open.");
+    return { problems, byStep, minTicks, minPriceShown, rounded };
   }, [
     details,
     linked,
@@ -751,6 +761,16 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
         setTxProgress(null);
       });
 
+  const lastStep = FORM_STEPS.length - 1;
+  const stepLabel = (i: number) => (FORM_STEPS[i] === "NFTs" && kind === "collection" ? "Items" : FORM_STEPS[i]);
+  const formTop = useRef<HTMLDivElement>(null);
+  const goTo = (next: number) => {
+    setFormStep(next);
+    // A new step starts at the top of the form, not wherever the last one ended.
+    const top = formTop.current?.getBoundingClientRect().top ?? 0;
+    if (top < 0) window.scrollTo({ top: window.scrollY + top - 90, behavior: "smooth" });
+  };
+
   const touched = Boolean(details.name || details.logo || itemName || items.length > 0 || itemImages.length > 0);
   const baseLabel = itemName.trim() || "Name";
   const saleText = saleCount > 0 ? `${formatCount(saleCount)} NFTs for sale` : "Supply";
@@ -793,14 +813,33 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
   };
 
   return (
-    <div className="launch">
+    <div className="launch" ref={formTop}>
       <form
         className="launch__form"
         onSubmit={(e) => {
           e.preventDefault();
-          launch();
+          // Enter on an earlier step moves on; only the last step launches.
+          if (formStep < lastStep) goTo(formStep + 1);
+          else launch();
         }}
       >
+        <ol className="formsteps" aria-label="Steps">
+          {FORM_STEPS.map((label, i) => (
+            <li key={label}>
+              <button
+                type="button"
+                className={`formsteps__step${i === formStep ? " is-current" : ""}${i < formStep ? " is-done" : ""}`}
+                aria-current={i === formStep ? "step" : undefined}
+                onClick={() => goTo(i)}
+              >
+                <span className="formsteps__num">{i < formStep && plan.byStep[i].length === 0 ? "✓" : i + 1}</span>
+                <span className="formsteps__label">{stepLabel(i)}</span>
+              </button>
+            </li>
+          ))}
+        </ol>
+
+        <div className="formstep" hidden={formStep !== 0}>
         <fieldset className="group">
           <legend className="group__title">Collection details</legend>
           {kind === "drop" ? (
@@ -831,7 +870,9 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
             to manage.
           </p>
         </fieldset>
+        </div>
 
+        <div className="formstep" hidden={formStep !== 1}>
         {kind === "drop" ? (
           <fieldset className="group">
             <legend className="group__title">NFTs</legend>
@@ -1001,7 +1042,9 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
             />
           </fieldset>
         ) : null}
+        </div>
 
+        <div className="formstep" hidden={formStep !== 2}>
         <fieldset className="group">
           <legend className="group__title">Sale</legend>
           <div className="field-row">
@@ -1061,6 +1104,58 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
             A royalty paid to you on resales by marketplaces that honour royalties, up to {MAX_ROYALTY_BPS / 100}%.
           </p>
         </fieldset>
+        </div>
+
+        <div className="formstep" hidden={formStep !== 3}>
+        <fieldset className="group">
+          <legend className="group__title">Review</legend>
+          <dl className="review">
+            <div>
+              <dt>{kind === "drop" ? "Drop" : "Collection"}</dt>
+              <dd>{details.name.trim() || "—"}</dd>
+            </div>
+            <div>
+              <dt>NFTs for sale</dt>
+              <dd>
+                {saleCount > 0 ? formatCount(saleCount) : "—"}
+                {hidden ? ", art hidden until the sale ends" : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Minimum price</dt>
+              <dd>{plan.minPriceShown ? `${plan.minPriceShown} SOL per NFT` : "—"}</dd>
+            </div>
+            <div>
+              <dt>Most per bid</dt>
+              <dd>{maxPerBid || "—"}</dd>
+            </div>
+            <div>
+              <dt>Bidding</dt>
+              <dd>
+                {formatDuration(duration)},{" "}
+                {startAt === null ? "starting as soon as it opens" : `starting ${formatDateTime(chosenStart())}`}
+              </dd>
+            </div>
+            <div>
+              <dt>Creator earnings</dt>
+              <dd>{royalty || "0"}% on resales</dd>
+            </div>
+          </dl>
+          {FORM_STEPS.slice(0, lastStep).some((_, i) => plan.byStep[i].length > 0) ? (
+            <ul className="review__fix">
+              {FORM_STEPS.slice(0, lastStep).map((label, i) =>
+                plan.byStep[i].length > 0 ? (
+                  <li key={label}>
+                    {plan.byStep[i][0]}{" "}
+                    <button type="button" className="linklike" onClick={() => goTo(i)}>
+                      Go to {stepLabel(i)}
+                    </button>
+                  </li>
+                ) : null
+              )}
+            </ul>
+          ) : null}
+        </fieldset>
 
         <fieldset className="group">
           <legend className="group__title">Fees</legend>
@@ -1118,8 +1213,12 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
           </p>
         </fieldset>
 
-        {problems.length > 0 && touched ? <Notice tone="info">{problems[0]}</Notice> : null}
+        {plan.byStep[lastStep].length > 0 ? <Notice tone="info">{plan.byStep[lastStep][0]}</Notice> : null}
         <div className="launch__submit">
+          <div className="launch__submit-row">
+          <Button type="button" onClick={() => goTo(formStep - 1)}>
+            Back
+          </Button>
           {signer ? (
             <Button variant="primary" type="submit" busy={action.busy === "launch"} disabled={problems.length > 0}>
               {kind === "drop" ? "Launch drop and open auction" : "Create collection and open auction"}
@@ -1129,6 +1228,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
               Connect a wallet to launch
             </Button>
           )}
+          </div>
           <p className="hint">
             {walletSteps()}
             {action.busy && step === "key" ? " Waiting for your wallet to sign…" : ""}
@@ -1147,6 +1247,23 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
           </p>
         </div>
         {action.error ? <Notice tone="error">{action.error}</Notice> : null}
+        </div>
+
+        {formStep < lastStep && plan.byStep[formStep].length > 0 && touched ? (
+          <Notice tone="info">{plan.byStep[formStep][0]}</Notice>
+        ) : null}
+        {formStep < lastStep ? (
+          <div className="formsteps__nav">
+            {formStep > 0 ? (
+              <Button type="button" onClick={() => goTo(formStep - 1)}>
+                Back
+              </Button>
+            ) : null}
+            <Button variant="primary" type="submit">
+              Next: {stepLabel(formStep + 1)}
+            </Button>
+          </div>
+        ) : null}
       </form>
       <aside className="launch__preview" aria-label="How the price will be found">
         <CollectionCard details={details} linkedArt={linkedArt} count={saleCount} hidden={hidden} preview={preview} />

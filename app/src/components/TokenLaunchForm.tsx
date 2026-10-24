@@ -12,10 +12,9 @@ import {
 } from "../config";
 import { buildCreateLaunch } from "../lib/actions";
 import { freeTarget } from "../lib/arweave";
-import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchSaleTerms, sellerCrankFee, supplyShare } from "../lib/chain";
+import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchFdv, launchSaleTerms, sellerCrankFee, supplyShare } from "../lib/chain";
 import { formatCount, formatSol, formatTokens, parseDecimal } from "../lib/format";
 import type { PreparedImage } from "../lib/images";
-import { formatDecimal, tokenPrice } from "../lib/price";
 import { sendTransaction } from "../lib/tx";
 import { uploadTokenMetadata } from "../lib/uploads";
 import { requestConnect, useWallet } from "../lib/wallet";
@@ -97,7 +96,8 @@ export function TokenLaunchForm() {
   else if (!terms) problems.push("That target cannot be priced; try a rounder number.");
   if (!fees.data) problems.push("The platform's fees are not loaded yet.");
 
-  const price = terms ? formatDecimal(tokenPrice(terms.minPrice, terms.priceUnit, LAUNCH_DECIMALS)) : null;
+  // Prices of a new token read as its FDV: the price per token × its whole supply.
+  const fdv = terms ? `${formatSol(launchFdv(terms.minPrice, terms.priceUnit))} SOL` : null;
   const net = terms && fees.data ? terms.target - (terms.target * BigInt(fees.data.saleFeeBps)) / 10_000n : null;
   const pooledTokens = net && terms ? (net * terms.priceUnit) / terms.minPrice : null;
   const goods = ticker || "tokens";
@@ -173,8 +173,9 @@ export function TokenLaunchForm() {
             <input id="fl-target" inputMode="decimal" value={targetInput} onChange={(e) => setTargetInput(e.target.value)} />
             <p className="hint">
               What selling {saleShare} of the supply must raise, at least {formatSol(LAUNCH_MIN_RAISE)} SOL. It sets
-              the lowest price: {price ? `${price} SOL per ${ticker || "token"}` : "…"}.
-              Bids can go higher; everyone who wins pays the one price where demand meets the supply.
+              the lowest price, read as the token's whole value (FDV): {fdv ?? "…"}. Bids name the highest FDV they
+              would pay; everyone who wins pays the one price where demand meets the supply, and the token starts
+              trading there.
             </p>
           </div>
           <div className="field">
@@ -202,6 +203,7 @@ export function TokenLaunchForm() {
           <legend className="group__title">If it sells out</legend>
           <ul className="launch-facts">
             <li>The token is made: the {saleShare} of the supply that was sold goes to the winners.</li>
+            <li>It starts trading at the clearing price: an FDV of {fdv ?? "…"} or more.</li>
             <li>
               Every SOL raised, less the {fees.data ? formatPercent(fees.data.saleFeeBps) : "…"} sale fee
               {net ? ` (${formatSol(net, 2)} SOL at the target)` : ""}, opens a Meteora pool at the clearing price with
@@ -276,8 +278,8 @@ export function TokenLaunchForm() {
           </li>
           <li>
             <span>
-              <strong>One price is found.</strong> It sells out if bids cover {saleShare} of the supply at {price ?? "…"}{" "}
-              SOL or more.
+              <strong>One price is found.</strong> It sells out if bids cover {saleShare} of the supply at an FDV of{" "}
+              {fdv ?? "…"} or more.
             </span>
           </li>
           <li>

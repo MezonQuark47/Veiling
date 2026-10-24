@@ -62,7 +62,7 @@ export function useLoader<T>(load: () => Promise<T>, deps: unknown[], pollMs?: n
         }
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(errorMessage(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

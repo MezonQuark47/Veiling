@@ -8,6 +8,7 @@ import { Launch } from "./pages/Launch";
 import { MyBids } from "./pages/MyBids";
 import { FEATURE_CONTACT, GITHUB_URL, PROJECT_X_URL } from "./config";
 import { Toaster } from "./components/ui";
+import { NetworkNotice } from "./components/NetworkNotice";
 
 function currentRoute(): string {
   // The app's pages live in the hash (#/launch); "#/" is the front page.
@@ -165,6 +166,7 @@ export function App({ route: fixed }: { route?: string }) {
   return (
     <>
       <Header route={route} />
+      <NetworkNotice />
       {/* A new route mounts a new page, which fades in. */}
       <Fragment key={route}>{page}</Fragment>
       <Toaster />

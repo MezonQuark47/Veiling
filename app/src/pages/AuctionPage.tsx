@@ -18,6 +18,7 @@ import {
   type AssetInfo,
   Button,
   Notice,
+  pushToast,
   TxLink,
   goodsAmount,
   useAction,
@@ -49,6 +50,7 @@ import {
   nftNumbersOf,
   nftsReady,
   phaseOf,
+  type Phase,
   refundOf,
   revealClosesAt,
   revealMissed,
@@ -67,6 +69,8 @@ import {
   priceOf,
   saleFailed,
   waitsForPool,
+  priceSuffix,
+  priceText,
 } from "../lib/chain";
 import { type ItemEntry, itemStart } from "../lib/items";
 import { type RevealStep, revealArt } from "../lib/reveal";
@@ -99,6 +103,7 @@ import { formatCount, formatDateTime, formatDuration, formatSol, parseSol, plura
 import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/price";
 import { errorMessage, sendTransaction, sendTransactions, waitUntil, type WalletSigner } from "../lib/tx";
 import { requestConnect, useWallet } from "../lib/wallet";
+import { type Reminder, downloadIcs, googleCalendarUrl } from "../lib/calendar";
 
 // ---------------------------------------------------------------------------
 
@@ -206,8 +211,13 @@ function EvictionHint({
   return null;
 }
 
-/** Turns a typed price into ticks, rounded down so a bid never pays more than typed. */
+/**
+ * Turns a typed price into ticks, rounded down so a bid never pays more than
+ * typed. A price below the minimum is only flagged once the person leaves the
+ * field, so typing 100 does not flash red at "1" and "10".
+ */
 function usePriceInput(auction: Auction, asset: AssetInfo, input: string) {
+  const [focused, setFocused] = useState(false);
   const typed = parseAmount(input);
   const ticks = typed ? ticksOf(auction, typed, asset.decimals, "down") : null;
   const tooLow = ticks !== null && ticks < auction.minPrice;
@@ -215,7 +225,35 @@ function usePriceInput(auction: Auction, asset: AssetInfo, input: string) {
   const valid = ticks !== null && !tooLow && !tooHigh;
   const shown = valid ? formatPrice(auction, ticks, asset.decimals) : null;
   const typedText = typed ? `${formatDecimal(typed)} SOL` : null;
-  return { ticks: valid ? ticks : null, tooLow, tooHigh, rounded: Boolean(shown && typedText && shown !== typedText), shown };
+  const showLow = tooLow && !focused;
+  return {
+    ticks: valid ? ticks : null,
+    tooLow: showLow,
+    tooHigh,
+    invalid: input !== "" && !valid && !(tooLow && focused),
+    rounded: Boolean(shown && typedText && shown !== typedText),
+    shown,
+    focus: { onFocus: () => setFocused(true), onBlur: () => setFocused(false) },
+  };
+}
+
+/** What the price field says when the typed price is below the sale's minimum. */
+function tooLowText(auction: Auction, min: string, unit: string): string {
+  const plain = min.replace(" SOL", "").replace(/,/g, "");
+  return auction.launch
+    ? `Too low: this sale's minimum FDV is ${min}. Enter ${plain} or more.`
+    : `Too low: the minimum here is ${min} per ${unit}. Enter ${plain} or more.`;
+}
+
+/** For a new token: FDV picks at 1, 2, 5 and 10 times the sale's minimum. */
+function fdvPicks(auction: Auction, decimals: number | null): [string, string][] {
+  return [1n, 2n, 5n, 10n]
+    .map((k) => auction.minPrice * k)
+    .filter((t) => t <= MAX_PRICE_TICKS)
+    .map((t, i) => {
+      const text = formatPrice(auction, t, decimals);
+      return [text.replace(" SOL", "").replace(/,/g, ""), i === 0 ? `Minimum (${text})` : text];
+    });
 }
 
 function placedMessage(sig: string, evicted: Bid | null, noted: boolean) {
@@ -328,20 +366,28 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
         </p>
       </div>
       <div className="field">
-        <label htmlFor="price">Most you would pay per {asset.unit} (SOL)</label>
+        <label htmlFor="price">{auction.launch ? "Highest FDV you would pay (SOL)" : `Most you would pay per ${asset.unit} (SOL)`}</label>
         <input
           id="price"
           inputMode="decimal"
           value={priceInput}
           placeholder={`At least ${min.replace(" SOL", "")}`}
           onChange={(e) => setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))}
-          aria-invalid={priceInput !== "" && !price.ticks}
+          {...price.focus}
+          aria-invalid={price.invalid}
           aria-describedby="price-hint"
         />
+        {auction.launch ? (
+          <QuickPicks label="Quick FDVs" options={fdvPicks(auction, asset.decimals)} value={priceInput} onPick={setPriceInput} />
+        ) : null}
         <p id="price-hint" className={`hint${price.tooLow || price.tooHigh ? " hint--error" : ""}`}>
           {price.tooHigh && max
-            ? `This auction takes prices up to ${formatDecimal(max)} SOL.`
-            : `At least ${min}. Sealed: nobody ever sees it.`}
+            ? `This auction takes ${auction.launch ? "an FDV" : "prices"} up to ${formatDecimal(max)} SOL.`
+            : price.tooLow
+              ? tooLowText(auction, min, asset.unit)
+              : auction.launch
+              ? `At least ${min}. FDV is the token's whole value at your price: the price per token × 1,000,000,000 tokens. Sealed: nobody ever sees it.`
+              : `At least ${min}. Sealed: nobody ever sees it.`}
           {price.rounded && price.shown ? ` Rounded down to ${price.shown}.` : ""}
         </p>
       </div>
@@ -590,13 +636,16 @@ function RaiseBid({
   return (
     <div className="raise">
       <div className="field">
-        <label htmlFor={`raise-price-${bid.index}`}>Most you would pay per {asset.unit} (SOL)</label>
+        <label htmlFor={`raise-price-${bid.index}`}>
+          {auction.launch ? "Highest FDV you would pay (SOL)" : `Most you would pay per ${asset.unit} (SOL)`}
+        </label>
         <input
           id={`raise-price-${bid.index}`}
           inputMode="decimal"
           value={priceInput}
           onChange={(e) => setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))}
-          aria-invalid={priceInput !== "" && !price.ticks}
+          {...price.focus}
+          aria-invalid={price.invalid}
         />
       </div>
       <div className="field">
@@ -716,13 +765,16 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
           value={priceInput}
           placeholder={`At least ${min.replace(" SOL", "")}`}
           onChange={(e) => setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))}
-          aria-invalid={priceInput !== "" && !price.ticks}
+          {...price.focus}
+          aria-invalid={price.invalid}
           aria-describedby="price-hint"
         />
         <p id="price-hint" className={`hint${price.tooLow || price.tooHigh ? " hint--error" : ""}`}>
           {price.tooHigh && max
             ? `This auction takes prices up to ${formatDecimal(max)} SOL.`
-            : `At least ${min}. Sealed: nobody ever sees it.`}
+            : price.tooLow
+              ? tooLowText(auction, min, "NFT")
+              : `At least ${min}. Sealed: nobody ever sees it.`}
           {price.rounded && price.shown ? ` Rounded down to ${price.shown}.` : ""}
         </p>
       </div>
@@ -925,7 +977,7 @@ function Progress({
       refresh();
       fold.reload();
       if (after && after.status === "settling") {
-        return `The price is ${formatPrice(after, after.clearingPrice, asset.decimals)} per ${unit}.`;
+        return `The price is ${priceText(after, after.clearingPrice, asset.decimals, unit)}.`;
       }
       if (before && folded && folded.steps > before.steps) {
         return `Step ${folded.steps} of ${foldSteps} done. Run the next one.`;
@@ -1186,7 +1238,7 @@ function Progress({
                     ? `The bids did not reach the ${formatSol(auction.minRaise)} SOL target, so no token is made.`
                     : "The bids did not reach the sale's minimum, so it does not go ahead."
                   : auction.filled
-                    ? `Cleared at ${clearing} per ${unit}.`
+                    ? `Cleared at ${clearing}${priceSuffix(auction, unit)}.`
                     : `Demand did not cover the supply, so every valid bid wins at the minimum price of ${clearing}.`}
               </p>
             )}
@@ -1546,7 +1598,7 @@ function YourBids({
               {note && sealedAt ? (
                 <p className="bidlist__note">
                   {auction.kind === "token"
-                    ? `Sealed: a budget of ${formatSol(noteSize(note) > 0n ? noteSize(note) : b.deposit)} SOL at up to ${sealedAt} per ${asset.unit}.`
+                    ? `Sealed: a budget of ${formatSol(noteSize(note) > 0n ? noteSize(note) : b.deposit)} SOL at up to ${sealedAt}${priceSuffix(auction, asset.unit)}.`
                     : `Sealed for ${plural(Number(noteSize(note)), "NFT")} at up to ${sealedAt} each.`}{" "}
                   Only your wallet can read this note, and it is deleted once the bid is collected.
                 </p>
@@ -1859,13 +1911,14 @@ export function AuctionPage({ address }: { address: string }) {
             </p>
           )}
           <p className="auction-head__status">{statusText(auction, now, asset)}</p>
+          <ShareRow title={asset.title} auction={auction} phase={phase} />
         </div>
         <div className="auction-head__tags">
           {auction.featured ? <span className="tag tag--featured">Featured</span> : null}
           {collection && auction.unrevealed ? <span className="tag tag--warn">Art hidden until revealed</span> : null}
           {collection ? <span className="tag tag--ok">Minted only for winners</span> : null}
           {auction.launch ? <span className="tag tag--ok">New token</span> : null}
-          {auction.launch ? <span className="tag tag--ok">Made only if it sells out</span> : null}
+          {auction.launch ? <LaunchTag auction={auction} phase={phase} failed={failed} cleared={cleared} /> : null}
           {!collection && !auction.launch && locked ? <span className="tag tag--ok">Supply locked</span> : null}
           {!collection && !auction.launch && locked === false ? <span className="tag tag--warn">Supply not locked</span> : null}
         </div>
@@ -1905,9 +1958,11 @@ export function AuctionPage({ address }: { address: string }) {
               </dd>
             </div>
             <div>
-              <dt>Minimum price</dt>
+              <dt>{auction.launch ? "Minimum FDV" : "Minimum price"}</dt>
               <dd>
-                {minPrice} per {asset.unit}
+                {minPrice}
+                {priceSuffix(auction, asset.unit)}
+                {auction.launch ? <span className="muted">; the pool opens here if the sale sells out at it</span> : null}
               </dd>
             </div>
             <div>
@@ -2038,9 +2093,9 @@ export function AuctionPage({ address }: { address: string }) {
               <dd>{supplyDescription(auction, asset)}</dd>
             </div>
             <div>
-              <dt>Minimum price</dt>
+              <dt>{auction.launch ? "Minimum FDV" : "Minimum price"}</dt>
               <dd>
-                {minPrice} <span className="muted">per {asset.unit}</span>
+                {minPrice} <span className="muted">{priceSuffix(auction, asset.unit).trim()}</span>
               </dd>
             </div>
             <div>
@@ -2091,5 +2146,152 @@ export function AuctionPage({ address }: { address: string }) {
       </div>
       {collection ? <Gallery auction={auction} meta={about} entries={entries} /> : null}
     </main>
+  );
+}
+
+/** Where a new token's sale stands, in one tag. */
+function LaunchTag({ auction, phase, failed, cleared }: { auction: Auction; phase: Phase; failed: boolean; cleared: boolean }) {
+  if (failed) return <span className="tag tag--warn">Target raise not reached</span>;
+  if (auction.liquidity === "pooled" || auction.liquidity === "released") return <span className="tag tag--ok">Token live</span>;
+  if (cleared) return <span className="tag tag--ok">Sold out</span>;
+  if (phase === "upcoming") return <span className="tag tag--ok">Opens soon</span>;
+  if (phase === "bidding")
+    return (
+      <span className="tag tag--ok tag--live">
+        <span className="tag__dot" aria-hidden="true" />
+        Auction in progress
+      </span>
+    );
+  if (phase === "cancelled") return <span className="tag tag--warn">Cancelled</span>;
+  return <span className="tag tag--ok">Bidding closed: finding the price</span>;
+}
+
+/** A reminder in the person's own calendar: when bidding opens and before it closes. */
+function RemindMe({ title, auction, phase }: { title: string; auction: Auction; phase: Phase }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !(e.target as Element).closest(".remind")) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  if (phase !== "upcoming" && phase !== "bidding") return null;
+  const url = window.location.href;
+  const late = "If the sale fills up near the end, late bids can keep bidding open a few minutes longer.";
+  // Before bidding opens: the whole bidding window, with alarms as it opens and
+  // 30 minutes before it closes. While it is open: its last 30 minutes.
+  const reminder: Reminder =
+    phase === "upcoming"
+      ? {
+          title: `Bidding on ${title} (Veiling)`,
+          start: auction.startTime,
+          end: auction.endTime,
+          details: `Sealed bidding on ${title} opens at the start of this event and closes at its end. Your bid stays private; every winner pays one clearing price. ${late}`,
+          url,
+          alarms: [0],
+          alarmBeforeEnd: 30,
+          uid: `${auction.address.toBase58()}-window@veiling`,
+        }
+      : {
+          title: `Last call: ${title} bidding closes (Veiling)`,
+          start: Math.max(auction.startTime, auction.endTime - 30 * 60),
+          end: auction.endTime,
+          details: `Bidding on ${title} closes at the end of this event. Place or raise your sealed bid before then. ${late}`,
+          url,
+          alarms: [0],
+          uid: `${auction.address.toBase58()}-close@veiling`,
+        };
+  const file = `veiling-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sale"}.ics`;
+  return (
+    <span className="remind">
+      <button
+        type="button"
+        className="share-row__button"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm7 7v3l2 1" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Remind me
+      </button>
+      {open ? (
+        <span className="remind__menu" role="menu">
+          <span className="remind__note">
+            {phase === "upcoming" ? "As bidding opens, and 30 minutes before it closes." : "30 minutes before bidding closes."}
+          </span>
+          <a
+            role="menuitem"
+            className="remind__item"
+            href={googleCalendarUrl(reminder)}
+            target="_blank"
+            rel="noreferrer noopener"
+            onClick={() => setOpen(false)}
+          >
+            Google Calendar
+          </a>
+          <button
+            type="button"
+            role="menuitem"
+            className="remind__item"
+            onClick={() => {
+              downloadIcs(reminder, file);
+              setOpen(false);
+              pushToast("Reminder downloaded. Open the file to add it to your calendar.");
+            }}
+          >
+            Apple Calendar, Outlook (.ics)
+          </button>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/** Share the sale: the system share sheet where there is one, else copy the link; and a post on X. */
+function ShareRow({ title, auction, phase }: { title: string; auction: Auction; phase: Phase }) {
+  const link = typeof window === "undefined" ? "" : window.location.href;
+  const text = `Bid on ${title} on Veiling: private bids, public price.`;
+  const share = async () => {
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({ title: `${title} on Veiling`, text, url: link });
+        return;
+      } catch (e) {
+        // Closing the share sheet is not an error worth a message.
+        if (e instanceof Error && e.name === "AbortError") return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      pushToast("Link copied");
+    } catch {
+      pushToast("Could not copy the link. Copy it from the address bar.");
+    }
+  };
+  const post = `https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(link)}`;
+  return (
+    <p className="share-row">
+      <button type="button" className="share-row__button" onClick={() => void share()}>
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path d="M12 3v12M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Share
+      </button>
+      <a className="share-row__button" href={post} target="_blank" rel="noreferrer noopener">
+        <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+          <path d="M17.75 3h3.07l-6.71 7.67L22 21h-6.18l-4.84-6.33L5.44 21H2.37l7.18-8.2L2 3h6.34l4.37 5.78L17.75 3Zm-1.08 16.2h1.7L7.4 4.73H5.58L16.67 19.2Z" fill="currentColor" />
+        </svg>
+        Post on X
+      </a>
+      <RemindMe title={title} auction={auction} phase={phase} />
+    </p>
   );
 }

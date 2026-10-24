@@ -1,4 +1,4 @@
-import { type Auction, type Bid, bidCapacity, formatPrice, phaseOf, saleFailed, supplyShare } from "../lib/chain";
+import { type Auction, type Bid, bidCapacity, formatPrice, phaseOf, priceSuffix, saleFailed, supplyShare } from "../lib/chain";
 import { formatCount, formatDateTime, formatDuration, formatSol } from "../lib/format";
 import { statusText } from "./AuctionTable";
 import { type AssetInfo, goodsAmount } from "./ui";
@@ -195,12 +195,22 @@ export function AuctionBoard({
           </>
         ) : cleared ? (
           <>
-            <p className="board__label">{auction.filled ? "Clearing price" : "Demand fell short, so every valid bid won at the minimum price"}</p>
+            <p className="board__label">
+              {!auction.filled
+                ? "Demand fell short, so every valid bid won at the minimum price"
+                : auction.launch
+                  ? "Clearing price, as FDV"
+                  : "Clearing price"}
+            </p>
             <p className="board__value">
               {formatPrice(auction, auction.clearingPrice, asset.decimals)}
-              <span className="board__unit"> per {asset.unit}</span>
+              <span className="board__unit">{priceSuffix(auction, asset.unit)}</span>
             </p>
-            <p className="board__sub">Every winner pays this price, whatever they bid.</p>
+            <p className="board__sub">
+              {auction.launch
+                ? "Every winner pays this price, whatever they bid, and the token's pool opens at it."
+                : "Every winner pays this price, whatever they bid."}
+            </p>
           </>
         ) : (
           <>

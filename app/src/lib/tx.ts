@@ -1,5 +1,6 @@
 import { SendTransactionError, Transaction, type Keypair, type PublicKey } from "@solana/web3.js";
 import idl from "../idl/sealed_auction.json";
+import { NETWORK_LABEL } from "../config";
 import { connection } from "./chain";
 
 /** What the app needs from a connected wallet. */
@@ -148,6 +149,11 @@ export function explainLogs(logs: string[] | null | undefined): string | null {
     const anchor = line.match(/Error Message: (.*?)\.?$/);
     if (anchor) return anchor[1];
   }
+  // A transfer the wallet cannot cover fails in the system program, whose
+  // error codes are not the program's.
+  for (const line of logs) {
+    if (/insufficient (funds|lamports)/i.test(line)) return NOT_ENOUGH_SOL;
+  }
   for (const line of logs) {
     const custom = line.match(/custom program error: 0x([0-9a-f]+)/i);
     if (custom) {
@@ -155,18 +161,29 @@ export function explainLogs(logs: string[] | null | undefined): string | null {
       return programErrors.get(code) ?? `Program error ${code}`;
     }
   }
-  for (const line of logs) {
-    if (/insufficient (funds|lamports)/i.test(line)) return "Not enough SOL in your wallet for this transaction";
-  }
   return null;
 }
 
+/** The usual reason a wallet cannot pay, with the test network's way out. */
+const NOT_ENOUGH_SOL = NETWORK_LABEL
+  ? `Your wallet does not have enough SOL on ${NETWORK_LABEL} for this. Make sure your wallet is set to ${NETWORK_LABEL}; free test SOL is at faucet.solana.com.`
+  : "Your wallet does not have enough SOL for this. Add SOL and try again.";
+
+/** Plain English for the failures people meet most; anything else as it came. */
+const FRIENDLY: [RegExp, string][] = [
+  [/User rejected|rejected the request|user denied/i, "You cancelled the request in your wallet."],
+  [/AccountNotFound|InsufficientFundsFor(Fee|Rent)|insufficient (funds|lamports)|no record of a prior credit/i, NOT_ENOUGH_SOL],
+  [/BlockhashNotFound|Blockhash not found|block height exceeded|has expired/i, "The transaction took too long and expired. Please try again."],
+  [
+    /Failed to fetch|NetworkError|fetch failed|ECONNREFUSED|429|Too Many Requests|timed? ?out/i,
+    "The Solana network could not be reached. Check your connection and try again in a moment.",
+  ],
+];
+
 export function errorMessage(e: unknown): string {
-  if (e instanceof Error) {
-    if (/User rejected|rejected the request/i.test(e.message)) return "You cancelled the request in your wallet";
-    return e.message;
-  }
-  return String(e);
+  const message = e instanceof Error ? e.message : String(e);
+  for (const [pattern, text] of FRIENDLY) if (pattern.test(message)) return text;
+  return message;
 }
 
 export function sleep(ms: number): Promise<void> {
