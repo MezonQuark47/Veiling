@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { LeftoverNotes, NoteUnlock } from "../components/BidNotes";
-import { Button, Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
+import { AddressLink, Button, Notice, goodsAmount, useAssetInfo, useLoader, useNow } from "../components/ui";
 import { openOnClick, statusText } from "../components/AuctionTable";
 import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, priceSuffix, revealMissed, waitsForPool } from "../lib/chain";
 import { noteSize, readNote } from "../lib/notes";
 import { formatSol, plural } from "../lib/format";
 import { requestConnect, useWallet } from "../lib/wallet";
 import { DashboardSummary, JoinedSales, LaunchedSales } from "../components/Dashboard";
+import { Avatar } from "../components/Account";
 import { fetchWalletView } from "../lib/stats";
 import { STATS_URL } from "../config";
 import { shortAddress } from "../lib/format";
@@ -91,6 +92,10 @@ export function MyBids() {
   // The wallet's whole history, from the keeper (lib/stats.ts); null without one.
   const history = useLoader(() => (key ? fetchWalletView(key) : Promise.resolve(null)), [key], 60_000);
   const view = history.data ?? null;
+  const firstAt = view ? Math.min(...[...view.joined, ...view.launched].map((x) => x.at)) : Infinity;
+  const since = Number.isFinite(firstAt)
+    ? new Date(firstAt * 1000).toLocaleDateString("en-US", { month: "long", year: "numeric" })
+    : null;
   const groups = useMemo(() => (loaded.data ?? []).sort((x, y) => y.auction.endTime - x.auction.endTime), [loaded.data]);
   const allBids = useMemo(() => groups.flatMap((g) => g.bids), [groups]);
   // Bumped when notes from chain arrive, to show them.
@@ -124,7 +129,31 @@ export function MyBids() {
 
   return (
     <main className="page">
-      <h1 className="page__title">Dashboard</h1>
+      {publicKey ? (
+        <header className="profile">
+          <Avatar address={publicKey.toBase58()} size={72} />
+          <div className="profile__text">
+            <h1 className="page__title">Dashboard</h1>
+            <p className="profile__address">
+              <AddressLink address={publicKey} label={shortAddress(publicKey.toBase58(), 6)} copy />
+            </p>
+            <p className="profile__meta">
+              {since ? `On Veiling since ${since}` : "New to Veiling"}
+              {view?.rank ? ` · #${view.rank} on the leaderboard` : ""}
+            </p>
+          </div>
+          <div className="profile__actions">
+            <a className="btn btn--secondary" href="#/stats">
+              Leaderboard
+            </a>
+            <a className="btn btn--primary" href="#/auctions">
+              Find a sale
+            </a>
+          </div>
+        </header>
+      ) : (
+        <h1 className="page__title">Dashboard</h1>
+      )}
       {!publicKey ? (
         <div className="empty dash__connect">
           <p>
@@ -137,9 +166,6 @@ export function MyBids() {
         </div>
       ) : (
         <>
-          <p className="page__lede">
-            Everything {shortAddress(publicKey.toBase58())} has done on Veiling.
-          </p>
           {view ? <DashboardSummary view={view} /> : null}
 
           <section className="section" aria-labelledby="open-bids-title">

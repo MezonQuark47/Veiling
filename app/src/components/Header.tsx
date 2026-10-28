@@ -3,6 +3,7 @@ import { NETWORK_LABEL } from "../config";
 import { shortAddress } from "../lib/format";
 import { CONNECT_EVENT, useWallet } from "../lib/wallet";
 import { errorMessage } from "../lib/tx";
+import { AccountChip, AccountPanel } from "./Account";
 
 /**
  * A sealed bid seen from above, the final price drawn in light under it,
@@ -64,7 +65,6 @@ export function Header({ route }: { route: string }) {
         <nav className="nav" aria-label="Main">
           {link("#/auctions", "Auctions", (r) => r.startsWith("auction"))}
           {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
-          {link("#/bids", "Dashboard", (r) => r.startsWith("bids") || r.startsWith("dashboard"))}
           {link("#/stats", "Stats", (r) => r.startsWith("stats"))}
           {/* A real path, so crawlers find the docs from every page. */}
           {link("/docs/", "Docs", (r) => r.startsWith("docs"))}
@@ -76,34 +76,40 @@ export function Header({ route }: { route: string }) {
             </span>
           ) : null}
           <div className="wallet" ref={menuRef}>
-            <button
-              className={`btn ${publicKey ? "btn--secondary" : "btn--primary"}`}
-              onClick={() => setOpen((o) => !o)}
-              aria-expanded={open}
-              aria-haspopup="menu"
-              disabled={connecting}
-            >
-              {publicKey ? shortAddress(publicKey.toBase58()) : connecting ? "Connecting…" : "Connect wallet"}
-            </button>
-            {open ? (
+            {publicKey ? (
+              <button
+                className="account-button"
+                onClick={() => setOpen((o) => !o)}
+                aria-expanded={open}
+                aria-haspopup="menu"
+                aria-label={`Your account, ${shortAddress(publicKey.toBase58())}`}
+              >
+                <AccountChip publicKey={publicKey} active={open || route.startsWith("bids") || route.startsWith("dashboard")} />
+              </button>
+            ) : (
+              <button
+                className="btn btn--primary"
+                onClick={() => setOpen((o) => !o)}
+                aria-expanded={open}
+                aria-haspopup="menu"
+                disabled={connecting}
+              >
+                {connecting ? "Connecting…" : "Connect wallet"}
+              </button>
+            )}
+            {open && publicKey ? (
+              <AccountPanel
+                publicKey={publicKey}
+                walletName={wallet?.name ?? null}
+                onNavigate={() => setOpen(false)}
+                onDisconnect={() => {
+                  setOpen(false);
+                  void disconnect();
+                }}
+              />
+            ) : open ? (
               <div className="menu" role="menu">
-                {publicKey ? (
-                  <>
-                    <p className="menu__note">
-                      Connected with {wallet?.name}.{NETWORK_LABEL ? ` Use it on ${NETWORK_LABEL}.` : ""}
-                    </p>
-                    <button
-                      className="menu__item"
-                      role="menuitem"
-                      onClick={() => {
-                        setOpen(false);
-                        void disconnect();
-                      }}
-                    >
-                      Disconnect
-                    </button>
-                  </>
-                ) : wallets.length === 0 ? (
+                {wallets.length === 0 ? (
                   <p className="menu__note">
                     No Solana wallet found in this browser. Install{" "}
                     <a href="https://phantom.com/download" target="_blank" rel="noreferrer noopener">
