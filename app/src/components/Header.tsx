@@ -64,7 +64,7 @@ export function Header({ route }: { route: string }) {
         <nav className="nav" aria-label="Main">
           {link("#/auctions", "Auctions", (r) => r.startsWith("auction"))}
           {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
-          {link("#/bids", "My bids", (r) => r.startsWith("bids"))}
+          {link("#/bids", "Dashboard", (r) => r.startsWith("bids") || r.startsWith("dashboard"))}
           {link("#/stats", "Stats", (r) => r.startsWith("stats"))}
           {/* A real path, so crawlers find the docs from every page. */}
           {link("/docs/", "Docs", (r) => r.startsWith("docs"))}

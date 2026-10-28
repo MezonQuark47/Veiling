@@ -1,6 +1,6 @@
 /**
  * The keeper: finishes every sale on its own, and keeps the site's all-time
- * totals and points.
+ * totals, points and each wallet's history.
  *
  * Every step after bidding is public and paid from the sale's own processing
  * fund, so anyone may run it; the keeper simply always does. It watches the
@@ -12,7 +12,8 @@
  *
  * It also reads the program's history into totals and points
  * (`scripts/lib/stats.ts`) and serves them at http://localhost:PORT/stats.json
- * for the site (VITE_STATS_URL).
+ * for the site (VITE_STATS_URL), and each wallet's own history at
+ * /wallet/<address>.json for its dashboard.
  *
  * Settings come from the environment, or from `keeper.env` in the repo root
  * (KEY=value lines; never commit it):
@@ -37,7 +38,7 @@ import { createServer } from "http";
 import { homedir } from "os";
 import { join } from "path";
 import { finishAuction } from "./lib/finish";
-import { indexHistory, loadState, saveSnapshot, saveState, snapshot, type StatsSnapshot } from "./lib/stats";
+import { indexHistory, loadState, saveSnapshot, saveState, snapshot, type StatsSnapshot, walletView } from "./lib/stats";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -169,6 +170,10 @@ async function main() {
         return;
       }
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(latest));
+    } else if (/^\/wallet\/[1-9A-HJ-NP-Za-km-z]{32,44}\.json$/.test(path)) {
+      // One wallet's own history, for its dashboard.
+      const view = walletView(state, path.slice("/wallet/".length, -".json".length), latest);
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(view));
     } else if (path === "/health") {
       res
         .writeHead(200, { "Content-Type": "application/json" })

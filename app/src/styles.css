@@ -4975,3 +4975,50 @@ main.page:not(.page--home)::before {
 .finish .hint {
   margin: 0;
 }
+
+/* ---------------------------------------------------------------- Dashboard */
+
+.page__lede + .totals {
+  margin-top: 24px;
+}
+
+.dash-table td {
+  vertical-align: middle;
+}
+
+.dash-table .row__token {
+  margin-right: 0;
+}
+
+.dash__note {
+  margin-top: 24px;
+}
+
+.dash__connect {
+  margin-top: 24px;
+}
+
+@media (max-width: 640px) {
+  .dash__more {
+    display: none;
+  }
+  .dash-table td,
+  .dash-table th {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+.dash-table .tag,
+.total__value {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .total__value {
+    font-size: var(--step-2);
+  }
+  .dash-table .row__name {
+    font-size: 12px;
+  }
+}

@@ -65,7 +65,7 @@ function Footer() {
           <h2 className="band__heading">Auctions</h2>
           <a href="#/auctions">Browse auctions</a>
           <a href="#/launch">Launch an auction</a>
-          <a href="#/bids">My bids</a>
+          <a href="#/bids">Your dashboard</a>
           <a href="#/stats">Stats and points</a>
         </nav>
         <nav className="band__links" aria-label="Docs">
@@ -148,8 +148,8 @@ export function App({ route: fixed }: { route?: string }) {
       ? "How Veiling works · Sealed-bid auctions on Solana"
       : route.startsWith("launch")
         ? "Launch a sale · Veiling"
-        : route.startsWith("bids")
-          ? "My bids · Veiling"
+        : route.startsWith("bids") || route.startsWith("dashboard")
+          ? "Dashboard · Veiling"
           : route.startsWith("stats")
             ? "Stats and points · Veiling"
           : route.startsWith("auction/")
@@ -163,7 +163,7 @@ export function App({ route: fixed }: { route?: string }) {
   if (route.startsWith("auction/")) page = <AuctionPage address={route.slice("auction/".length)} />;
   else if (route.startsWith("auctions")) page = <Auctions />;
   else if (route.startsWith("launch")) page = <Launch />;
-  else if (route.startsWith("bids")) page = <MyBids />;
+  else if (route.startsWith("bids") || route.startsWith("dashboard")) page = <MyBids />;
   else if (route.startsWith("stats")) page = <Stats />;
   else if (route.startsWith("docs")) page = <Docs section={route.slice("docs/".length)} />;
   else page = <Home />;

@@ -6,6 +6,10 @@ import { type Auction, type Bid, fetchAuction, fetchBidsForBidder, formatPrice, 
 import { noteSize, readNote } from "../lib/notes";
 import { formatSol, plural } from "../lib/format";
 import { requestConnect, useWallet } from "../lib/wallet";
+import { DashboardSummary, JoinedSales, LaunchedSales } from "../components/Dashboard";
+import { fetchWalletView } from "../lib/stats";
+import { STATS_URL } from "../config";
+import { shortAddress } from "../lib/format";
 
 function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; now: number }) {
   const asset = useAssetInfo(auction);
@@ -84,47 +88,97 @@ export function MyBids() {
     [key],
     15_000
   );
+  // The wallet's whole history, from the keeper (lib/stats.ts); null without one.
+  const history = useLoader(() => (key ? fetchWalletView(key) : Promise.resolve(null)), [key], 60_000);
+  const view = history.data ?? null;
   const groups = useMemo(() => (loaded.data ?? []).sort((x, y) => y.auction.endTime - x.auction.endTime), [loaded.data]);
   const allBids = useMemo(() => groups.flatMap((g) => g.bids), [groups]);
   // Bumped when notes from chain arrive, to show them.
   const [, setNotesOpened] = useState(0);
 
+  const openBids = loaded.error ? (
+    <Notice tone="error">Could not load your bids: {loaded.error}</Notice>
+  ) : loaded.loading && !loaded.data ? (
+    <div className="skeletons" aria-label="Loading your bids" role="status">
+      {[0, 1, 2].map((n) => (
+        <span key={n} className="skeleton skeleton--row" />
+      ))}
+    </div>
+  ) : groups.length === 0 ? (
+    <div className="empty">
+      <p>No open bids right now.</p>
+      <a className="btn btn--secondary" href="#/auctions">
+        Browse auctions
+      </a>
+    </div>
+  ) : (
+    <>
+      <NoteUnlock bids={allBids} onOpened={() => setNotesOpened((n) => n + 1)} />
+      <ul className="mybids">
+        {groups.map((g) => (
+          <AuctionBids key={g.auction.address.toBase58()} auction={g.auction} bids={g.bids} now={now} />
+        ))}
+      </ul>
+    </>
+  );
+
   return (
     <main className="page">
-      <h1 className="page__title">My bids</h1>
+      <h1 className="page__title">Dashboard</h1>
       {!publicKey ? (
-        <div className="empty">
-          <p>Connect the wallet you bid with to see your bids, what they won and what comes back to you.</p>
+        <div className="empty dash__connect">
+          <p>
+            Connect your wallet to see everything it has done on Veiling: your bids, the sales you joined and
+            launched, what you spent and won, and your points.
+          </p>
           <Button variant="primary" onClick={requestConnect}>
             Connect wallet
           </Button>
         </div>
-      ) : loaded.error ? (
-        <Notice tone="error">Could not load your bids: {loaded.error}</Notice>
-      ) : loaded.loading && !loaded.data ? (
-        <div className="skeletons" aria-label="Loading your bids" role="status">
-          {[0, 1, 2].map((n) => (
-            <span key={n} className="skeleton skeleton--row" />
-          ))}
-        </div>
-      ) : groups.length === 0 ? (
-        <div className="empty">
-          <p>You have not bid on anything yet.</p>
-          <a className="btn btn--secondary" href="#/auctions">
-            Browse auctions
-          </a>
-        </div>
       ) : (
         <>
-          <NoteUnlock bids={allBids} onOpened={() => setNotesOpened((n) => n + 1)} />
-          <ul className="mybids">
-            {groups.map((g) => (
-              <AuctionBids key={g.auction.address.toBase58()} auction={g.auction} bids={g.bids} now={now} />
-            ))}
-          </ul>
+          <p className="page__lede">
+            Everything {shortAddress(publicKey.toBase58())} has done on Veiling.
+          </p>
+          {view ? <DashboardSummary view={view} /> : null}
+
+          <section className="section" aria-labelledby="open-bids-title">
+            <div className="section__head">
+              <h2 id="open-bids-title" className="section__title">
+                Open bids
+              </h2>
+            </div>
+            {openBids}
+          </section>
+
+          {view ? (
+            <section className="section" aria-labelledby="joined-title">
+              <div className="section__head">
+                <h2 id="joined-title" className="section__title">
+                  Sales you joined
+                </h2>
+              </div>
+              <JoinedSales sales={view.joined} />
+            </section>
+          ) : null}
+
+          {view && view.launched.length > 0 ? (
+            <section className="section" aria-labelledby="launched-title">
+              <div className="section__head">
+                <h2 id="launched-title" className="section__title">
+                  Sales you launched
+                </h2>
+              </div>
+              <LaunchedSales sales={view.launched} />
+            </section>
+          ) : null}
+
+          {!STATS_URL && !view ? (
+            <p className="muted dash__note">Your full history appears here once Veiling's stats are available.</p>
+          ) : null}
+          <LeftoverNotes />
         </>
       )}
-      {publicKey ? <LeftoverNotes /> : null}
     </main>
   );
 }

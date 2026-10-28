@@ -516,3 +516,38 @@ export function mockStats(): import("./stats").StatsSnapshot {
     wallets: Object.fromEntries(leaderboard.map((w) => [w.wallet, [w.points, w.boughtSol, w.raisedSol, w.bids, w.steps]])),
   };
 }
+
+/** A wallet's history for the dashboard, as the keeper would serve it. */
+export function mockWalletView(wallet: string): import("./stats").WalletView {
+  const now = Math.floor(Date.now() / 1000);
+  const day = 86_400;
+  const sol = (v: number) => String(Math.round(v * 1e9));
+  const joined: import("./stats").JoinedSale[] = [
+    { auction: key(11).toBase58(), kind: "launch", mint: key(211).toBase58(), name: "Lantern", symbol: "LNTN", at: now - 3_600, endTime: now + 2_000, bids: 2, deposited: sol(1.5), paid: "0", won: "0", refunded: "0", result: "open" },
+    { auction: key(13).toBase58(), kind: "launch", mint: key(213).toBase58(), name: "Harbor", symbol: "HRBR", at: now - 2 * day, endTime: now - 2 * day + 3_600, bids: 1, deposited: sol(2), paid: sol(1.62), won: "12400000000", refunded: sol(0.38), result: "won" },
+    { auction: key(12).toBase58(), kind: "launch", mint: key(212).toBase58(), name: "Ember", symbol: "EMBR", at: now - 5 * day, endTime: now - 5 * day + 3_600, bids: 1, deposited: sol(0.5), paid: "0", won: "0", refunded: sol(0.5), result: "refunded" },
+    { auction: key(3).toBase58(), kind: "collection", mint: key(203).toBase58(), name: null, symbol: null, at: now - 9 * day, endTime: now - 8 * day, bids: 3, deposited: sol(1.2), paid: sol(0.8), won: "2", refunded: sol(0.4), result: "won" },
+    { auction: key(1).toBase58(), kind: "token", mint: key(201).toBase58(), name: null, symbol: null, at: now - 14 * day, endTime: now - 13 * day, bids: 2, deposited: sol(0.6), paid: "0", won: "0", refunded: sol(0.6), result: "lost" },
+  ];
+  return {
+    wallet,
+    updatedAt: now - 30,
+    points: 312,
+    rank: 18,
+    totals: {
+      bids: 9,
+      salesJoined: joined.length,
+      salesWon: 2,
+      paid: sol(2.42),
+      deposited: sol(5.8),
+      refunded: sol(1.88),
+      salesLaunched: 1,
+      raised: sol(11),
+      steps: 4,
+    },
+    joined,
+    launched: [
+      { auction: key(12).toBase58(), kind: "launch", mint: key(212).toBase58(), name: "Ember", symbol: "EMBR", at: now - 6 * day, endTime: now - 5 * day, bids: 6, bidders: 5, raised: "0", result: "failed" },
+    ],
+  };
+}

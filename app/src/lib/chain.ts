@@ -746,6 +746,11 @@ export async function fetchBidAtIndex(auction: PublicKey, index: number): Promis
 }
 
 export async function fetchBidsForBidder(bidder: PublicKey): Promise<Bid[]> {
+  if (MOCK) {
+    const mock = await import("./mock");
+    const live = mock.mockAuctions().filter((a) => a.status !== "finished").slice(0, 2);
+    return live.flatMap((a) => mock.mockBids(a.address, bidder).filter((b) => b.bidder.equals(bidder)));
+  }
   const rows = await allAccounts<RawBid>("bid", [
     { memcmp: { offset: BID_BIDDER_OFFSET, bytes: bidder.toBase58() } },
   ]);

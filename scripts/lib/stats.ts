@@ -39,16 +39,45 @@ interface WalletRow {
   steps: number;
   sales: number;
   firstSeen: number;
+  /** Every sale this wallet bid in, by sale address. */
+  joined: Record<string, Part>;
+}
+
+/** One wallet's part in one sale. */
+interface Part {
+  bids: number;
+  /** Each bid's whole deposit, by bid address. */
+  deposits: Record<string, number>;
+  /** Lamports paid at the final price. */
+  paid: number;
+  /** Base units or NFTs won. */
+  won: number;
+  /** Lamports that came back: unused deposits and refunds. */
+  refunded: number;
+  /** Bids worked out so far. */
+  settled: number;
+  firstAt: number;
+  lastAt: number;
 }
 
 interface SaleRow {
   seller: string;
   kind: string;
+  mint: string;
   createdAt: number;
+  endTime: number;
   raised: number;
   bids: number;
   bidders: Record<string, number>;
   graduated: boolean;
+  /** A new token's name and symbol, from `LaunchOpened`. */
+  name?: string;
+  symbol?: string;
+  /** The final price was found (`AuctionCleared`). */
+  cleared?: boolean;
+  /** The sale missed its target, so every bid was refunded. */
+  failed?: boolean;
+  cancelled?: boolean;
 }
 
 interface DayRow {
@@ -59,7 +88,7 @@ interface DayRow {
 }
 
 export interface StatsState {
-  version: 1;
+  version: 2;
   programId: string;
   /** The newest transaction already read. */
   newest: string | null;
@@ -107,7 +136,7 @@ export interface WalletPoints {
 }
 
 const emptyState = (programId: PublicKey): StatsState => ({
-  version: 1,
+  version: 2,
   programId: programId.toBase58(),
   newest: null,
   transactions: 0,
@@ -122,7 +151,8 @@ export function loadState(path: string, programId: PublicKey): StatsState {
   if (!existsSync(path)) return emptyState(programId);
   const state = JSON.parse(readFileSync(path, "utf8")) as StatsState;
   // A new program (or a redeploy at a new address) starts over.
-  return state.programId === programId.toBase58() ? state : emptyState(programId);
+  // So does an older state file, which lacks what newer versions keep.
+  return state.programId === programId.toBase58() && state.version === 2 ? state : emptyState(programId);
 }
 
 function saveJson(path: string, value: unknown) {
@@ -180,9 +210,33 @@ export async function indexHistory(
   const seen = (wallet: string, at: number) => {
     let row = state.wallets[wallet];
     if (!row) {
-      row = state.wallets[wallet] = { paid: 0, raised: 0, bids: 0, countedBids: 0, steps: 0, sales: 0, firstSeen: at };
+      row = state.wallets[wallet] = {
+        paid: 0,
+        raised: 0,
+        bids: 0,
+        countedBids: 0,
+        steps: 0,
+        sales: 0,
+        firstSeen: at,
+        joined: {},
+      };
     }
     return row;
+  };
+  const part = (wallet: string, auction: string, at: number) => {
+    const row = seen(wallet, at);
+    const p = (row.joined[auction] ??= {
+      bids: 0,
+      deposits: {},
+      paid: 0,
+      won: 0,
+      refunded: 0,
+      settled: 0,
+      firstAt: at,
+      lastAt: at,
+    });
+    p.lastAt = at;
+    return p;
   };
   const day = (at: number) => (state.days[dayOf(at)] ??= { sales: 0, bids: 0, volume: 0, newUsers: 0 });
   // A wallet counts as a user once it bids or opens a sale.
@@ -232,7 +286,9 @@ export async function indexHistory(
             state.sales[auction] = {
               seller,
               kind: kindOf(field(data, "kind")),
+              mint: str(field(data, "mint")),
               createdAt: at,
+              endTime: num(field(data, "end_time")),
               raised: 0,
               bids: 0,
               bidders: {},
@@ -256,11 +312,26 @@ export async function indexHistory(
             }
             const deposit = num(field(data, "deposit"));
             state.deposited += deposit;
+            const mine = part(bidder, auction, at);
+            mine.bids++;
+            mine.deposits[str(field(data, "bid"))] = deposit;
             day(at).bids++;
+            break;
+          }
+          case "BidIncreased": {
+            const mine = part(str(field(data, "bidder")), auction, at);
+            const bid = str(field(data, "bid"));
+            const deposit = num(field(data, "deposit"));
+            state.deposited += Math.max(0, deposit - (mine.deposits[bid] ?? 0));
+            mine.deposits[bid] = deposit;
             break;
           }
           case "BidSettled": {
             const payment = num(field(data, "payment"));
+            const mine = part(str(field(data, "bidder")), auction, at);
+            mine.settled++;
+            mine.won += num(field(data, "won"));
+            mine.paid += payment;
             if (payment <= 0) break;
             seen(str(field(data, "bidder")), at).paid += payment;
             const sale = state.sales[auction];
@@ -279,6 +350,39 @@ export async function indexHistory(
           case "LaunchGraduated": {
             const sale = state.sales[auction];
             if (sale) sale.graduated = true;
+            break;
+          }
+          case "LaunchOpened": {
+            const sale = state.sales[auction];
+            if (sale) {
+              sale.kind = "launch";
+              sale.mint = str(field(data, "mint"));
+              sale.name = String(field(data, "name") ?? "");
+              sale.symbol = String(field(data, "symbol") ?? "");
+            }
+            break;
+          }
+          case "AuctionCleared": {
+            const sale = state.sales[auction];
+            if (sale) sale.cleared = true;
+            break;
+          }
+          case "MinimumRaiseMissed": {
+            const sale = state.sales[auction];
+            if (sale) sale.failed = true;
+            break;
+          }
+          case "AuctionCancelled": {
+            const sale = state.sales[auction];
+            if (sale) sale.cancelled = true;
+            break;
+          }
+          // What came back to a bidder: unused deposit, a refund, or a bid pushed out.
+          case "BidClosed":
+          case "BidRefunded":
+          case "BidEvicted": {
+            const amount = num(field(data, name === "BidClosed" ? "refund" : name === "BidEvicted" ? "refund" : "amount"));
+            part(str(field(data, "bidder")), auction, at).refunded += amount;
             break;
           }
         }
@@ -353,3 +457,136 @@ export function snapshot(state: StatsState, network: string, exclude: Set<string
 }
 
 export const saveSnapshot = saveJson;
+
+/** One wallet's own history, for its dashboard. Amounts in lamports and base units, as strings. */
+export interface WalletView {
+  wallet: string;
+  updatedAt: number;
+  points: number;
+  /** Place on the leaderboard (1 is first), or null without points. */
+  rank: number | null;
+  totals: {
+    bids: number;
+    salesJoined: number;
+    salesWon: number;
+    paid: string;
+    deposited: string;
+    refunded: string;
+    salesLaunched: number;
+    raised: string;
+    steps: number;
+  };
+  joined: {
+    auction: string;
+    kind: string;
+    mint: string;
+    name: string | null;
+    symbol: string | null;
+    at: number;
+    endTime: number;
+    bids: number;
+    deposited: string;
+    paid: string;
+    won: string;
+    refunded: string;
+    /** won, not won, refunded (the sale did not go ahead), cancelled, or open. */
+    result: "won" | "lost" | "refunded" | "cancelled" | "open";
+  }[];
+  launched: {
+    auction: string;
+    kind: string;
+    mint: string;
+    name: string | null;
+    symbol: string | null;
+    at: number;
+    endTime: number;
+    bids: number;
+    bidders: number;
+    raised: string;
+    /** sold, token made, missed its target, cancelled, or open. */
+    result: "sold" | "made" | "failed" | "cancelled" | "open";
+  }[];
+}
+
+export function walletView(state: StatsState, wallet: string, latest: StatsSnapshot | null): WalletView | null {
+  const row = state.wallets[wallet];
+  const launchedSales = Object.entries(state.sales).filter(([, s]) => s.seller === wallet);
+  if (!row && launchedSales.length === 0) return null;
+  const parts = Object.entries(row?.joined ?? {});
+  const sum = (f: (p: Part) => number) => parts.reduce((n, [, p]) => n + f(p), 0);
+  const deposited = (p: Part) => Object.values(p.deposits).reduce((n, d) => n + d, 0);
+  const points = latest?.wallets[wallet]?.[0] ?? (row ? pointsOf(row) : 0);
+  const rank =
+    latest && latest.wallets[wallet]
+      ? Object.values(latest.wallets).filter(([p]) => p > latest.wallets[wallet][0]).length + 1
+      : null;
+  return {
+    wallet,
+    updatedAt: Math.floor(Date.now() / 1000),
+    points,
+    rank,
+    totals: {
+      bids: row?.bids ?? 0,
+      salesJoined: parts.length,
+      salesWon: parts.filter(([, p]) => p.paid > 0).length,
+      paid: String(sum((p) => p.paid)),
+      deposited: String(sum(deposited)),
+      refunded: String(sum((p) => p.refunded)),
+      salesLaunched: launchedSales.length,
+      raised: String(row?.raised ?? 0),
+      steps: row?.steps ?? 0,
+    },
+    joined: parts
+      .map(([auction, p]) => {
+        const sale = state.sales[auction];
+        const result: WalletView["joined"][number]["result"] = sale?.cancelled
+          ? "cancelled"
+          : sale?.failed
+            ? "refunded"
+            : p.paid > 0 || p.won > 0
+              ? "won"
+              : p.settled > 0 || (sale?.cleared && p.refunded > 0)
+                ? "lost"
+                : "open";
+        return {
+          auction,
+          kind: sale?.kind ?? "token",
+          mint: sale?.mint ?? "",
+          name: sale?.name || null,
+          symbol: sale?.symbol || null,
+          at: p.firstAt,
+          endTime: sale?.endTime ?? 0,
+          bids: p.bids,
+          deposited: String(deposited(p)),
+          paid: String(p.paid),
+          won: String(p.won),
+          refunded: String(p.refunded),
+          result,
+        };
+      })
+      .sort((a, b) => b.at - a.at),
+    launched: launchedSales
+      .map(([auction, s]) => ({
+        auction,
+        kind: s.kind,
+        mint: s.mint,
+        name: s.name || null,
+        symbol: s.symbol || null,
+        at: s.createdAt,
+        endTime: s.endTime,
+        bids: s.bids,
+        bidders: Object.keys(s.bidders).length,
+        raised: String(s.raised),
+        result: (s.cancelled
+          ? "cancelled"
+          : s.failed
+            ? "failed"
+            : s.graduated
+              ? "made"
+              : s.raised > 0
+                ? "sold"
+                : "open") as WalletView["launched"][number]["result"],
+      }))
+      .sort((a, b) => b.at - a.at),
+  };
+}

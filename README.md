@@ -190,7 +190,12 @@ them. The keeper also reads the program's whole transaction history
 up the events the program logs: `AuctionCreated`, `BidPlaced`, `BidSettled`,
 `CrankPaid` and `LaunchGraduated`. It serves the result at
 `http://localhost:8787/stats.json`; point the app at it with
-`VITE_STATS_URL`. The app's Stats page (`#/stats`) shows all-time totals,
+`VITE_STATS_URL`. Each wallet's own history (the sales it joined and
+launched, what it deposited, paid, won and got back) is at
+`/wallet/<address>.json`, which the app's Dashboard (`#/bids`) reads. In
+development, `VITE_STATS_URL=/keeper/stats.json` goes through the dev server's
+proxy to a keeper on the same machine, and `?mock&as=<address>` shows the
+pages as that wallet would see them. The app's Stats page (`#/stats`) shows all-time totals,
 users and SOL bought over time, and a points leaderboard:
 
 | Points | For |

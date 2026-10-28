@@ -50,3 +50,60 @@ export function rankOf(stats: StatsSnapshot, wallet: string): number | null {
   if (!mine) return null;
   return Object.values(stats.wallets).filter(([points]) => points > mine[0]).length + 1;
 }
+
+/** One wallet's own history (scripts/lib/stats.ts, walletView). Amounts are lamports or base units, as strings. */
+export interface WalletView {
+  wallet: string;
+  updatedAt: number;
+  points: number;
+  rank: number | null;
+  totals: {
+    bids: number;
+    salesJoined: number;
+    salesWon: number;
+    paid: string;
+    deposited: string;
+    refunded: string;
+    salesLaunched: number;
+    raised: string;
+    steps: number;
+  };
+  joined: JoinedSale[];
+  launched: LaunchedSale[];
+}
+
+export interface SaleRef {
+  auction: string;
+  kind: string;
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  at: number;
+  endTime: number;
+}
+
+export interface JoinedSale extends SaleRef {
+  bids: number;
+  deposited: string;
+  paid: string;
+  won: string;
+  refunded: string;
+  result: "won" | "lost" | "refunded" | "cancelled" | "open";
+}
+
+export interface LaunchedSale extends SaleRef {
+  bids: number;
+  bidders: number;
+  raised: string;
+  result: "sold" | "made" | "failed" | "cancelled" | "open";
+}
+
+/** A wallet's own history, or null when the site has no stats address or the wallet has none. */
+export async function fetchWalletView(wallet: string): Promise<WalletView | null> {
+  if (MOCK) return (await import("./mock")).mockWalletView(wallet);
+  if (!STATS_URL) return null;
+  const url = STATS_URL.replace(/stats\.json(\?.*)?$/, `wallet/${wallet}.json`);
+  const res = await fetch(url, { cache: "no-cache" });
+  if (!res.ok) throw new Error("Your history could not be loaded right now.");
+  return (await res.json()) as WalletView | null;
+}

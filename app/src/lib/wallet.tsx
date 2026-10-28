@@ -5,6 +5,22 @@ import { PublicKey, Transaction } from "@solana/web3.js";
 import { WALLET_CHAIN } from "../config";
 import type { WalletSigner } from "./tx";
 
+/**
+ * Design work only: `npm run dev` with `?mock&as=<address>` shows pages as
+ * that wallet would see them, without signing anything. Production builds
+ * drop it.
+ */
+const VIEW_AS: PublicKey | null = (() => {
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const as = params.has("mock") ? params.get("as") : null;
+  try {
+    return as ? new PublicKey(as) : null;
+  } catch {
+    return null;
+  }
+})();
+
 // Wallet Standard feature shapes used here (kept local to avoid extra packages).
 type ConnectFeature = {
   connect(input?: { silent?: boolean }): Promise<{ accounts: readonly WalletAccount[] }>;
@@ -168,7 +184,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [wallet, account, publicKey]);
 
   const value = useMemo<WalletState>(
-    () => ({ wallets, wallet, publicKey, connecting, connect, disconnect, signer }),
+    () => ({ wallets, wallet, publicKey: publicKey ?? VIEW_AS, connecting, connect, disconnect, signer }),
     [wallets, wallet, publicKey, connecting, connect, disconnect, signer]
   );
 
