@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PublicKey, type Transaction } from "@solana/web3.js";
 import {
   BATCH_SIZE,
@@ -104,11 +104,12 @@ import { formatDecimal, niceCeil, parseAmount, tokensForBudget } from "../lib/pr
 import { errorMessage, sendTransaction, sendTransactions, waitUntil, type WalletSigner } from "../lib/tx";
 import { requestConnect, useWallet } from "../lib/wallet";
 import { type Reminder, downloadIcs, googleCalendarUrl } from "../lib/calendar";
+import { finishSale, hasWorkLeft, returnLeftovers, sessionBudget } from "../lib/finish";
 
 // ---------------------------------------------------------------------------
 
 /**
- * Splits off a share at the clearing price if needed, delivers what the bid
+ * Splits off a share at the final price if needed, delivers what the bid
  * won and returns the rest of its deposit, retrying if someone else minted
  * some of the same bid's NFTs at the same moment. Returns the last signature.
  */
@@ -488,8 +489,8 @@ function SaleRulesHint({
     parts.push(
       <p key="raise" className="hint">
         {auction.launch
-          ? `The token is made only if the bids reach the ${formatSol(auction.minRaise)} SOL target. If they do not, every deposit comes back in full; the settlement fee does not.`
-          : `The sale goes ahead only if the winners pay at least ${formatSol(auction.minRaise)} SOL in all. If not, every deposit comes back in full; the settlement fee does not.`}
+          ? `The token is made only if the bids reach the ${formatSol(auction.minRaise)} SOL target. If they do not, every deposit comes back in full; the processing fee does not.`
+          : `The sale goes ahead only if the winners pay at least ${formatSol(auction.minRaise)} SOL in all. If not, every deposit comes back in full; the processing fee does not.`}
       </p>
     );
   }
@@ -545,9 +546,94 @@ function CrankNote({ auction }: { auction: Auction }) {
     ...(auction.kind === "collection" ? [`${formatSol(r.seedDraw)} SOL for the shuffle`] : []),
   ];
   return (
-    <p className="muted" title={`Paid from the settlement fund: ${parts.join(", ")}. ${formatSol(auction.crankPool)} SOL is left in it.`}>
-      These steps run on their own. Anyone can also start one; the sale's settlement fund pays its network fee.
+    <p className="muted" title={`Paid from the sale's processing fund: ${parts.join(", ")}. ${formatSol(auction.crankPool)} SOL is left in it.`}>
+      These steps run on their own. Anyone can also run one; the sale pays its network fee.
     </p>
+  );
+}
+
+/**
+ * One click to take the sale through every step left, for when the keeper is
+ * slow: a one-time browser wallet runs them (lib/finish.ts).
+ */
+function FinishSale({ auction, bids, now, refresh }: { auction: Auction; bids: Bid[]; now: number; refresh: () => void }) {
+  const { signer } = useWallet();
+  const action = useAction();
+  const [line, setLine] = useState<string | null>(null);
+  const stopRef = useRef(false);
+  const phase = phaseOf(auction, now);
+  const work = useLoader(
+    () => hasWorkLeft(auction, bids, now),
+    [
+      auction.address.toBase58(),
+      phase,
+      auction.status,
+      auction.checkedCount,
+      auction.resolvedCount,
+      auction.liveBids,
+      auction.liquidity,
+      auction.seedDrawn,
+      auction.pendingComputation.toBase58(),
+      bids.length,
+    ]
+  );
+  // Money left in a one-time wallet by a run that was cut off goes home.
+  useEffect(() => {
+    returnLeftovers()
+      .then((sent) => {
+        if (sent > 0n) pushToast(`${formatSol(sent)} SOL left from an earlier Finish the sale came back to your wallet.`);
+      })
+      .catch(() => {});
+  }, []);
+  const running = action.busy === "finish";
+  if (!running && !work.data) return null;
+
+  const run = () => {
+    stopRef.current = false;
+    return action.run("finish", async () => {
+      if (!signer) throw new Error("Connect a wallet first");
+      try {
+        const result = await finishSale(auction.address, signer, setLine, () => stopRef.current);
+        const back = result.returned > 0n ? ` ${formatSol(result.returned)} SOL came back to your wallet.` : "";
+        return result.stoppedEarly
+          ? `Stopped after ${plural(result.steps, "step")}.${back}`
+          : `Done: ${plural(result.steps, "step")} run.${back}`;
+      } finally {
+        setLine(null);
+        work.reload();
+        refresh();
+      }
+    });
+  };
+
+  return (
+    <div className="finish">
+      <p className="finish__lede">
+        A sale usually finishes on its own within minutes. If this one seems stuck, finish it yourself.
+      </p>
+      {running ? (
+        <div className="finish__run">
+          <p className="working">{line ?? "Starting…"}</p>
+          <Button onClick={() => (stopRef.current = true)} disabled={stopRef.current}>
+            Stop
+          </Button>
+        </div>
+      ) : signer ? (
+        <Button variant="primary" onClick={run}>
+          Finish the sale
+        </Button>
+      ) : (
+        <Button variant="primary" onClick={requestConnect}>
+          Connect a wallet to finish it
+        </Button>
+      )}
+      <p className="hint">
+        With one approval you add {formatSol(sessionBudget(auction, bids))} SOL for network fees to a one-time wallet
+        in this browser. It runs every step left; what it does not use comes back to you, with the steps' rewards and
+        points for each step. Keep this page open until it is done.
+      </p>
+      {action.error ? <Notice tone="error">{action.error}</Notice> : null}
+    </div>
   );
 }
 
@@ -564,7 +650,7 @@ function SettlementFee({ auction }: { auction: Auction }) {
           : ""
       }`}
     >
-      <dt>Settlement fee</dt>
+      <dt>Processing fee</dt>
       <dd>{formatSol(fee)} SOL</dd>
     </div>
   );
@@ -754,7 +840,7 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         />
         <p id="quantity-hint" className={`hint${quantityValid ? "" : " hint--error"}`}>
           {auction.maxPerBid === 1 ? "One NFT per bid." : `Between 1 and ${formatCount(auction.maxPerBid)} NFTs.`}{" "}
-          Minting costs about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT, paid when you collect.
+          Each NFT costs about {formatSol(NFT_MINT_COST_LAMPORTS)} SOL more to create, paid when you collect it.
         </p>
       </div>
       <div className="field">
@@ -1013,7 +1099,7 @@ function Progress({
       if (!after || after.status === "sealed") return "Arcium could not finish this time. Try again.";
       const others = together > 1 ? ` The ${plural(together - 1, "other bid")} checked with it settled too.` : "";
       if (after.status === "atClearing") {
-        return `Bid ${bid.index + 1} is at the clearing price. Its share is split off once every bid at that price is revealed.${others}`;
+        return `Bid ${bid.index + 1} is at the final price. Its share is split off once every bid at that price is revealed.${others}`;
       }
       return after.won > 0n
         ? `Bid ${bid.index + 1} won ${goodsAmount(after.won, asset)} for ${formatSol(after.payment)} SOL.${others}`
@@ -1042,7 +1128,7 @@ function Progress({
       refresh();
       return (
         <>
-          Shares at the clearing price are split off. <TxLink signature={sig} />
+          Shares at the final price are split off. <TxLink signature={sig} />
         </>
       );
     });
@@ -1076,7 +1162,7 @@ function Progress({
         refresh();
         return (
           <>
-            The art is revealed. Winners can now collect their NFTs, and you the proceeds. <TxLink signature={sig} />
+            The art is revealed. Winners can now collect their NFTs, and you your earnings. <TxLink signature={sig} />
           </>
         );
       })
@@ -1090,10 +1176,10 @@ function Progress({
       return (
         <>
           {collection
-            ? "Proceeds were sent to you. Unsold NFTs are never minted."
+            ? "Your earnings were sent to you. Unsold NFTs are never made."
             : auction.launch
               ? "The sale is finished. Once every bid is collected, close it to get its rent back."
-              : "Proceeds and any unsold tokens were sent to you. Tokens that winners have not collected yet stay in escrow for them."}{" "}
+              : "Your earnings and any unsold tokens were sent to you. Tokens that winners have not collected yet are kept for them."}{" "}
           <TxLink signature={sig} />
         </>
       );
@@ -1144,7 +1230,7 @@ function Progress({
     });
 
   // In the safety net, sealed bids can be refunded, and so can bids at the
-  // clearing price whose shares can no longer be split off.
+  // final price whose shares can no longer be split off.
   const refundable = emergency ? [...unsettled, ...(sharesReady ? [] : atClearing)] : [];
   const othersRefundable = refundable.filter((b) => !publicKey || !b.bidder.equals(publicKey));
   const mineRefundable = refundable.filter((b) => publicKey && b.bidder.equals(publicKey));
@@ -1198,9 +1284,12 @@ function Progress({
   return (
     <section className="panel" aria-labelledby="progress-title">
       <h2 id="progress-title" className="panel__title">
-        {phase === "bidding" || phase === "upcoming" ? "After bidding closes" : "Settlement"}
+        {phase === "bidding" || phase === "upcoming" ? "After bidding closes" : "Finishing the sale"}
       </h2>
       <CrankNote auction={auction} />
+      {phase !== "bidding" && phase !== "upcoming" && auction.status !== "cancelled" ? (
+        <FinishSale auction={auction} bids={bids} now={now} refresh={refresh} />
+      ) : null}
 
       {auction.status === "cancelled" ? (
         <p>The seller cancelled this auction before any bids.</p>
@@ -1226,7 +1315,7 @@ function Progress({
               )
             ) : null}
           </Step>
-          <Step state={priceState} title="Reveal the clearing price">
+          <Step state={priceState} title="Find the final price">
             {auction.status === "open" ? (
               <p className="muted">
                 The highest price at which the bids cover everything for sale. Only this price is made public.
@@ -1238,8 +1327,8 @@ function Progress({
                     ? `The bids did not reach the ${formatSol(auction.minRaise)} SOL target, so no token is made.`
                     : "The bids did not reach the sale's minimum, so it does not go ahead."
                   : auction.filled
-                    ? `Cleared at ${clearing}${priceSuffix(auction, unit)}.`
-                    : `Demand did not cover the supply, so every valid bid wins at the minimum price of ${clearing}.`}
+                    ? `Final price: ${clearing}${priceSuffix(auction, unit)}.`
+                    : `Not enough was bid to buy everything, so every valid bid wins at the minimum price of ${clearing}.`}
               </p>
             )}
             {paged && phase === "ready-to-clear" ? (
@@ -1258,7 +1347,7 @@ function Progress({
               )
             ) : null}
           </Step>
-          <Step state={settleState} title={failed ? "Refund every bid" : "Settle every bid"}>
+          <Step state={settleState} title={failed ? "Refund every bid" : "Work out what each bid won"}>
             {failed ? (
               <p className="muted">
                 {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} refunded. Every bid gets its
@@ -1266,13 +1355,13 @@ function Progress({
               </p>
             ) : (
               <p className="muted">
-                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} settled. Arcium works out what
-                each bid won without showing what it bid.
+                {formatCount(auction.resolvedCount)} of {formatCount(auction.bidCount)} done. Arcium works out what each
+                bid won without showing what it bid.
               </p>
             )}
             {collection && auction.filled && auction.weightAt > 0n && auction.status !== "open" ? (
               <p className="muted">
-                Bids at exactly the clearing price share the {plural(Number(left), "NFT")} left there.
+                Bids at exactly the final price share the {plural(Number(left), "NFT")} left there.
                 {sharesReady
                   ? ""
                   : ` ${formatCount(Number(auction.atRevealed))} of ${plural(Number(auction.weightAt), "NFT")} wanted at that price revealed so far.`}
@@ -1286,7 +1375,7 @@ function Progress({
                   .slice(0, 1)
                   .map((b) => (
                     <Button key="mine" variant="primary" onClick={() => settle(b)} busy={action.busy === `settle-${b.address.toBase58()}`} disabled={!signer}>
-                      {failed ? "Refund my bid" : "Settle my bid"}
+                      {failed ? "Refund my bid" : "Run my bid"}
                     </Button>
                   ))}
                 {unsettled.length > 0 ? (
@@ -1295,12 +1384,12 @@ function Progress({
                     busy={action.busy === `settle-${unsettled[0].address.toBase58()}`}
                     disabled={!signer}
                   >
-                    {failed ? "Refund the next bid" : "Settle the next bid"}
+                    {failed ? "Refund the next bid" : "Run the next bid"}
                   </Button>
                 ) : null}
                 {sharesReady && atClearing.length > 0 ? (
                   <Button onClick={split} busy={action.busy === "split"} disabled={!signer}>
-                    Split the shares at the clearing price
+                    Split the shares at the final price
                   </Button>
                 ) : null}
               </div>
@@ -1312,13 +1401,13 @@ function Progress({
                 <p>Revealed. The NFTs show their art.</p>
               ) : missed ? (
                 <p>
-                  The seller did not reveal the art by {formatDateTime(revealDeadline)}, so no NFT is minted and every
+                  The seller did not reveal the art by {formatDateTime(revealDeadline)}, so no NFT is made and every
                   winner takes their payment back.
                 </p>
               ) : now < auction.endTime ? (
                 <p className="muted">
                   The art stays hidden until the seller reveals it after bidding ends, by{" "}
-                  {formatDateTime(revealDeadline)}. No NFT can be minted before; if it is not revealed by then, every
+                  {formatDateTime(revealDeadline)}. No NFT can be made before; if it is not revealed by then, every
                   winner takes their payment back.
                 </p>
               ) : isSeller ? (
@@ -1328,7 +1417,7 @@ function Progress({
                     {meta?.sealed
                       ? "Your wallet makes the key that opens your sealed art, which is then published as committed."
                       : "Your NFTs' metadata must be online at the link you committed."}{" "}
-                    Then winners can collect their NFTs and you the proceeds.
+                    Then winners can collect their NFTs and you your earnings.
                   </p>
                   <Button variant="primary" onClick={reveal} busy={action.busy === "reveal"} disabled={!signer}>
                     Reveal the art
@@ -1344,33 +1433,35 @@ function Progress({
             </Step>
           ) : null}
           {collection && !unshuffled ? (
-            <Step state={shuffleState} title="Shuffle the NFTs">
+            <Step state={shuffleState} title="Draw who gets which NFT">
               <p className="muted">
-                Which NFTs each winner gets is drawn at random by Arcium once every bid is settled, so nobody can
+                Which NFTs each winner gets is drawn at random by Arcium once every bid is worked out, so nobody can
                 pick or predict them. Anyone can start it.
               </p>
               {auction.seedDrawn ? (
-                <p>Shuffled. Every winner's NFTs are fixed.</p>
+                <p>Drawn. Every winner's NFTs are fixed.</p>
               ) : !ready && shuffleDue ? (
                 auctionPending ? (
-                  <p className="working">Shuffling on Arcium…</p>
+                  <p className="working">Drawing on Arcium…</p>
                 ) : (
                   <Button variant="primary" onClick={shuffle} busy={action.busy === "shuffle"} disabled={!signer}>
-                    Shuffle the NFTs
+                    Draw the NFTs
                   </Button>
                 )
               ) : null}
             </Step>
           ) : null}
-          <Step state={collectState} title={`Deliver ${asset.goods} and refunds`}>
+          <Step state={collectState} title={failed ? "Send the refunds" : `Send out ${asset.goods} and refunds`}>
             <p className="muted">
-              {uncollected.length > 0 ? `${plural(uncollected.length, "settled bid")} still to deliver. ` : ""}
-              Winners get their {asset.goods} and everyone gets their unused SOL. Anyone can do this for any bid; it
-              only ever pays the bid's owner.
+              {uncollected.length > 0 ? `${plural(uncollected.length, "bid")} still to send out. ` : ""}
+              {failed
+                ? "Every bidder gets their whole deposit back."
+                : `Winners get their ${asset.goods} and everyone gets the SOL they did not spend.`}{" "}
+              Anyone can do this for any bid; it only ever pays the bid's owner.
               {auction.launch && auction.liquidity !== "pooled" && !failed
                 ? ` The ${asset.goods} reach winners once the pool is open; refunds can go out now.`
                 : ""}
-              {collection ? ` NFTs are minted as they are delivered, about ${formatSol(NFT_MINT_COST_LAMPORTS)} SOL each.` : ""}
+              {collection ? ` Each NFT is created as it is sent, for about ${formatSol(NFT_MINT_COST_LAMPORTS)} SOL.` : ""}
             </p>
             {deliverable.length > 0 ? (
               <Button
@@ -1378,7 +1469,7 @@ function Progress({
                 busy={action.busy === `deliver-${deliverable[0].address.toBase58()}`}
                 disabled={!signer}
               >
-                Deliver the next bid
+                Send the next bid
               </Button>
             ) : null}
           </Step>
@@ -1403,9 +1494,9 @@ function Progress({
         <div className="panel__footer">
           <p>
             {auction.launch
-              ? "The pool is open. Finish the sale, then close it once every bid is collected to get the rents and what is left of the settlement fund back."
+              ? "The pool is open. Finish the sale, then close it once every bid is collected to get your storage costs and what is left of the processing fund back."
               : auction.liquidity === "pooled"
-              ? "Your share of the proceeds was paid when the pool opened. Finish the sale to take back any unsold tokens."
+              ? "Your earnings were paid when the pool opened. Finish the sale to take back any unsold tokens."
               : failed
                 ? `The sale did not go ahead. Take back your tokens${auction.liquidity === "failed" ? " and the pool's reserve" : ""}.`
                 : auction.status === "settling"
@@ -1413,8 +1504,8 @@ function Progress({
                 ? `You can collect ${formatSol(auction.proceeds - fee)} SOL: ${formatSol(auction.proceeds)} SOL of sales less the ${formatPercent(auction.saleFeeBps)} platform fee (${formatSol(fee)} SOL)${collection ? "." : ", plus any unsold tokens."}`
                 : `You can collect ${formatSol(auction.proceeds)} SOL${collection ? "." : " and any unsold tokens."}`
               : collection
-                ? "Settlement stalled; you can end the sale. Unsold NFTs are never minted."
-                : "Settlement stalled; you can take your tokens back."}
+                ? "The sale got stuck; you can end it. Unsold NFTs are never made."
+                : "The sale got stuck; you can take your tokens back."}
           </p>
           <Button variant="primary" onClick={claim} busy={action.busy === "claim"}>
             {auction.liquidity === "pooled"
@@ -1422,7 +1513,7 @@ function Progress({
               : failed
                 ? "Take tokens back"
                 : auction.status === "settling"
-                  ? "Claim proceeds"
+                  ? "Collect earnings"
                   : collection
                     ? "End the sale"
                     : "Take tokens back"}
@@ -1433,12 +1524,12 @@ function Progress({
           <p className="muted">
             {auction.launch
               ? "Make the token and open its pool under Token and pool below."
-              : "Open the pool under Auto-liquidity; it pays you the rest of the proceeds as it opens."}
+              : "Open the pool under Trading pool; it pays you the rest of what the sale raised as it opens."}
           </p>
         </div>
       ) : isSeller && awaitingReveal && auction.status === "settling" && !missed ? (
         <div className="panel__footer">
-          <p className="muted">Reveal the art above to collect the proceeds.</p>
+          <p className="muted">Reveal the art above to collect your earnings.</p>
         </div>
       ) : isSeller && awaitingReveal && missed && auction.proceeds > 0n ? (
         <div className="panel__footer">
@@ -1448,14 +1539,14 @@ function Progress({
         </div>
       ) : isSeller && auction.status === "settling" && atClearing.length > 0 && auction.resolvedCount + atClearing.length === auction.bidCount ? (
         <div className="panel__footer">
-          <p className="muted">Split the shares at the clearing price above, then you can claim the proceeds.</p>
+          <p className="muted">Split the shares at the final price above, then you can collect your earnings.</p>
         </div>
       ) : null}
 
       {mineRefundable.length > 0 ? (
         <div className="panel__footer">
           <p>
-            Settlement stalled for {auction.launch ? "a day" : "three days"}, so you can take your deposit back in
+            The sale has been stuck for {auction.launch ? "a day" : "three days"}, so you can take your deposit back in
             full. The bid then counts as lost.
           </p>
           {mineRefundable.map((b) => (
@@ -1506,7 +1597,7 @@ function Progress({
       {/* The safety net only matters while some bid is still undecided. */}
       {!emergency && auction.status !== "cancelled" && auction.bidCount > 0 && auction.resolvedCount < auction.bidCount ? (
         <p className="hint">
-          If settlement ever stalls, refunds open on {formatDateTime(emergencyOpensAt(auction))}.
+          If anything gets stuck, every bidder can take their deposit back from {formatDateTime(emergencyOpensAt(auction))}.
         </p>
       ) : null}
 
@@ -1625,10 +1716,10 @@ function YourBids({
                   ? "Sealed"
                   : b.status === "atClearing"
                     ? sharesReady
-                      ? "At the clearing price. Your share is ready to collect."
-                      : "At the clearing price. Your share is known once every bid at that price is revealed."
+                      ? "At the final price. Your share is ready to collect."
+                      : "At the final price. Your share is known once every bid at that price is revealed."
                     : takesBack
-                      ? `Won ${goodsAmount(b.won, asset)}, but the art was not revealed in time, so no NFT is minted and your whole ${formatSol(b.deposit)} SOL deposit comes back.`
+                      ? `Won ${goodsAmount(b.won, asset)}, but the art was not revealed in time, so no NFT is made and your whole ${formatSol(b.deposit)} SOL deposit comes back.`
                       : poolWait
                         ? `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. Your ${asset.goods} and the ${formatSol(refundOf(b))} SOL left of your deposit can be collected once the pool is open.`
                         : b.won > 0n
@@ -1916,11 +2007,11 @@ export function AuctionPage({ address }: { address: string }) {
         <div className="auction-head__tags">
           {auction.featured ? <span className="tag tag--featured">Featured</span> : null}
           {collection && auction.unrevealed ? <span className="tag tag--warn">Art hidden until revealed</span> : null}
-          {collection ? <span className="tag tag--ok">Minted only for winners</span> : null}
+          {collection ? <span className="tag tag--ok">Made only for winners</span> : null}
           {auction.launch ? <span className="tag tag--ok">New token</span> : null}
           {auction.launch ? <LaunchTag auction={auction} phase={phase} failed={failed} cleared={cleared} /> : null}
-          {!collection && !auction.launch && locked ? <span className="tag tag--ok">Supply locked</span> : null}
-          {!collection && !auction.launch && locked === false ? <span className="tag tag--warn">Supply not locked</span> : null}
+          {!collection && !auction.launch && locked ? <span className="tag tag--ok">Fixed supply</span> : null}
+          {!collection && !auction.launch && locked === false ? <span className="tag tag--warn">More can be made</span> : null}
         </div>
       </header>
       {isAdmin ? <AdminControls auction={auction} refresh={loaded.reload} /> : null}
@@ -1962,7 +2053,7 @@ export function AuctionPage({ address }: { address: string }) {
               <dd>
                 {minPrice}
                 {priceSuffix(auction, asset.unit)}
-                {auction.launch ? <span className="muted">; the pool opens here if the sale sells out at it</span> : null}
+                {auction.launch ? <span className="muted">. If it sells out at this price, trading starts here.</span> : null}
               </dd>
             </div>
             <div>
@@ -1970,7 +2061,7 @@ export function AuctionPage({ address }: { address: string }) {
               <dd>
                 {collection
                   ? `One NFT at the minimum price, ${formatSol(auction.minDeposit)} SOL`
-                  : `A sealed budget of ${formatSol(auction.minDeposit)} SOL`}
+                  : `A budget of ${formatSol(auction.minDeposit)} SOL`}
               </dd>
             </div>
             {collection ? (
@@ -2081,7 +2172,7 @@ export function AuctionPage({ address }: { address: string }) {
                   ? "None"
                   : auction.launch
                     ? `${formatPercent(auction.saleFeeBps)} of what the sale raises; the rest opens the pool`
-                    : `${formatPercent(auction.saleFeeBps)} of the proceeds, paid by the seller`}
+                    : `${formatPercent(auction.saleFeeBps)} of what the sale raises, paid by the seller`}
               </dd>
             </div>
         </dl>
@@ -2192,7 +2283,7 @@ function RemindMe({ title, auction, phase }: { title: string; auction: Auction; 
           title: `Bidding on ${title} (Veiling)`,
           start: auction.startTime,
           end: auction.endTime,
-          details: `Sealed bidding on ${title} opens at the start of this event and closes at its end. Your bid stays private; every winner pays one clearing price. ${late}`,
+          details: `Sealed bidding on ${title} opens at the start of this event and closes at its end. Your bid stays private; every winner pays one final price. ${late}`,
           url,
           alarms: [0],
           alarmBeforeEnd: 30,

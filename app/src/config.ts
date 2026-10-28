@@ -15,6 +15,12 @@ export const CLUSTER_OFFSET = 456;
 export const MXE_X25519_PUBLIC_KEY: string = "3af7353bdb51c48ff2af7fe35b740509b4bb4fa4feb756e5b68389f2c9047f3d";
 
 export const RPC_URL: string = import.meta.env.VITE_RPC_URL || "https://api.devnet.solana.com";
+/**
+ * Where the keeper (scripts/keeper.ts) serves all-time totals and points,
+ * e.g. https://stats.veiling.xyz/stats.json. Without it the site shows what
+ * is on chain right now, and no Stats page data.
+ */
+export const STATS_URL: string | null = import.meta.env.VITE_STATS_URL || null;
 export const WALLET_CHAIN = "solana:devnet";
 const MAINNET = (WALLET_CHAIN as string) === "solana:mainnet";
 /** Shown in the header on a test network, so nobody takes it for mainnet; empty on mainnet. */
@@ -30,7 +36,7 @@ export const PAGE_BIDS = 256;
  * Pages a bid book can have. It opens new ones as it fills: up to 4 for a
  * token auction (1,024 bids) and 40 for a collection (10,240 bids, so even a
  * 10,000-NFT collection can sell out at one NFT per bid). Either way it is
- * one auction with one clearing price.
+ * one auction with one final price.
  */
 export const MAX_TOKEN_PAGES = 4;
 export const MAX_COLLECTION_PAGES = 40;
@@ -165,7 +171,7 @@ export const GITHUB_URL = "https://github.com/MezonQuark47/Veiling";
 export const PROJECT_X_URL: string | null = null;
 
 // Auto-liquidity: a token sale can open a Meteora DAMM v2 pool at its
-// clearing price. Must match the program's `liquidity` module.
+// final price. Must match the program's `liquidity` module.
 export const CP_AMM_ID = new PublicKey("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
 export const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 /** Share of the net proceeds a pool takes, in bps: 20% to 100%. */

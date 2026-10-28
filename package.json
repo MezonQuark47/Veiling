@@ -1,6 +1,7 @@
 {
   "license": "ISC",
   "scripts": {
+    "keeper": "ts-node --transpile-only scripts/keeper.ts",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },

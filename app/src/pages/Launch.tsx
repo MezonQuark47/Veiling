@@ -334,7 +334,7 @@ export function Launch() {
       <h1 className="page__title">Launch a sealed auction</h1>
       <p className="page__lede">
         Release a drop, build a collection item by item, or launch a new token. However you put it together, it
-        sells through sealed bids: buyers name their own price in secret, and everyone who wins pays one clearing
+        sells through sealed bids: buyers name their own price in secret, and everyone who wins pays one final
         price.
       </p>
       <KindChooser value={kind} onChange={setKind} />
@@ -865,8 +865,8 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
             </div>
           ) : null}
           <p className="hint">
-            The collection is created when the auction opens, and NFTs are minted straight to their winners when
-            they collect them; NFTs nobody wins are never minted. Once the sale is closed, the collection is yours
+            The collection is created when the auction opens, and NFTs are made straight in their winners' wallets when
+            they collect them; NFTs nobody wins are never made. Once the sale is closed, the collection is yours
             to manage.
           </p>
         </fieldset>
@@ -1007,7 +1007,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
                 )}
                 <p className="hint hint--warn">
                   After bidding ends you have {revealDays} days to reveal from this wallet. Until you do, no NFT can be
-                  minted and you are not paid; if you do not, every winner takes their payment back.
+                  made and you are not paid; if you do not, every winner takes their payment back.
                 </p>
               </>
             ) : null}
@@ -1079,7 +1079,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
           </div>
           <p className="hint">
             Up to {formatCount(MAX_COLLECTION_SIZE)} NFTs. Each winner pays about{" "}
-            {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT in rent and Metaplex fees when collecting.
+            {formatSol(NFT_MINT_COST_LAMPORTS)} SOL per NFT in network costs when collecting.
           </p>
         </fieldset>
 
@@ -1089,7 +1089,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
 
         <fieldset className="group">
           <legend className="group__title">Earnings</legend>
-          <p className="hint">The proceeds of the sale go to the wallet that opens the auction, less the platform fee below.</p>
+          <p className="hint">What the sale raises goes to the wallet that opens the auction, less the platform fee below.</p>
           <div className="field">
             <label htmlFor="royalty">Creator earnings (%)</label>
             <input
@@ -1174,19 +1174,19 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
                 <dt>Sale</dt>
                 <dd>
                   <span className="fees__amount">{formatPercent(fees.data.saleFeeBps)}</span>
-                  <span className="fees__note">Of the proceeds, taken when you claim them. Fixed for this auction.</span>
+                  <span className="fees__note">Of what the sale raises, taken when you collect it. Fixed for this auction.</span>
                 </dd>
               </div>
               {crank.data ? (
                 <div>
-                  <dt>Settlement fund</dt>
+                  <dt>Processing fee</dt>
                   <dd>
                     <span className="fees__amount">
                       {formatSol(sellerCrankFee(crank.data, "collection"))} SOL
                     </span>
                     <span className="fees__note">
-                      Pays whoever runs the private steps that find the price and shuffle the NFTs, so
-                      your sale settles without you. Each bid adds {formatSol(bidCrankFee(crank.data))} SOL for its
+                      Pays whoever runs the private steps that find the price and draw the NFTs, so
+                      your sale finishes without you. Each bid adds {formatSol(bidCrankFee(crank.data))} SOL for its
                       own steps. What is not used comes back when you close the auction.
                     </span>
                   </dd>
@@ -1200,7 +1200,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
           )}
           {nftPlan.listed ? (
             <p className="hint">
-              The item list holds {formatSol(itemListRent(nftPlan.listed.length))} SOL of rent while the sale runs; it
+              The item list holds {formatSol(itemListRent(nftPlan.listed.length))} SOL of storage while the sale runs; it
               comes back when you close the auction.
             </p>
           ) : null}

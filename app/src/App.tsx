@@ -6,6 +6,7 @@ import { Auctions } from "./pages/Auctions";
 import { Home } from "./pages/Home";
 import { Launch } from "./pages/Launch";
 import { MyBids } from "./pages/MyBids";
+import { Stats } from "./pages/Stats";
 import { FEATURE_CONTACT, GITHUB_URL, PROJECT_X_URL } from "./config";
 import { Toaster } from "./components/ui";
 import { NetworkNotice } from "./components/NetworkNotice";
@@ -47,7 +48,7 @@ function Footer() {
           </a>
           <p>
             Future of launchpads. Private bids, public price: sealed-bid auctions for new tokens and NFT
-            collections on Solana, where every winner pays one clearing price.
+            collections on Solana, where every winner pays one final price.
           </p>
           <div className="band__social">
             <a href={GITHUB_URL} target="_blank" rel="noreferrer noopener" aria-label="Veiling on GitHub" title="Source code on GitHub">
@@ -65,6 +66,7 @@ function Footer() {
           <a href="#/auctions">Browse auctions</a>
           <a href="#/launch">Launch an auction</a>
           <a href="#/bids">My bids</a>
+          <a href="#/stats">Stats and points</a>
         </nav>
         <nav className="band__links" aria-label="Docs">
           <h2 className="band__heading">Docs</h2>
@@ -73,7 +75,7 @@ function Footer() {
           <a href="#/docs/launch">Drops and collections</a>
           <a href="#/docs/token">New tokens</a>
           <a href="#/docs/privacy">What stays private</a>
-          <a href="#/docs/safety">If settlement stalls</a>
+          <a href="#/docs/safety">If something gets stuck</a>
           <a href="#/docs/source">Source code</a>
         </nav>
         <div className="band__feature">
@@ -148,6 +150,8 @@ export function App({ route: fixed }: { route?: string }) {
         ? "Launch a sale · Veiling"
         : route.startsWith("bids")
           ? "My bids · Veiling"
+          : route.startsWith("stats")
+            ? "Stats and points · Veiling"
           : route.startsWith("auction/")
             ? "Auction · Veiling"
             : route.startsWith("auctions")
@@ -160,6 +164,7 @@ export function App({ route: fixed }: { route?: string }) {
   else if (route.startsWith("auctions")) page = <Auctions />;
   else if (route.startsWith("launch")) page = <Launch />;
   else if (route.startsWith("bids")) page = <MyBids />;
+  else if (route.startsWith("stats")) page = <Stats />;
   else if (route.startsWith("docs")) page = <Docs section={route.slice("docs/".length)} />;
   else page = <Home />;
 

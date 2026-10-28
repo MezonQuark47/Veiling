@@ -152,7 +152,56 @@ price, and unused deposits are refunded.
 (steps 3 to 6 and the deliveries), paying only transaction fees and the
 accounts created for winners, and earning the auction's crank rewards. `find_clearing` needs about 370,000 compute
 units, so it is sent with a higher compute limit; so is each `fold_clearing`
-step.
+step. The steps themselves live in `scripts/lib/finish.ts`.
+
+### The keeper
+
+Nobody has to run those steps by hand. `scripts/keeper.ts` watches the
+program and takes every sale to its end as soon as its bidding closes: it
+wakes on the program's logs and at each sale's end time, finishes up to three
+sales at once, and pays out pooled sales' trading fees hourly. Its wallet pays
+each step's network fee and is paid back with the step's reward, so it runs at
+about break-even. The seller's own steps (revealing hidden art, collecting
+earnings, closing the sale) stay with the seller.
+
+```bash
+solana-keygen new --no-bip39-passphrase --silent -o ~/.config/solana/veiling-keeper.json
+# fund it with a little SOL, then put HELIUS_API_KEY=... in keeper.env (never committed)
+yarn keeper            # or: npx ts-node --transpile-only scripts/keeper.ts
+```
+
+Settings (environment or `keeper.env`): `HELIUS_API_KEY` (or `RPC_URL`),
+`NETWORK` (`devnet` or `mainnet`), `KEEPER_WALLET`, `PORT` (8787),
+`DATA_DIR` (`keeper-data`), `EXCLUDE_WALLETS` (wallets that earn no points,
+such as test wallets) and `STATS_ONLY=1`.
+
+If the keeper is ever slow, the sale page's **Finish the sale** button does
+the same from a browser (`app/src/lib/finish.ts`): one transfer funds a
+one-time wallet (about 0.04 SOL, more for NFTs and a pool), the page signs
+every step with it, and everything left, rewards included, goes back to
+the person who funded it. Each private step it queues carries a memo,
+`veiling:helper:<wallet>`, so its points go to that person.
+
+### Stats and points
+
+Finished sales close their accounts, so the chain's current state forgets
+them. The keeper also reads the program's whole transaction history
+(`scripts/lib/stats.ts`), oldest first and then only what is new, and adds
+up the events the program logs: `AuctionCreated`, `BidPlaced`, `BidSettled`,
+`CrankPaid` and `LaunchGraduated`. It serves the result at
+`http://localhost:8787/stats.json`; point the app at it with
+`VITE_STATS_URL`. The app's Stats page (`#/stats`) shows all-time totals,
+users and SOL bought over time, and a points leaderboard:
+
+| Points | For |
+|---|---|
+| 100 per SOL | paid for what you win, at the final price |
+| 50 per SOL | your sales raised |
+| 5 per bid | at most 3 bids in each sale |
+| 5 per step | each finishing step you run (the keeper's own wallets earn none) |
+
+Points have no cash value; the rules are in one place (`POINTS` in
+`scripts/lib/stats.ts`) and can change.
 
 ### Why 1,024 bids for tokens and 10,240 for collections
 
@@ -461,7 +510,9 @@ programs/sealed_auction/   Anchor program (Rust)
 encrypted-ixs/             Arcis MPC circuits and their tests
 tests/sealed_auction.ts    End-to-end test against a live Arcium cluster
 tests/svm/                 The compiled program in LiteSVM (no MPC needed)
-scripts/crank.ts           Takes an ended auction through every public step
+scripts/keeper.ts          Finishes every sale on its own and serves stats.json
+scripts/crank.ts           Takes one ended auction through every public step
+scripts/lib/               The finishing steps and the stats indexer
 scripts/set-fees.ts        Sets the platform fees (admin only)
 scripts/set-crank-rewards.ts Sets the rewards for running MPC steps (admin only)
 scripts/set-listing.ts     Features or hides auctions in the listing (admin only)
@@ -572,7 +623,8 @@ the browser the app replaces the static HTML when it starts; the app reads
 its page from the hash (`#/launch`), or from the path when there is none, so
 `/docs/` opens the docs.
 
-`VITE_RPC_URL` overrides the public devnet RPC. `npm run dev` with `?mock` in
+`VITE_RPC_URL` overrides the public devnet RPC. `VITE_STATS_URL` points the
+Stats page and the front page's totals at the keeper's `stats.json`. `npm run dev` with `?mock` in
 the URL shows sample data for design work (`?mock&nofeature` shows the front
 page without a featured auction); production builds drop it.
 

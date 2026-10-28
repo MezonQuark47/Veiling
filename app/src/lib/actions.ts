@@ -779,7 +779,7 @@ export async function buildCheckBatch(payer: PublicKey, auction: Auction, bids: 
 }
 
 /**
- * The next step towards the clearing price: the whole clearing in one step
+ * The next step towards the final price: the whole clearing in one step
  * while the bids fit on one page, else the next step of the clearing across
  * pages (`foldTotalSteps` in all).
  */
@@ -898,7 +898,7 @@ function finalizeShareInstruction(auction: Auction, bid: Bid) {
 const TALLIES_PER_TX = 4;
 
 /**
- * A book with more than one page counts its bids at the clearing price page
+ * A book with more than one page counts its bids at the final price page
  * by page first (`tally_clearing_page`), so each share can be worked out
  * without reading every page. Returns the transactions still needed, in
  * order; none for a one-page book or once every page is counted.
@@ -928,7 +928,7 @@ async function tallyTransactions(auction: Auction): Promise<Transaction[]> {
 }
 
 /**
- * Splits off the shares of bids at the clearing price, a few per
+ * Splits off the shares of bids at the final price, a few per
  * transaction, after counting the pages if the book has several. Anyone can
  * send these once every such bid has been revealed; they must land in order.
  */
@@ -1024,14 +1024,14 @@ function claimNftsInstruction(payer: PublicKey, auction: Auction, bid: Bid, firs
  * rent to the owner. Anyone can send these; nothing goes anywhere but to the
  * bid's owner.
  *
- * A collection bid at the clearing price only gets its share split off: its
+ * A collection bid at the final price only gets its share split off: its
  * NFTs, like every winner's, wait until every bid is settled and Arcium has
  * shuffled them (`nftsReady`).
  */
 export async function buildCollect(payer: PublicKey, auction: Auction, bid: Bid, now: number): Promise<Transaction[]> {
   if (bid.status === "atClearing") {
-    // Only collection bids wait at the clearing price.
-    if (!sharesAreFinal(auction)) throw new Error("Not every bid at the clearing price has been revealed yet.");
+    // Only collection bids wait at the final price.
+    if (!sharesAreFinal(auction)) throw new Error("Not every bid at the final price has been revealed yet.");
     return [...(await tallyTransactions(auction)), new Transaction().add(await finalizeShareInstruction(auction, bid))];
   }
   if (auction.kind === "token") {

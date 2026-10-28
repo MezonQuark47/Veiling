@@ -28,7 +28,7 @@ const PAGES = [
     path: "/",
     title: "Veiling, future of launchpads · Private bids. Public price.",
     description:
-      "Veiling sells new tokens and NFT collections on Solana by sealed-bid auction. Bids stay private, every winner pays one clearing price, and a new token is made only if its sale sells out.",
+      "Veiling sells new tokens and NFT collections on Solana by sealed-bid auction. Bids stay private, every winner pays one final price, and a new token is made only if its sale sells out.",
   },
   {
     route: "docs",
@@ -36,7 +36,7 @@ const PAGES = [
     path: "/docs/",
     title: "How Veiling works · Sealed-bid auctions on Solana",
     description:
-      "How Veiling's sealed-bid auctions work: bidding, the clearing price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
+      "How Veiling's sealed-bid auctions work: bidding, the final price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
   },
 ];
 
@@ -51,7 +51,11 @@ await build({
   platform: "node",
   format: "esm",
   jsx: "automatic",
-  define: { "import.meta.env.DEV": "false", "import.meta.env.VITE_RPC_URL": "undefined" },
+  define: {
+    "import.meta.env.DEV": "false",
+    "import.meta.env.VITE_RPC_URL": "undefined",
+    "import.meta.env.VITE_STATS_URL": "undefined",
+  },
   // Some dependencies are CommonJS and expect these.
   banner: {
     js: [
@@ -192,7 +196,7 @@ function markdown(html) {
 }
 
 const summary =
-  "Veiling is a launchpad on Solana that sells new tokens and NFT collections by sealed-bid auction. Bids are encrypted in the bidder's browser and settled on Arcium's encrypted compute network, so no one sees them; when bidding closes, one clearing price is made public and every winner pays it.";
+  "Veiling is a launchpad on Solana that sells new tokens and NFT collections by sealed-bid auction. Bids are encrypted in the bidder's browser and settled on Arcium's encrypted compute network, so no one sees them; when bidding closes, one final price (the clearing price) is made public and every winner pays it.";
 
 const llms = `# ${NAME}
 
@@ -200,15 +204,15 @@ const llms = `# ${NAME}
 
 Key facts:
 
-- A new token sells 50% of its supply by sealed bid over 1, 2 or 5 hours. It is made only if the sale sells out; then everything raised, less the platform fee, opens a Meteora pool at the clearing price, locked forever, and the mint is closed for good. If it does not sell out, no token is made and every deposit comes back.
+- A new token sells 50% of its supply by sealed bid over 1, 2 or 5 hours. It is made only if the sale sells out; then everything raised, less the platform fee, opens a Meteora pool at the final price, locked forever, and nobody can ever make more of the token. If it does not sell out, no token is made and every deposit comes back.
 - The token's creator gets no tokens and none of the SOL raised; they earn a share of the pool's trading fees.
 - NFT collections (drops of up to 10,000 NFTs, or collections built item by item) sell the same way; NFTs are minted only for winners, assigned at random, and the art can stay hidden until the sale ends.
-- Every winner pays the same clearing price, never more than their own bid; bids below it are refunded in full.
+- Every winner pays the same final price, never more than their own bid; bids below it are refunded in full.
 - If settlement stalls, every unsettled deposit can be returned one day after bidding ends for a new token, or three days for an NFT collection.
 
 ## Docs
 
-- [How Veiling works](${url("/docs/")}): bidding, the clearing price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
+- [How Veiling works](${url("/docs/")}): bidding, the final price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
 - [Full docs as text](${url("/llms-full.txt")}): the same docs in one Markdown file
 - [Source code](${ssr.GITHUB_URL}): the Solana program, the Arcium circuits and the app
 

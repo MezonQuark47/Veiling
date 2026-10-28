@@ -457,3 +457,62 @@ export function mockNftMetadata(uri: string): NftMetadata | null {
     ],
   };
 }
+
+/** Totals and points for the Stats page, as the keeper would serve them. */
+export function mockStats(): import("./stats").StatsSnapshot {
+  const days = [];
+  let users = 0;
+  const start = Date.UTC(2026, 8, 1) / 1000;
+  for (let d = 0; d < 56; d++) {
+    const wave = Math.sin(d / 5) * 0.5 + 1;
+    const newUsers = Math.round((3 + d * 0.9) * wave);
+    users += newUsers;
+    const bids = Math.round(newUsers * 4.2 + d * 2);
+    days.push({
+      day: new Date((start + d * 86_400) * 1000).toISOString().slice(0, 10),
+      sales: d % 3 === 0 ? 2 : 1,
+      bids,
+      volumeSol: Math.round(bids * 0.37 * wave * 100) / 100,
+      newUsers,
+      users,
+    });
+  }
+  const names = Array.from({ length: 40 }, (_, i) => key(100 + i).toBase58());
+  const leaderboard = names
+    .map((wallet, i) => {
+      const boughtSol = Math.round((90 / (i + 1.4)) * 100) / 100;
+      const raisedSol = i % 7 === 2 ? Math.round((260 / (i + 2)) * 100) / 100 : 0;
+      const bids = 6 + ((i * 7) % 23);
+      const steps = i % 4 === 1 ? 12 - (i % 9) : 0;
+      return {
+        wallet,
+        boughtSol,
+        raisedSol,
+        bids,
+        steps,
+        points: Math.round(boughtSol * 100 + raisedSol * 50 + Math.min(bids, 9) * 5 + steps * 5),
+      };
+    })
+    .sort((a, b) => b.points - a.points);
+  return {
+    updatedAt: Math.floor(Date.now() / 1000) - 40,
+    network: "devnet",
+    points: { perSolBought: 100, perSolRaised: 50, perBid: 5, bidsPerSale: 3, perStep: 5 },
+    totals: {
+      sales: days.reduce((n, d) => n + d.sales, 0),
+      newTokens: 41,
+      tokensMade: 29,
+      collections: 34,
+      bids: days.reduce((n, d) => n + d.bids, 0),
+      users,
+      bidders: users - 31,
+      sellers: 52,
+      volumeSol: Math.round(days.reduce((n, d) => n + d.volumeSol, 0) * 100) / 100,
+      depositedSol: 9_412.6,
+      stepsRun: 3_870,
+    },
+    days,
+    leaderboard,
+    wallets: Object.fromEntries(leaderboard.map((w) => [w.wallet, [w.points, w.boughtSol, w.raisedSol, w.bids, w.steps]])),
+  };
+}

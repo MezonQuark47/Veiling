@@ -139,7 +139,7 @@ export function TokenLaunchForm() {
         <fieldset className="group">
           <legend className="group__title">Token</legend>
           <p className="hint">
-            Nothing is minted now. The token is made only if its sale sells out, with a total supply of at most{" "}
+            Nothing is made now. The token is made only if its sale sells out, with a total supply of at most{" "}
             {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. You hold none: buy at the sale like everyone else.
           </p>
           <div className="field-row">
@@ -185,7 +185,7 @@ export function TokenLaunchForm() {
             <Choice label="Bidding time" value={hours} options={LAUNCH_HOURS.map((h) => [h, `${h} hour${h > 1 ? "s" : ""}`])} onChange={setHours} />
             <p className="hint">
               Bids start at {formatSol(LAUNCH_MIN_BID)} SOL. Bidding opens as soon as the sale does. Only if all{" "}
-              {formatCount(MAX_TOKEN_BIDS)} bid places fill up and a bid is pushed out near the end does it run a
+              {formatCount(MAX_TOKEN_BIDS)} bid spots fill up and a bid is pushed out near the end does it run a
               little longer, so that bidder can answer.
             </p>
           </div>
@@ -203,18 +203,18 @@ export function TokenLaunchForm() {
           <legend className="group__title">If it sells out</legend>
           <ul className="launch-facts">
             <li>The token is made: the {saleShare} of the supply that was sold goes to the winners.</li>
-            <li>It starts trading at the clearing price: an FDV of {fdv ?? "…"} or more.</li>
+            <li>It starts trading at the final price: an FDV of {fdv ?? "…"} or more.</li>
             <li>
               Every SOL raised, less the {fees.data ? formatPercent(fees.data.saleFeeBps) : "…"} sale fee
-              {net ? ` (${formatSol(net, 2)} SOL at the target)` : ""}, opens a Meteora pool at the clearing price with
+              {net ? ` (${formatSol(net, 2)} SOL at the target)` : ""}, opens a Meteora pool at the final price with
               the {goods} it buys there, {pooledTokens ? `${supplyShare(pooledTokens)} of the supply` : "…"} at the
               target. The pool is locked for good.
             </li>
-            <li>Then the mint closes: what the pool does not take is never made, and nobody can ever make more.</li>
+            <li>Then the supply is fixed for good: nobody can ever make more of the token.</li>
           </ul>
           <p className="hint">
             If it does not sell out, no token is ever made, every bid is refunded in full, and you close the sale to
-            get your deposit and rents back.
+            get your deposit back.
           </p>
         </fieldset>
 
@@ -229,7 +229,7 @@ export function TokenLaunchForm() {
               </dd>
             </div>
             <div>
-              <dt>Settlement fund</dt>
+              <dt>Processing fee</dt>
               <dd>
                 <span className="fees__amount">{crank.data ? `${formatSol(sellerCrankFee(crank.data, "token"))} SOL` : "…"}</span>
                 <span className="fees__note">Pays for the private steps that find the price. What is not used comes back.</span>
@@ -239,7 +239,7 @@ export function TokenLaunchForm() {
               <dt>Deposit</dt>
               <dd>
                 <span className="fees__amount">{formatSol(LAUNCH_DEPOSIT)} SOL</span>
-                <span className="fees__note">Pays for the token's accounts and the pool if it graduates. The rest comes back.</span>
+                <span className="fees__note">Pays to create the token and its pool if it sells out. The rest comes back.</span>
               </dd>
             </div>
           </dl>

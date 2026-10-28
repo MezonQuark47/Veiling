@@ -9,7 +9,7 @@ export function statusText(a: Auction, now: number, asset: AssetInfo): string {
   const phase = phaseOf(a, now);
   // A sale that did not reach its target refunds every bid instead of settling.
   if (saleFailed(a) && (phase === "settling" || phase === "settled")) {
-    return phase === "settled" ? "Did not go ahead, bids refunded" : "Did not go ahead, refunding bids";
+    return phase === "settled" ? "Target not reached, bids refunded" : "Target not reached, refunding bids";
   }
   // A new token that sold out is made, then its pool opens.
   if (a.launch && phase === "settled" && a.liquidity === "planned") return `Sold out at ${clearing}, opening the pool`;
@@ -23,13 +23,13 @@ export function statusText(a: Auction, now: number, asset: AssetInfo): string {
     case "checking":
       return `Checking bids, ${a.checkedCount} of ${a.bidCount}`;
     case "ready-to-clear":
-      return "Ready to reveal the price";
+      return "Finding the price";
     case "stalled":
-      return "Stalled, refunds are open";
+      return "Stuck: deposits can be taken back";
     case "settling":
-      return `Settling at ${clearing}`;
+      return `Sold at ${clearing}, finishing up`;
     case "settled":
-      return `Settled at ${clearing}`;
+      return `Sold at ${clearing}`;
     case "finished":
       return a.bidCount > 0 && a.sold > 0n ? `Sold at ${clearing}` : "Closed";
     case "cancelled":

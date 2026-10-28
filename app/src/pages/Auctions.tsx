@@ -100,7 +100,7 @@ export function Auctions() {
   return (
     <main className="page">
       <h1 className="page__title">Auctions</h1>
-      <p className="page__lede">Bid on live sales, see what opens next, and how past sales cleared.</p>
+      <p className="page__lede">Bid on live sales, see what opens next, and what past sales sold at.</p>
       {featured ? (
         <div className="auctions__featured">
           <FeaturedCard auction={featured} now={now} />

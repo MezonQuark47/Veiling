@@ -47,6 +47,13 @@ export default defineConfig({
       ],
     },
   },
+  // With the keeper running on this machine (scripts/keeper.ts), the dev
+  // server passes /keeper/stats.json on to it: VITE_STATS_URL=/keeper/stats.json.
+  server: {
+    proxy: {
+      "/keeper": { target: "http://localhost:8787", rewrite: (path) => path.replace(/^\/keeper/, "") },
+    },
+  },
   build: {
     target: "es2022",
     chunkSizeWarningLimit: 2500,

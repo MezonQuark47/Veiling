@@ -6,6 +6,7 @@ import { buildAcceptAdmin } from "../lib/actions";
 import { type Auction, fetchAdminRoles, fetchAuctions, phaseOf } from "../lib/chain";
 import { rank } from "./Auctions";
 import { sendTransaction } from "../lib/tx";
+import { fetchStats } from "../lib/stats";
 import { useWallet } from "../lib/wallet";
 
 /** A number that counts up from zero the first time it is scrolled into view. */
@@ -47,18 +48,29 @@ function CountUp({ value, decimals = 0 }: { value: number; decimals?: number }) 
   );
 }
 
-/** Veiling in numbers, from the sales on chain. */
+/**
+ * Veiling in numbers: all time when the keeper's totals are there
+ * (lib/stats.ts), else from the sales on chain right now.
+ */
 function Stats({ auctions, now }: { auctions: Auction[]; now: number }) {
+  const totals = useLoader(fetchStats, []).data?.totals ?? null;
   const listed = auctions.filter((a) => !a.hidden);
   const live = listed.filter((a) => phaseOf(a, now) === "bidding").length;
   const bids = listed.reduce((sum, a) => sum + a.bidCount, 0);
   const deposited = Number(listed.reduce((sum, a) => sum + a.totalDeposited, 0n)) / 1e9;
-  const items: [number, number, string][] = [
-    [live, 0, "Live sales"],
-    [listed.length, 0, "Sales held"],
-    [bids, 0, "Sealed bids"],
-    [deposited, deposited < 100 ? 1 : 0, "SOL deposited"],
-  ];
+  const items: [number, number, string][] = totals
+    ? [
+        [live, 0, "Live now"],
+        [totals.sales, 0, "Sales so far"],
+        [totals.users, 0, "Users"],
+        [totals.volumeSol, totals.volumeSol < 100 ? 1 : 0, "SOL bought"],
+      ]
+    : [
+        [live, 0, "Live now"],
+        [listed.length, 0, "Sales so far"],
+        [bids, 0, "Bids placed"],
+        [deposited, deposited < 100 ? 1 : 0, "SOL deposited"],
+      ];
   return (
     <section className="stats" aria-label="Veiling in numbers">
       {items.map(([value, decimals, label], i) => (
@@ -69,6 +81,11 @@ function Stats({ auctions, now }: { auctions: Auction[]; now: number }) {
           <span className="stat__label">{label}</span>
         </div>
       ))}
+      {totals ? (
+        <a className="stats__more" href="#/stats">
+          All stats and points
+        </a>
+      ) : null}
     </section>
   );
 }
@@ -172,7 +189,7 @@ const STEPS: { title: string; text: string; boxes: Box[] }[] = [
   },
   {
     title: "One price is found",
-    text: "After bidding closes, the clearing price is the highest price at which the bids cover the supply.",
+    text: "After bidding closes, the final price is the highest price at which the bids cover the supply.",
     boxes: [...stack(false), { y: 0, w: 170, h: 1, d: 170, look: "plane" }],
   },
   {
@@ -237,7 +254,7 @@ export function Home() {
           <p className="stage__tagline">Private bids. Public price.</p>
           <p className="stage__lede">
             Veiling sells new tokens and NFT collections on Solana by sealed bid. Your price stays encrypted from
-            the moment you bid. When bidding closes, one clearing price is found, every winner pays it, and
+            the moment you bid. When bidding closes, one final price is found, every winner pays it, and
             whatever you did not spend comes back.
           </p>
           <div className="stage__actions">
@@ -275,10 +292,9 @@ export function Home() {
           ))}
         </ol>
         <p className="how__fine">
-          A new token is made only if its sale sells out, and its mint closes for good right after. An NFT
-          collection is created with its auction and only winners' NFTs are ever minted. If the private network
-          ever stalls, bidders can take back their deposits, a day after the end for a token and three days for a
-          collection. <a href="#/docs">Read the details</a>.
+          A new token is made only if its sale sells out, and nobody can ever make more of it after that. An NFT
+          collection's NFTs are made only for the people who win them. If anything ever gets stuck, bidders can
+          take their deposits back: a day after the end for a token, three days for a collection. <a href="#/docs">Read the details</a>.
         </p>
       </section>
 
@@ -288,19 +304,19 @@ export function Home() {
             No one sees your bid. Not the seller, not other bidders, not us.
           </h2>
           <p className="page__lede">
-            A deposit only bounds a bid, so a wall of large deposits proves nothing. Here is exactly what the
-            chain shows.
+            A deposit only sets the most a bid can spend, so big deposits do not give away real demand. Here is
+            exactly what anyone can see.
           </p>
         </div>
         <div className="split">
           <div className="split__card" data-reveal style={{ "--i": 0 } as CSSProperties}>
-            <h3 className="split__head">On chain, for anyone</h3>
+            <h3 className="split__head">Public, for anyone</h3>
             <p>Who bid, how many bids, and each deposit</p>
-            <p>The clearing price and the demand at it</p>
+            <p>The final price, and how much was bid at it</p>
             <p>What each winner won and paid</p>
           </div>
           <div className="split__card split__card--sealed" data-reveal style={{ "--i": 1 } as CSSProperties}>
-            <h3 className="split__head">Sealed, for everyone</h3>
+            <h3 className="split__head">Hidden, from everyone</h3>
             <p>The price of every bid, winning or not</p>
             <p>The budget of every losing token bid</p>
             <p>The size of every losing collection bid</p>
@@ -336,7 +352,7 @@ export function Home() {
             <Scene boxes={NFTS} height={230} className="scene--dots" />
             <h3>NFT collections</h3>
             <p>
-              Up to 10,000 NFTs and 10,240 bids. NFTs are minted when winners collect them, assigned at random,
+              Up to 10,000 NFTs and 10,240 bids. NFTs are made when winners collect them, handed out at random,
               and the art can stay hidden until the sale ends.
             </p>
           </div>
@@ -344,8 +360,9 @@ export function Home() {
             <Scene boxes={POOL} height={230} className="scene--dots" />
             <h3>A pool at the price</h3>
             <p>
-              What a new token raises, less the platform fee, opens its Meteora pool at exactly the clearing price,
-              locked for good. Trading starts with a 50% fee that falls to the pool's own fee over ten minutes.
+              Everything a new token raises, less the platform fee, goes into a Meteora trading pool at exactly the
+              final price, and nobody can ever take it out. A high fee in the first ten minutes keeps sniping bots
+              away.
             </p>
           </div>
         </div>

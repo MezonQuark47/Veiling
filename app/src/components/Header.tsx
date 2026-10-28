@@ -5,7 +5,7 @@ import { CONNECT_EVENT, useWallet } from "../lib/wallet";
 import { errorMessage } from "../lib/tx";
 
 /**
- * A sealed bid seen from above, the clearing price drawn in light under it,
+ * A sealed bid seen from above, the final price drawn in light under it,
  * and the refunded layer below.
  */
 export function Logo() {
@@ -65,6 +65,7 @@ export function Header({ route }: { route: string }) {
           {link("#/auctions", "Auctions", (r) => r.startsWith("auction"))}
           {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
           {link("#/bids", "My bids", (r) => r.startsWith("bids"))}
+          {link("#/stats", "Stats", (r) => r.startsWith("stats"))}
           {/* A real path, so crawlers find the docs from every page. */}
           {link("/docs/", "Docs", (r) => r.startsWith("docs"))}
         </nav>

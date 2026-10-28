@@ -4,7 +4,7 @@ import { type CSSProperties, useEffect, useState } from "react";
  * Small 3D scenes drawn with CSS transforms: every box is six faces in a
  * preserve-3d stack, so it needs no canvas or WebGL. Boxes are sealed
  * (periwinkle glass), lit (a winning bid), out (refunded), glass (the seal
- * itself) or a plane (the clearing price).
+ * itself) or a plane (the final price).
  */
 
 export type BoxLook = "" | "lit" | "out" | "glass" | "plane";
@@ -144,7 +144,7 @@ export function BidTower() {
           </span>
           <span className={priceOn ? "" : "is-dim"}>
             <i className="key key--price" />
-            Clearing price
+            Final price
           </span>
           <span className={phase === "reveal" ? "" : "is-dim"}>
             <i className="key key--won" />
@@ -156,7 +156,7 @@ export function BidTower() {
           </span>
         </span>
         <span className="sr-only">
-          Sealed bids are stacked by price. One clearing price cuts through them: the bids above it win and all
+          Sealed bids are stacked by price. One final price cuts through them: the bids above it win and all
           pay that price, and the bids below it are refunded.
         </span>
       </figcaption>

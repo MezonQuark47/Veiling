@@ -44,3 +44,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Keeper bot: its settings (API keys) and local state
+keeper.env
+keeper-data/

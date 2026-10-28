@@ -204,7 +204,7 @@ export function randomU64(): BN {
 
 export type AuctionKind = "token" | "collection";
 export type AuctionStatus = "open" | "settling" | "finished" | "cancelled";
-/** `atClearing`: revealed exactly at the clearing price, share not split off yet. */
+/** `atClearing`: revealed exactly at the final price, share not split off yet. */
 export type BidStatus = "sealed" | "settled" | "atClearing";
 
 export interface Auction {
@@ -242,10 +242,10 @@ export interface Auction {
   /** Price every winner pays, in ticks; the minimum price without a fill. */
   clearingPrice: bigint;
   filled: boolean;
-  /** Demand above and at the clearing price: lamports of budget for tokens, NFTs for collections. */
+  /** Demand above and at the final price: lamports of budget for tokens, NFTs for collections. */
   weightAbove: bigint;
   weightAt: bigint;
-  /** Collections: NFTs asked for by bids revealed at the clearing price so far. */
+  /** Collections: NFTs asked for by bids revealed at the final price so far. */
   atRevealed: bigint;
   sold: bigint;
   delivered: bigint;
@@ -658,7 +658,7 @@ export function revealMissed(a: Auction, now: number): boolean {
 }
 
 /**
- * Once every collection bid exactly at the clearing price has been revealed,
+ * Once every collection bid exactly at the final price has been revealed,
  * their shares of the NFTs left there are fixed and can be split off (anyone
  * can).
  */
@@ -832,7 +832,7 @@ export async function fetchPageDeposits(a: Auction, page: number): Promise<bigin
   return Array.from({ length: PAGE_BIDS }, (_, i) => view.getBigUint64(BOOK_DEPOSITS_OFFSET + 8 * i, true));
 }
 
-/** A book's index: the smallest deposit on each page, and how far the count of bids at the clearing price got. */
+/** A book's index: the smallest deposit on each page, and how far the count of bids at the final price got. */
 export interface BookIndex {
   smallestDeposits: bigint[];
   talliedPages: number;
@@ -862,7 +862,7 @@ export async function findSmallestPage(a: Auction): Promise<{ page: number; depo
   return { page, deposit: index.smallestDeposits[page] };
 }
 
-/** NFTs asked for by each bid revealed at the clearing price, by bid index (0 for the rest). */
+/** NFTs asked for by each bid revealed at the final price, by bid index (0 for the rest). */
 export async function fetchClearingQuantities(a: Auction): Promise<number[]> {
   if (MOCK) return Array.from({ length: bidCapacity(a) }, (_, i) => (i === 2 ? 3 : 0));
   const pages = await fetchBookPages(a);
@@ -872,7 +872,7 @@ export async function fetchClearingQuantities(a: Auction): Promise<number[]> {
 }
 
 /**
- * A collection bid's share at the clearing price, as `finalize_share`
+ * A collection bid's share at the final price, as `finalize_share`
  * computes it: each bid there gets its size times the NFTs left over the
  * demand at that price, rounded down, and the NFTs lost to rounding go one
  * each to the bids with the lowest indices.

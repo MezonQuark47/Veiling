@@ -23,7 +23,7 @@ function places(a: Auction, bids: Bid[]): Place[] {
 const PLACE_LABELS: Record<Exclude<Place, "empty">, string> = {
   sealed: "Sealed",
   won: "Won",
-  at: "At the clearing price",
+  at: "At the final price",
   lost: "Did not win",
   closed: "Collected",
 };
@@ -48,7 +48,7 @@ function BidBook({ auction, bids }: { auction: Auction; bids: Bid[] }) {
         className="book__grid"
         viewBox={`-1 -1 ${columns * (cell + gap) - gap + 2} ${rows * (cell + gap) - gap + 2}`}
         role="img"
-        aria-label={`${auction.bidCount} of ${capacity} bid places taken`}
+        aria-label={`${auction.bidCount} of ${capacity} bid spots taken`}
       >
         {all.map((place, i) => (
           <rect
@@ -64,8 +64,8 @@ function BidBook({ auction, bids }: { auction: Auction; bids: Bid[] }) {
       </svg>
       <figcaption className="book__caption">
         <span>
-          {formatCount(auction.bidCount)} of {formatCount(capacity)} bid places taken
-          {auction.bidCount >= capacity ? ". New bids must out-deposit the smallest." : "."}
+          {formatCount(auction.bidCount)} of {formatCount(capacity)} bid spots taken
+          {auction.bidCount >= capacity ? ". To get in now, deposit more than the smallest bid." : "."}
         </span>
         {present.length > 1 || (present.length === 1 && present[0] !== "sealed") ? (
           <span className="book__legend">
@@ -176,7 +176,7 @@ export function AuctionBoard({
             <p className="board__label">Bidding closes in</p>
             <Countdown secs={auction.endTime - now} />
             <p className="board__sub">
-              {formatDateTime(auction.endTime)}. Every price stays sealed until then, and after.
+              {formatDateTime(auction.endTime)}. Every bid's price stays hidden, now and after.
               {auction.extendedSecs > 0
                 ? ` Extended by ${formatDuration(auction.extendedSecs)}: a bid was replaced near the end, so its owner had time to answer.`
                 : ""}
@@ -184,7 +184,7 @@ export function AuctionBoard({
           </>
         ) : failed && auction.status === "settling" ? (
           <>
-            <p className="board__label">Did not go ahead</p>
+            <p className="board__label">Target not reached</p>
             <p className="board__value board__value--text">Every bid is refunded</p>
             <p className="board__sub">
               {auction.launch
@@ -199,8 +199,8 @@ export function AuctionBoard({
               {!auction.filled
                 ? "Demand fell short, so every valid bid won at the minimum price"
                 : auction.launch
-                  ? "Clearing price, as FDV"
-                  : "Clearing price"}
+                  ? "Final price, as FDV"
+                  : "Final price"}
             </p>
             <p className="board__value">
               {formatPrice(auction, auction.clearingPrice, asset.decimals)}

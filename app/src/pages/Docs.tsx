@@ -43,14 +43,15 @@ const MAX_SALE_FEE_BPS = 500;
 export const DOC_SECTIONS: [string, string][] = [
   ["how", "How an auction works"],
   ["bidding", "Bidding"],
-  ["price", "The clearing price"],
+  ["price", "The final price"],
   ["launch", "Drops and collections"],
   ["nfts", "NFT collections"],
   ["token", "New tokens"],
   ["liquidity", "The token's pool"],
   ["fees", "Fees"],
   ["privacy", "What stays private"],
-  ["safety", "If settlement stalls"],
+  ["safety", "If something gets stuck"],
+  ["points", "Stats and points"],
   ["faq", "Questions"],
   ["source", "Source code"],
   ["featured", "Getting featured"],
@@ -68,26 +69,26 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
     {
       question: "What is Veiling?",
       answer:
-        "Veiling is a launchpad on Solana that sells new tokens and NFT collections by sealed-bid auction. Buyers bid in private, and when bidding closes one clearing price is found that every winner pays.",
+        "Veiling is a launchpad on Solana that sells new tokens and NFT collections by sealed-bid auction. Buyers bid in private, and when bidding closes one final price is found that every winner pays.",
     },
     {
       question: "How does a sealed bid stay private?",
       answer:
-        "Your price is encrypted in your browser before it leaves it. Arcium's network checks and settles the bids without anyone, Veiling included, seeing them. Only the clearing price is made public.",
+        "Your price is encrypted in your browser before it leaves it. Arcium's network checks and settles the bids without anyone, Veiling included, seeing them. Only the final price is made public.",
     },
     {
       question: "Does every winner pay the same price?",
       answer:
-        "Yes. Every winner pays the clearing price, which is never above their own bid. Bids below it win nothing and get their whole deposit back.",
+        "Yes. Every winner pays the final price, which is never above their own bid. Bids below it win nothing and get their whole deposit back.",
     },
     {
       question: "How does a new token launch work?",
-      answer: `${share} of the supply is sold by sealed bid over ${LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours. If it sells out, the token is made and everything raised, less the platform fee, opens a Meteora pool at the clearing price, locked for good. If not, no token is ever made and every deposit comes back in full.`,
+      answer: `${share} of the supply is sold by sealed bid over ${LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours. If it sells out, the token is made and everything raised, less the platform fee, opens a Meteora pool at the final price, locked for good. If not, no token is ever made and every deposit comes back in full.`,
     },
     {
       question: "What does FDV mean on Veiling?",
       answer:
-        "A new token's prices are shown and bid as its fully diluted value (FDV): the price per token times its whole supply of 1,000,000,000 tokens. A bid names the highest FDV it would pay, and the token starts trading at the clearing FDV.",
+        "A new token's prices are shown and bid as its fully diluted value (FDV): the price per token times its whole supply of 1,000,000,000 tokens. A bid names the highest FDV it would pay, and the token starts trading at the final FDV.",
     },
     {
       question: "Can a token's creator sell into the market or mint more?",
@@ -96,10 +97,10 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
     },
     {
       question: "What does it cost?",
-      answer: `Sellers pay ${listing} and ${sale}. Each bid pays a small settlement fee for the private steps that settle the sale. Deposits that are not spent come back in full.`,
+      answer: `Sellers pay ${listing} and ${sale}. Each bid pays a small processing fee for the private steps that finish the sale. Deposits that are not spent come back in full.`,
     },
     {
-      question: "What happens if settlement stalls?",
+      question: "What happens if a sale gets stuck?",
       answer:
         "Nothing stays locked. If Arcium's network stops answering, anyone can return every unsettled bid's whole deposit to its owner one day after bidding ends for a new token, or three days for an NFT collection.",
     },
@@ -193,7 +194,7 @@ export function Docs({ section }: { section: string }) {
       <header className="docs__head">
         <h1 className="page__title">How Veiling works</h1>
         <p className="page__lede">
-          Veiling sells new tokens and NFT collections through sealed bids and a single clearing price. This page
+          Veiling sells new tokens and NFT collections through sealed bids and a single final price. This page
           explains what happens to your bid, your deposit and your sale, and what everyone else can see.
         </p>
       </header>
@@ -235,7 +236,7 @@ export function Docs({ section }: { section: string }) {
                 </p>
               </li>
               <li>
-                <h3>The clearing price is revealed</h3>
+                <h3>The final price is revealed</h3>
                 <p>
                   The highest price at which the bids cover the supply. Only that price and the demand at and above
                   it are revealed.
@@ -244,7 +245,7 @@ export function Docs({ section }: { section: string }) {
               <li>
                 <h3>Each bid is settled</h3>
                 <p>
-                  Every winner pays the clearing price. Payments move to the auction; the rest of each deposit waits
+                  Every winner pays the final price. Payments move to the auction; the rest of each deposit waits
                   for its owner. The bids checked together, four at a time, are settled together too.
                 </p>
               </li>
@@ -271,7 +272,7 @@ export function Docs({ section }: { section: string }) {
               its start, for its full bidding time. Until the first bid, the seller can still cancel it.
             </p>
             <p>
-              Set the most you would really pay. Every winner pays the clearing price, which is never above their
+              Set the most you would really pay. Every winner pays the final price, which is never above their
               own, so bidding your true limit is the simple strategy.
             </p>
             <dl className="doc__list">
@@ -279,7 +280,7 @@ export function Docs({ section }: { section: string }) {
                 <dt>Tokens</dt>
                 <dd>
                   Set the SOL you want to spend and your highest price per token, which for a new token is the
-                  highest FDV you would pay. If you win above the clearing
+                  highest FDV you would pay. If you win above the final
                   price, your whole budget buys tokens at that price, so the lower it ends, the more you get. Both
                   are sealed. Your deposit only has to cover the budget, so it does not show it, and a large deposit
                   says nothing about real demand.
@@ -320,7 +321,7 @@ export function Docs({ section }: { section: string }) {
               grows on its own, {formatCount(PAGE_BIDS)} at a time, up to {formatCount(MAX_TOKEN_BIDS)} for a token sale
               and {formatCount(MAX_COLLECTION_BIDS)} for a collection, so even a{" "}
               {formatCount(MAX_COLLECTION_SIZE)}-NFT collection can sell out at one NFT a bid. However far it grows, it
-              stays one auction with one clearing price. The bids that land on the extra room pay for it (see
+              stays one auction with one final price. The bids that land on the extra room pay for it (see
               Fees). After that, a new bid can replace the one with the smallest deposit by depositing {EVICTION_PREMIUM_PERCENT.toString()}% more, and the replaced bid gets
               its whole deposit back. A replacement in the last {SOFT_CLOSE_SECS / 60} minutes keeps bidding open{" "}
               {SOFT_CLOSE_SECS / 60} more minutes, up to {MAX_SOFT_CLOSE_EXTENSION_SECS / 3600} hours past the original
@@ -328,19 +329,19 @@ export function Docs({ section }: { section: string }) {
             </p>
           </Section>
 
-          <Section id="price" title="The clearing price">
+          <Section id="price" title="The final price">
             <p>
-              Bids are lined up from the highest price down. The clearing price is the highest price at which the
+              Bids are lined up from the highest price down. The final price (in auction terms, the clearing price) is the highest price at which the
               bids at or above it cover everything for sale: for tokens, what their budgets buy at that price; for
               NFTs, how many they ask for.
             </p>
             <ul className="doc__bullets">
               <li>
-                Bids above the clearing price win. A token bid spends its whole budget at that price; a collection
+                Bids above the final price win. A token bid spends its whole budget at that price; a collection
                 bid gets every NFT it asked for.
               </li>
               <li>
-                Bids exactly at the clearing price share what is left: token bids by budget, collection bids by
+                Bids exactly at the final price share what is left: token bids by budget, collection bids by
                 size. Shares are rounded down. Tokens lost to rounding are never made; NFTs lost to rounding
                 go to the earliest of those bids, one each, so every NFT is sold. Three NFTs and four bids of one
                 each at that price: the first three bids win.
@@ -360,7 +361,7 @@ export function Docs({ section }: { section: string }) {
               With more than {formatCount(PAGE_BIDS)} bids, Arcium finds the same price a page of{" "}
               {formatCount(PAGE_BIDS)} bids at a time, four bits of the price per pass over the pages: 9 steps for 2
               pages, 25 for 4, 313 for a collection's full 40 (about an hour). Each pass reveals only the next four bits
-              of the clearing price, which becomes public anyway; the demand added up in between stays encrypted.
+              of the final price, which becomes public anyway; the demand added up in between stays encrypted.
               Bids are still checked and settled four at a time, so the more bids, the longer settling takes after
               bidding ends.
             </p>
@@ -527,18 +528,18 @@ export function Docs({ section }: { section: string }) {
                 <strong>Priced as FDV.</strong> A new token's prices are shown, and bid, as its fully diluted value:
                 the price per token times its whole supply of {formatTokens(LAUNCH_SUPPLY, LAUNCH_DECIMALS, 0)}. A
                 bid names the highest FDV it would pay. The minimum FDV is twice the target, and the token starts
-                trading at the clearing FDV.
+                trading at the final FDV.
               </li>
               <li>
                 <strong>Born with its pool.</strong> If it sells out, anyone can make the token: exactly the share
-                that was sold and the share its pool takes are minted, and the mint closes for good. Every SOL raised,
-                less the sale fee, opens a Meteora pool at the clearing price with up to the other {saleShare} of the
+                that was sold and the share its pool takes are minted, and nobody can ever make more. Every SOL raised,
+                less the sale fee, opens a Meteora pool at the final price with up to the other {saleShare} of the
                 supply. What the pool does not take is never made. Winners collect their tokens once the pool is
                 open, so nobody holds any before it.
               </li>
               <li>
                 <strong>Or never at all.</strong> If it misses the target, no token is ever made and every bid's
-                deposit comes back in full (the small settlement fee each bid paid does not). The creator closes the
+                deposit comes back in full (the small processing fee each bid paid does not). The creator closes the
                 sale and gets their deposit and rents back; only the listing fee and what settlement used are spent.
               </li>
               <li>
@@ -551,13 +552,13 @@ export function Docs({ section }: { section: string }) {
 
           <Section id="liquidity" title="The token's pool">
             <p>
-              A new token's pool opens on Meteora as soon as its sale settles, at exactly the clearing price. Winners
+              A new token's pool opens on Meteora as soon as its sale settles, at exactly the final price. Winners
               can trade right away, and the market starts from the price everyone paid.
             </p>
             <ul className="doc__bullets">
               <li>
                 <strong>Every SOL raised.</strong> All of the proceeds after the platform fee go into the pool, with
-                the share of the supply that SOL buys at the clearing price. The creator picks the pool's trading fee (
+                the share of the supply that SOL buys at the final price. The creator picks the pool's trading fee (
                 {POOL_FEE_TIERS.map((bps) => formatPercent(bps)).join(", ")}) before any bid, and it cannot change.
               </li>
               <li>
@@ -601,7 +602,7 @@ export function Docs({ section }: { section: string }) {
                   </td>
                 </tr>
                 <tr>
-                  <th scope="row">Settlement fund</th>
+                  <th scope="row">Processing fund</th>
                   <td>
                     {sellerFund} per auction ({drawReward} more for a collection), {bidFee} per bid
                   </td>
@@ -630,7 +631,7 @@ export function Docs({ section }: { section: string }) {
             <p>
               The private steps after bidding (checking the bids, finding the price, settling each bid and, for a
               collection, the shuffle) each cost a network fee to start. Anyone can start them, and each pays whoever
-              did it a fixed reward from the auction's settlement fund once it succeeds, a little above that fee. So
+              did it a fixed reward from the auction's processing fund once it succeeds, a little above that fee. So
               a sale does not depend on the seller, the bidders or us being online, and running the steps never costs anyone
               money.
             </p>
@@ -650,7 +651,7 @@ export function Docs({ section }: { section: string }) {
                   <td>The price of every bid, winning or not</td>
                 </tr>
                 <tr>
-                  <td>The clearing price and the demand at and above it</td>
+                  <td>The final price and the demand at and above it</td>
                   <td>The budget of every losing token bid and the size of every losing collection bid</td>
                 </tr>
                 <tr>
@@ -668,7 +669,7 @@ export function Docs({ section }: { section: string }) {
               price times size are sealed, and a deposit can be larger to hide them. A winning bid's budget or size
               becomes known when it is settled, because its payment is public. Veiling shows only the total
               deposited and never lists who bid. Solana itself is public, though: each deposit and the wallet that
-              made it can be read from the chain by anyone who looks. Bids exactly at the clearing price are known to
+              made it can be read from the chain by anyone who looks. Bids exactly at the final price are known to
               be at it once settled.
             </p>
             <p>
@@ -679,7 +680,7 @@ export function Docs({ section }: { section: string }) {
             </p>
           </Section>
 
-          <Section id="safety" title="If settlement stalls">
+          <Section id="safety" title="If something gets stuck">
             <p>
               If Arcium's network stops answering, nothing stays locked. {days} days after bidding ends, or one day
               for a new token, anyone can return an unsettled bid's whole deposit to its owner. Settled bids can
@@ -690,6 +691,28 @@ export function Docs({ section }: { section: string }) {
               A hidden drop that its seller does not reveal within {revealDays} days of the end of bidding pays
               every winner back in full instead of minting anything; anyone can send those refunds.
             </p>
+          </Section>
+
+          <Section id="points" title="Stats and points">
+            <p>
+              Every step after bidding is public and paid from the sale itself, so a keeper bot run by Veiling takes
+              each sale to its end as soon as bidding closes: checking the bids, finding the final price, working
+              out every bid, making a new token and its pool, and sending out tokens, NFTs and refunds. If it is ever
+              slow, anyone can press <strong>Finish the sale</strong> on the sale page: you add a little SOL for
+              network fees to a one-time wallet in your browser, it runs the remaining steps, and what is left
+              comes back to you along with the steps' rewards.
+            </p>
+            <p>
+              The <a href="#/stats">Stats</a> page counts everything since the first sale, read from the program's
+              transaction history, and ranks wallets by points:
+            </p>
+            <ul className="doc__bullets">
+              <li>100 points for every SOL you pay for what you win;</li>
+              <li>50 points for every SOL your sales raise;</li>
+              <li>5 points per bid, up to 3 bids in each sale;</li>
+              <li>5 points for each finishing step you run.</li>
+            </ul>
+            <p>Points have no cash value, and the rules may change.</p>
           </Section>
 
           <Section id="faq" title="Questions">

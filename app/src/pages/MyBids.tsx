@@ -44,11 +44,11 @@ function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; no
                 {b.status === "sealed"
                   ? "Sealed"
                   : b.status === "atClearing"
-                    ? "At the clearing price. Your share is ready to collect on the auction page once every bid at that price is revealed."
+                    ? "At the final price. Your share is ready to collect on the auction page once every bid at that price is revealed."
                     : b.won > 0n && auction.kind === "collection" && auction.unrevealed && !b.delivered
                       ? revealMissed(auction, now)
                         ? `Won ${goodsAmount(b.won, asset)}, but the art was not revealed in time. Take your whole deposit back on the auction page.`
-                        : `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. They are minted once the seller reveals the art.`
+                        : `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. They are made once the seller reveals the art.`
                       : waitsForPool(auction, b)
                         ? `Won ${goodsAmount(b.won, asset)} for ${formatSol(b.payment)} SOL. Collect them on the auction page once the token's pool is open.`
                         : b.won > 0n

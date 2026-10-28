@@ -61,12 +61,12 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
       loaded.reload();
       return after?.liquidity === "pooled" ? (
         <>
-          The pool is open at the clearing price and locked for good; the seller was paid the rest. <TxLink signature={sig} />
+          The pool is open at the final price and locked for good; the seller was paid the rest. <TxLink signature={sig} />
         </>
       ) : (
         <>
-          Someone had already opened Meteora's pool for this token, so none was added: the seller got all the proceeds
-          and the reserve back. <TxLink signature={sig} />
+          Someone had already opened Meteora's pool for this token, so none was added: the seller got all the SOL raised
+          and the tokens set aside back. <TxLink signature={sig} />
         </>
       );
     });
@@ -116,15 +116,15 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
 
   const terms = launch ? (
     <p>
-      Every SOL raised, less the sale fee, opens a Meteora pool at exactly the clearing price, with the {asset.goods}{" "}
+      Every SOL raised, less the sale fee, opens a Meteora pool at exactly the final price, with the {asset.goods}{" "}
       that SOL buys there. The pool is locked forever: nobody can take its liquidity out. Trading starts with a{" "}
       {formatPercent(ANTI_SNIPER_FEE_BPS)} fee against snipers, which falls to{" "}
       {plan ? formatPercent(plan.tradeFeeBps) : "the pool's fee"} over {ANTI_SNIPER_MINUTES} minutes.
     </p>
   ) : plan ? (
     <p>
-      {formatPercent(plan.lpBps)} of the net proceeds, and at least {formatSol(plan.floor)} SOL, opens a Meteora
-      pool at exactly the clearing price, with the {asset.goods} that SOL buys there. The pool is locked forever:
+      {formatPercent(plan.lpBps)} of what the sale raises after the fee, and at least {formatSol(plan.floor)} SOL, opens a Meteora
+      pool at exactly the final price, with the {asset.goods} that SOL buys there. The pool is locked forever:
       nobody can take its liquidity out. Trading starts with a {formatPercent(ANTI_SNIPER_FEE_BPS)} fee against
       snipers, which falls to {formatPercent(plan.tradeFeeBps)} over {ANTI_SNIPER_MINUTES} minutes.
     </p>
@@ -176,8 +176,8 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
         )}
         {!ended ? (
           <p className="muted">
-            {formatSol(auction.totalDeposited)} SOL deposited so far. A deposit only caps a bid, so this is the most the
-            bids could raise.
+            {formatSol(auction.totalDeposited)} SOL deposited so far. A deposit only sets the most a bid can spend, so
+            the sale raises this much at most.
           </p>
         ) : null}
         {poolReady(auction) ? (
@@ -206,7 +206,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   } else if (launch && !tokenMade && emergencyOpensAt(auction) <= now) {
     body = (
       <>
-        <p>Settlement stalled, so every bid can be refunded in full; no token is made unless the sale settles.</p>
+        <p>The sale got stuck, so every bid can be refunded in full; no token is made.</p>
         {closeButton}
       </>
     );
@@ -221,10 +221,10 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
         {poolReady(auction) ? (
           <>
             <p>
-              The sale is settled: the pool gets {formatSol(sol)} SOL and{" "}
+              The sale is done: the pool gets {formatSol(sol)} SOL and{" "}
               {launch ? `${supplyShare(tokens)} of the supply` : goodsAmount(tokens, asset)} at{" "}
               {priceText(auction, auction.clearingPrice, asset.decimals, asset.unit)}. Anyone can open it
-              {launch ? "." : "; it also pays the seller the rest of the proceeds."}
+              {launch ? "." : "; it also pays the seller the rest of what the sale raised."}
             </p>
             <Button variant="primary" onClick={open} busy={action.busy === "open-pool"} disabled={!signer || !plan}>
               Open the pool
@@ -232,7 +232,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
           </>
         ) : (
           <p className="muted">
-            The seller escrowed a reserve of {plan ? goodsAmount(plan.reserve, asset) : "tokens"} for it; what the pool
+            The seller set aside {plan ? goodsAmount(plan.reserve, asset) : "tokens"} for it; what the pool
             does not use goes back to them. If the sale cannot raise the minimum, it does not go ahead and every bid
             is refunded in full.
           </p>
@@ -302,7 +302,7 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
   return (
     <section className="panel" aria-labelledby="liquidity-title">
       <h2 id="liquidity-title" className="panel__title">
-        {launch ? "Token and pool" : "Auto-liquidity"}
+        {launch ? "Token and pool" : "Trading pool"}
       </h2>
       {loaded.error ? <Notice tone="error">{loaded.error}</Notice> : body}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}

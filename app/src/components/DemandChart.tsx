@@ -142,13 +142,13 @@ export function DemandChart({
 
         <line className="demand__clearing" x1={LEFT} y1={y(clearing)} x2={RIGHT} y2={y(clearing)} pathLength={1} />
         <text className="demand__price" x={RIGHT} y={y(clearing) - 8} textAnchor="end">
-          Clearing price
+          Final price
         </text>
       </svg>
       <figcaption className="demand__legend">
         <span className="demand__key">
           <span className="demand__swatch demand__swatch--won" aria-hidden="true" />
-          Wins, pays the clearing price
+          Wins, pays the final price
         </span>
         <span className="demand__key">
           <span className="demand__swatch demand__swatch--open" aria-hidden="true" />
