@@ -21,6 +21,16 @@ const VIEW_AS: PublicKey | null = (() => {
   }
 })();
 
+/** The wallet seen as, for design work: it shows pages as connected but cannot sign. */
+const VIEW_AS_SIGNER: WalletSigner | null = VIEW_AS
+  ? {
+      publicKey: VIEW_AS,
+      async signTransaction() {
+        throw new Error("This preview wallet cannot sign.");
+      },
+    }
+  : null;
+
 // Wallet Standard feature shapes used here (kept local to avoid extra packages).
 type ConnectFeature = {
   connect(input?: { silent?: boolean }): Promise<{ accounts: readonly WalletAccount[] }>;
@@ -184,7 +194,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [wallet, account, publicKey]);
 
   const value = useMemo<WalletState>(
-    () => ({ wallets, wallet, publicKey: publicKey ?? VIEW_AS, connecting, connect, disconnect, signer }),
+    () => ({
+      wallets,
+      wallet,
+      publicKey: publicKey ?? VIEW_AS,
+      connecting,
+      connect,
+      disconnect,
+      signer: signer ?? VIEW_AS_SIGNER,
+    }),
     [wallets, wallet, publicKey, connecting, connect, disconnect, signer]
   );
 

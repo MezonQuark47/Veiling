@@ -219,7 +219,8 @@ const acceptedFees = (fees: FeeConfig) => ({ listingFee: bn(fees.listingFee), sa
 /**
  * A token sale's optional rules: a minimum raise (lamports the winners must
  * pay in all), an allowlist and, with an allowlist, a cap on each wallet's
- * deposits (lamports). Fixed when the sale opens.
+ * deposits (lamports). Fixed when the sale opens. Fair launches and
+ * collections set the allowlist and cap with `saleRulesInstructions`.
  */
 export interface SaleRules {
   minRaise: bigint;
@@ -323,6 +324,40 @@ export async function buildJoinAuction(wallet: PublicKey, auction: Auction): Pro
       participant: participantAddress(auction.address, wallet),
     })
     .transaction();
+}
+
+/**
+ * Who may bid in a sale of any kind, set by the seller before its first bid:
+ * only the wallets on an allowlist and, with one, at most `walletCap`
+ * lamports deposited per wallet (0 for no cap). With the list's root and
+ * link, the list is recorded in the same go. Instructions, so they can ride
+ * in the transaction that opens the sale.
+ */
+export async function saleRulesInstructions(
+  seller: PublicKey,
+  auction: PublicKey,
+  rules: { walletCap: bigint; root: Uint8Array; uri: string }
+): Promise<TransactionInstruction[]> {
+  return [
+    await program.methods.setSaleRules(bn(rules.walletCap), true).accountsPartial({ seller, auction }).instruction(),
+    await program.methods
+      .setAllowlist(Array.from(rules.root), rules.uri)
+      .accountsPartial({ seller, auction, list: allowlistAddress(auction) })
+      .instruction(),
+  ];
+}
+
+/**
+ * The instruction that returns an allowlist's rent to the seller once
+ * bidding is over, for the sales whose own close does not take it (fair
+ * launches whose token was never made, and collections). Null without one.
+ */
+async function closeAllowlistInstruction(auction: Auction): Promise<TransactionInstruction | null> {
+  if (!auction.allowlist || !(await connection.getAccountInfo(allowlistAddress(auction.address)))) return null;
+  return program.methods
+    .closeAllowlist()
+    .accountsPartial({ seller: auction.seller, auction: auction.address, list: allowlistAddress(auction.address) })
+    .instruction();
 }
 
 /** A wallet's admission, which its bids in a sale with an allowlist pass. */
@@ -1191,6 +1226,10 @@ export async function buildCancelAuction(auction: Auction) {
   const tx = new Transaction().add(await cancel.instruction());
   // A planned pool's reserve and rent deposit come back too.
   if (auction.liquidity === "planned") tx.add(await releaseLiquidityInstruction(auction));
+  if (auction.kind === "collection") {
+    const list = await closeAllowlistInstruction(auction);
+    if (list) tx.add(list);
+  }
   return tx.add(await closeInstruction(auction));
 }
 
@@ -1200,8 +1239,12 @@ export async function buildCancelAuction(auction: Auction) {
  * vault) to the seller. A collection's update authority passes to the seller.
  */
 export async function buildCloseAuction(auction: Auction): Promise<Transaction[]> {
-  if (auction.extraPages < 2) return [new Transaction().add(await closeInstruction(auction))];
-  return [...(await closePageTransactions(auction)), new Transaction().add(await closeInstruction(auction, true))];
+  // A collection's allowlist does not close with it: it closes just before.
+  const list = auction.kind === "collection" ? await closeAllowlistInstruction(auction) : null;
+  const last = new Transaction();
+  if (list) last.add(list);
+  if (auction.extraPages < 2) return [last.add(await closeInstruction(auction))];
+  return [...(await closePageTransactions(auction)), last.add(await closeInstruction(auction, true))];
 }
 
 /**
@@ -1325,7 +1368,9 @@ export async function buildGraduateLaunch(payer: PublicKey, auction: Auction) {
  * deposit and every rent go back to the seller.
  */
 export async function buildCloseLaunch(auction: Auction) {
-  return program.methods
+  // Its allowlist, if it had one, closes just before it.
+  const list = await closeAllowlistInstruction(auction);
+  const close = await program.methods
     .closeLaunch()
     .accountsPartial({
       seller: auction.seller,
@@ -1338,5 +1383,8 @@ export async function buildCloseLaunch(auction: Auction) {
       lpAuthority: lpAuthorityAddress(auction.address),
     })
     .remainingAccounts(pageAccounts(auction, true))
-    .transaction();
+    .instruction();
+  const tx = new Transaction();
+  if (list) tx.add(list);
+  return tx.add(close);
 }

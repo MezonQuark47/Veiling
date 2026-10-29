@@ -55,6 +55,9 @@ await build({
     "import.meta.env.DEV": "false",
     "import.meta.env.VITE_RPC_URL": "undefined",
     "import.meta.env.VITE_STATS_URL": "undefined",
+    "import.meta.env.VITE_PLAUSIBLE_DOMAIN": "undefined",
+    "import.meta.env.VITE_PLAUSIBLE_SRC": "undefined",
+    "import.meta.env.VITE_SENTRY_DSN": "undefined",
   },
   // Some dependencies are CommonJS and expect these.
   banner: {

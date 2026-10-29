@@ -4,7 +4,25 @@ import { STATS_URL } from "../config";
 export interface StatsSnapshot {
   updatedAt: number;
   network: string;
-  points: { perSolBought: number; perSolRaised: number; perBid: number; bidsPerSale: number; perStep: number };
+  points: {
+    perSolBought: number;
+    perSolRaised: number;
+    perBid: number;
+    bidsPerSale: number;
+    perStep: number;
+    /** Added with invites; an older keeper leaves them out. */
+    perInvite?: number;
+    inviteShare?: number;
+  };
+  /** The running season's own leaderboard (Season 0 on devnet), or null. */
+  season?: {
+    name: string;
+    start: number;
+    end: number;
+    players: number;
+    leaderboard: WalletPoints[];
+    wallets: Record<string, number>;
+  } | null;
   totals: {
     sales: number;
     newTokens: number;
@@ -57,6 +75,8 @@ export interface WalletView {
   updatedAt: number;
   points: number;
   rank: number | null;
+  season?: { name: string; points: number; rank: number | null } | null;
+  invites?: { joined: number; active: number; points: number };
   totals: {
     bids: number;
     salesJoined: number;

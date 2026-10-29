@@ -15,11 +15,13 @@ import { freeTarget } from "../lib/arweave";
 import { fetchCrankRewards, fetchFeeConfig, formatPercent, launchFdv, launchSaleTerms, sellerCrankFee, supplyShare } from "../lib/chain";
 import { formatCount, formatSol, formatTokens, parseDecimal } from "../lib/format";
 import type { PreparedImage } from "../lib/images";
-import { sendTransaction } from "../lib/tx";
+import { track } from "../lib/analytics";
+import { OPEN_TO_ANYONE, accessPlan, withSaleRules, type BidAccess } from "../lib/saleRules";
+import { sendTransactions } from "../lib/tx";
 import { uploadTokenMetadata } from "../lib/uploads";
 import { requestConnect, useWallet } from "../lib/wallet";
 import { ImagePicker, isSmallImage, useImageUrl } from "./ImagePicker";
-import { MAX_DESCRIPTION_LEN } from "./LaunchParts";
+import { BidAccessField, MAX_DESCRIPTION_LEN, isLinkOrEmpty } from "./LaunchParts";
 import { Button, Notice, useAction, useLoader } from "./ui";
 
 /** What the creator deposits for the token's accounts and its pool; it comes back. */
@@ -77,6 +79,9 @@ export function TokenLaunchForm() {
   const [targetInput, setTargetInput] = useState("25");
   const [hours, setHours] = useState<number>(1);
   const [poolFee, setPoolFee] = useState<number>(100);
+  const [website, setWebsite] = useState("");
+  const [x, setX] = useState("");
+  const [access, setAccess] = useState<BidAccess>(OPEN_TO_ANYONE);
   const [touched, setTouched] = useState(false);
   const [step, setStep] = useState<"form" | "upload" | "open">("form");
   const art = useImageUrl(image);
@@ -94,6 +99,9 @@ export function TokenLaunchForm() {
   if (description.length > MAX_DESCRIPTION_LEN) problems.push(`The description is longer than ${MAX_DESCRIPTION_LEN} characters.`);
   if (target === null || target < LAUNCH_MIN_RAISE) problems.push(`The target is at least ${formatSol(LAUNCH_MIN_RAISE)} SOL.`);
   else if (!terms) problems.push("That target cannot be priced; try a rounder number.");
+  if (!isLinkOrEmpty(website) || !isLinkOrEmpty(x)) problems.push("Links must start with https://.");
+  const accessed = accessPlan(access, LAUNCH_MIN_BID);
+  if (accessed.problem) problems.push(accessed.problem);
   if (!fees.data) problems.push("The platform's fees are not loaded yet.");
 
   // Prices of a new token read as its FDV: the price per token × its whole supply.
@@ -111,7 +119,7 @@ export function TokenLaunchForm() {
         if (problems.length > 0 || !terms || !fees.data || !image) throw new Error(problems[0] ?? "Check the form.");
         setStep("upload");
         const uri = await uploadTokenMetadata(
-          { name: name.trim(), symbol: ticker, description, image },
+          { name: name.trim(), symbol: ticker, description, image, links: { website: website.trim(), x: x.trim() } },
           () => {},
           freeTarget()
         );
@@ -122,7 +130,9 @@ export function TokenLaunchForm() {
           { priceUnit: terms.priceUnit, minPrice: terms.minPrice, durationSecs: hours * 3600, startTime: 0, tradeFeeBps: poolFee },
           fees.data
         );
-        await sendTransaction(built.tx, signer);
+        const txs = await withSaleRules(built.tx, signer.publicKey, built.auction, accessed);
+        await sendTransactions(txs, signer);
+        track("Sale launched", { kind: "new token", allowlist: access.listed });
         window.location.hash = `#/auction/${built.auction.toBase58()}`;
       })
       .finally(() => setStep("form"));
@@ -164,6 +174,17 @@ export function TokenLaunchForm() {
             <label htmlFor="fl-description">Description (optional)</label>
             <textarea id="fl-description" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="fl-web">Website (optional)</label>
+              <input id="fl-web" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://…" aria-invalid={!isLinkOrEmpty(website)} />
+            </div>
+            <div className="field">
+              <label htmlFor="fl-x">X account (optional)</label>
+              <input id="fl-x" value={x} onChange={(e) => setX(e.target.value)} placeholder="https://x.com/…" aria-invalid={!isLinkOrEmpty(x)} />
+            </div>
+          </div>
+          <p className="hint">Once the sale is open you can verify the X account, so bidders see a Verified badge.</p>
         </fieldset>
 
         <fieldset className="group">
@@ -198,6 +219,8 @@ export function TokenLaunchForm() {
             </p>
           </div>
         </fieldset>
+
+        <BidAccessField value={access} onChange={setAccess} plan={accessed} idPrefix="fl-access" />
 
         <fieldset className="group">
           <legend className="group__title">If it sells out</legend>
@@ -256,7 +279,10 @@ export function TokenLaunchForm() {
               Connect a wallet to launch
             </Button>
           )}
-          <p className="hint">The token's image and details upload first, with no wallet prompt. Then your wallet approves one transaction.</p>
+          <p className="hint">
+            The token's image and details{access.listed ? " and your list" : ""} upload first, with no wallet prompt.
+            Then your wallet approves the transaction that opens the sale.
+          </p>
         </div>
         {action.error ? <Notice tone="error">{action.error}</Notice> : null}
       </form>

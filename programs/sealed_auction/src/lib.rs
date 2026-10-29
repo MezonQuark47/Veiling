@@ -34,7 +34,9 @@
 //!    below which it does not go ahead and every bid is refunded in full;
 //!    an allowlist of the wallets that may bid (`set_allowlist`, then
 //!    `join_auction` per wallet); and, with an allowlist, a cap on what one
-//!    wallet may deposit across its bids.
+//!    wallet may deposit across its bids. `set_sale_rules` sets the allowlist
+//!    and wallet cap of any sale (a fair launch or a collection too) before
+//!    its first bid.
 //! 2. `place_bid` stores an encrypted bid and escrows its deposit (no MPC).
 //!    Once the book is full and can grow no further, a new bid must
 //!    out-deposit the smallest one by `EVICTION_PREMIUM_PERCENT`; that bid is
@@ -759,6 +761,32 @@ pub mod sealed_auction {
         Ok(())
     }
 
+    /// Sets who may bid in any sale (a fair launch, a collection or a token
+    /// auction) before its first bid: only wallets on an allowlist (which
+    /// `set_allowlist` then records) and, with an allowlist, at most
+    /// `wallet_cap` lamports deposited per wallet across its bids (0 for no
+    /// cap). Without an allowlist a wallet cap is undone by splitting bids
+    /// across wallets, so it needs one. Only the seller, while the sale is
+    /// open and has no bids; the minimum raise stays as the sale opened.
+    pub fn set_sale_rules(ctx: Context<SetSaleRules>, wallet_cap: u64, allowlist: bool) -> Result<()> {
+        let auction = &mut ctx.accounts.auction;
+        require!(auction.status == AuctionStatus::Open, AuctionError::WrongStatus);
+        require!(auction.bid_count == 0, AuctionError::HasBids);
+        require!(
+            wallet_cap == 0 || (allowlist && wallet_cap >= auction.min_deposit),
+            AuctionError::InvalidSaleRules
+        );
+        auction.wallet_cap = wallet_cap;
+        auction.allowlist = allowlist;
+        emit!(SaleRulesSet {
+            auction: auction.key(),
+            min_raise: auction.min_raise,
+            wallet_cap,
+            allowlist,
+        });
+        Ok(())
+    }
+
     /// Admits the calling wallet to a token sale with an allowlist, with a
     /// proof that the list holds it: the sibling hashes from its leaf up to
     /// the root (at most `MAX_ALLOWLIST_PROOF`). Makes the wallet's
@@ -802,6 +830,19 @@ pub mod sealed_auction {
                 AuctionError::BiddingOpen
             );
         }
+        Ok(())
+    }
+
+    /// Returns an allowlist's rent to the seller once bidding is over, for
+    /// the sales whose close does not take it (fair launches and
+    /// collections). Only before the auction itself is closed.
+    pub fn close_allowlist(ctx: Context<CloseAllowlist>) -> Result<()> {
+        let auction = &ctx.accounts.auction;
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            auction.status != AuctionStatus::Open || now >= auction.end_time,
+            AuctionError::BiddingOpen
+        );
         Ok(())
     }
 
@@ -6293,6 +6334,37 @@ pub struct SetAllowlist<'info> {
     )]
     pub list: Box<Account<'info, Allowlist>>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetSaleRules<'info> {
+    pub seller: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+        has_one = seller @ AuctionError::Unauthorized,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+}
+
+#[derive(Accounts)]
+pub struct CloseAllowlist<'info> {
+    #[account(mut)]
+    pub seller: Signer<'info>,
+    #[account(
+        seeds = [AUCTION_SEED, auction.seller.as_ref(), &auction.seed.to_le_bytes()],
+        bump = auction.bump,
+        has_one = seller @ AuctionError::Unauthorized,
+    )]
+    pub auction: Box<Account<'info, Auction>>,
+    #[account(
+        mut,
+        close = seller,
+        seeds = [ALLOWLIST_SEED, auction.key().as_ref()],
+        bump = list.bump,
+    )]
+    pub list: Box<Account<'info, Allowlist>>,
 }
 
 #[derive(Accounts)]

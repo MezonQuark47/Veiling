@@ -9,7 +9,8 @@ import { requestConnect, useWallet } from "../lib/wallet";
 import { DashboardSummary, JoinedSales, LaunchedSales } from "../components/Dashboard";
 import { Avatar } from "../components/Account";
 import { fetchWalletView } from "../lib/stats";
-import { STATS_URL } from "../config";
+import { SEASON, STATS_URL } from "../config";
+import { InviteCard } from "../components/Invite";
 import { shortAddress } from "../lib/format";
 
 function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; now: number }) {
@@ -140,6 +141,9 @@ export function MyBids() {
             <p className="profile__meta">
               {since ? `On Veiling since ${since}` : "New to Veiling"}
               {view?.rank ? ` · #${view.rank} on the leaderboard` : ""}
+              {view?.season && view.season.points > 0
+                ? ` · ${view.season.points.toLocaleString("en-US")} ${view.season.name} points${view.season.rank ? ` (#${view.season.rank})` : ""}`
+                : ""}
             </p>
           </div>
           <div className="profile__actions">
@@ -167,6 +171,15 @@ export function MyBids() {
       ) : (
         <>
           {view ? <DashboardSummary view={view} /> : null}
+
+          <section className="section" aria-label="Invite friends">
+            <InviteCard wallet={publicKey.toBase58()} view={view} />
+            {SEASON ? (
+              <p className="muted dash__note">
+                Invites count for <a href="#/season">{SEASON.name}</a> too.
+              </p>
+            ) : null}
+          </section>
 
           <section className="section" aria-labelledby="open-bids-title">
             <div className="section__head">

@@ -2200,6 +2200,90 @@ export type SealedAuction = {
       ]
     },
     {
+      "name": "closeAllowlist",
+      "docs": [
+        "Returns an allowlist's rent to the seller once bidding is over, for",
+        "the sales whose close does not take it (fair launches and",
+        "collections). Only before the auction itself is closed."
+      ],
+      "discriminator": [
+        185,
+        57,
+        82,
+        94,
+        92,
+        82,
+        215,
+        137
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        },
+        {
+          "name": "list",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "closeAuction",
       "docs": [
         "Closes a finished or cancelled auction once every bid account is",
@@ -7255,6 +7339,77 @@ export type SealedAuction = {
         },
         {
           "name": "hidden",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "setSaleRules",
+      "docs": [
+        "Sets who may bid in any sale (a fair launch, a collection or a token",
+        "auction) before its first bid: only wallets on an allowlist (which",
+        "`set_allowlist` then records) and, with an allowlist, at most",
+        "`wallet_cap` lamports deposited per wallet across its bids (0 for no",
+        "cap). Without an allowlist a wallet cap is undone by splitting bids",
+        "across wallets, so it needs one. Only the seller, while the sale is",
+        "open and has no bids; the minimum raise stays as the sale opened."
+      ],
+      "discriminator": [
+        50,
+        217,
+        10,
+        120,
+        166,
+        78,
+        186,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "signer": true,
+          "relations": [
+            "auction"
+          ]
+        },
+        {
+          "name": "auction",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "auction.seller",
+                "account": "auction"
+              },
+              {
+                "kind": "account",
+                "path": "auction.seed",
+                "account": "auction"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "walletCap",
+          "type": "u64"
+        },
+        {
+          "name": "allowlist",
           "type": "bool"
         }
       ]

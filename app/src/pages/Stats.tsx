@@ -2,7 +2,7 @@ import { type CSSProperties, useMemo, useRef, useState } from "react";
 import { Notice, useLoader } from "../components/ui";
 import { EXPLORER_CLUSTER } from "../config";
 import { formatCount, shortAddress } from "../lib/format";
-import { type StatsSnapshot, fetchStats, rankOf } from "../lib/stats";
+import { type StatsSnapshot, type WalletPoints, fetchStats, rankOf } from "../lib/stats";
 import { requestConnect, useWallet } from "../lib/wallet";
 
 const sol = (value: number) =>
@@ -206,11 +206,11 @@ function YourPoints({ stats }: { stats: StatsSnapshot }) {
   );
 }
 
-function Leaderboard({ stats }: { stats: StatsSnapshot }) {
+export function Leaderboard({ board, size = 25 }: { board: WalletPoints[]; size?: number }) {
   const { publicKey } = useWallet();
   const me = publicKey?.toBase58();
   const [all, setAll] = useState(false);
-  const rows = all ? stats.leaderboard : stats.leaderboard.slice(0, 25);
+  const rows = all ? board : board.slice(0, size);
   if (rows.length === 0) return <p className="muted">No points yet. The first sale's buyers will lead here.</p>;
   return (
     <>
@@ -263,17 +263,25 @@ function Leaderboard({ stats }: { stats: StatsSnapshot }) {
           </tbody>
         </table>
       </div>
-      {stats.leaderboard.length > 25 ? (
+      {board.length > size ? (
         <button className="btn btn--secondary" onClick={() => setAll((v) => !v)}>
-          {all ? "Show the top 25" : `Show the top ${stats.leaderboard.length}`}
+          {all ? `Show the top ${size}` : `Show the top ${board.length}`}
         </button>
       ) : null}
     </>
   );
 }
 
+/** "Oct 30 to Dec 14, 2026": a season's days, its end being the day before it closes. */
+export function seasonDates(season: { start: number; end: number }): string {
+  const day = (secs: number, year: boolean) =>
+    new Date(secs * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}), timeZone: "UTC" });
+  return `${day(season.start, false)} to ${day(season.end - 1, true)}`;
+}
+
 export function Stats() {
   const loaded = useLoader(fetchStats, [], 60_000);
+  const [seasonBoard, setSeasonBoard] = useState(true);
   const stats = loaded.data ?? null;
   const users = useMemo(() => (stats ? stats.days.map((d) => ({ day: d.day, value: d.users })) : []), [stats]);
   const volume = useMemo(() => (stats ? stats.days.map((d) => ({ day: d.day, value: d.volumeSol })) : []), [stats]);
@@ -355,13 +363,48 @@ export function Stats() {
                   <strong>{p.perStep} points</strong> for each finishing step you run, for example with{" "}
                   <em>Finish the sale</em>.
                 </li>
+                {p.perInvite ? (
+                  <li>
+                    <strong>{p.perInvite} points</strong> for each friend you invite who wins in a sale, plus{" "}
+                    {Math.round((p.inviteShare ?? 0) * 100)}% of the buying points they earn. Your invite link is on your{" "}
+                    <a href="#/bids">dashboard</a>.
+                  </li>
+                ) : null}
               </ul>
-              <p className="muted">Points have no cash value, and the rules may change.</p>
+              <p className="muted">
+                Points have no cash value, and the rules may change. <a href="#/terms">Terms</a>
+              </p>
             </div>
           </div>
           <div>
-            <h3 className="points-board__title">Leaderboard</h3>
-            <Leaderboard stats={stats} />
+            {stats.season ? (
+              <div className="segmented points-board__switch" role="group" aria-label="Leaderboard">
+                {(
+                  [
+                    [true, stats.season.name],
+                    [false, "All time"],
+                  ] as const
+                ).map(([s, label]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={`segmented__item${seasonBoard === s ? " segmented__item--on" : ""}`}
+                    aria-pressed={seasonBoard === s}
+                    onClick={() => setSeasonBoard(s)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <h3 className="points-board__title">Leaderboard</h3>
+            )}
+            <Leaderboard board={stats.season && seasonBoard ? stats.season.leaderboard : stats.leaderboard} />
+            {stats.season && seasonBoard ? (
+              <p className="muted">
+                Points earned from {seasonDates(stats.season)}. <a href="#/season">About {stats.season.name}</a>
+              </p>
+            ) : null}
           </div>
         </div>
       </section>

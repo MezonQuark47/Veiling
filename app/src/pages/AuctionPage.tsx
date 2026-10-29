@@ -9,6 +9,8 @@ import {
   NFT_MINT_COST_LAMPORTS,
   NFT_PRICE_SCALE,
   PENDING_TIMEOUT_SECS,
+  KEEPER_URL,
+  PROJECT_X_HANDLE,
 } from "../config";
 import { AuctionBoard } from "../components/AuctionBoard";
 import { LiquidityPanel } from "../components/LiquidityPanel";
@@ -105,6 +107,16 @@ import { errorMessage, sendTransaction, sendTransactions, waitUntil, type Wallet
 import { requestConnect, useWallet } from "../lib/wallet";
 import { type Reminder, downloadIcs, googleCalendarUrl } from "../lib/calendar";
 import { finishSale, hasWorkLeft, returnLeftovers, sessionBudget } from "../lib/finish";
+import { track } from "../lib/analytics";
+import {
+  fetchNotifyInfo,
+  fetchVerified,
+  pushSupported,
+  remindByEmail,
+  remindByPush,
+  verifySale,
+  type Verified,
+} from "../lib/keeper";
 
 // ---------------------------------------------------------------------------
 
@@ -334,6 +346,7 @@ function TokenBidComposer({ auction, asset, onPlaced }: { auction: Auction; asse
       const noted = await addNotes(tx, signer, bid, price.ticks, budget, evicted);
       const sig = await sendTransaction(tx, signer);
       saveNote(bid, auction.address, price.ticks, budget);
+      track("Bid placed", { kind: auction.launch ? "new token" : "token" });
       onPlaced();
       evict.eviction.reload();
       return placedMessage(sig, evicted, noted);
@@ -594,6 +607,7 @@ function FinishSale({ auction, bids, now, refresh }: { auction: Auction; bids: B
       if (!signer) throw new Error("Connect a wallet first");
       try {
         const result = await finishSale(auction.address, signer, setLine, () => stopRef.current);
+        track("Sale finished by user", { steps: result.steps });
         const back = result.returned > 0n ? ` ${formatSol(result.returned)} SOL came back to your wallet.` : "";
         return result.stoppedEarly
           ? `Stopped after ${plural(result.steps, "step")}.${back}`
@@ -710,6 +724,7 @@ function RaiseBid({
       if (save) tx.add(save);
       const sig = await sendTransaction(tx, signer);
       saveNote(bid.address, auction.address, price.ticks, size);
+      track("Bid raised");
       onDone();
       return (
         <>
@@ -799,16 +814,30 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
   const deposit = mode === "private" && cost > 0n && chosen < evict.minimumDeposit ? evict.minimumDeposit : chosen;
   const enoughToEnter = !evict.full || (Boolean(evict.eviction.data) && deposit >= evict.minimumDeposit);
   const valid = quantityValid && price.ticks !== null && deposit >= cost && deposit > 0n && enoughToEnter;
+  const admission = useLoader(
+    () => (auction.allowlist && signer ? fetchAdmission(auction, signer.publicKey) : Promise.resolve(null)),
+    [auction.address.toBase58(), signer?.publicKey.toBase58() ?? "", auction.bidCount]
+  );
+  const room = auction.walletCap > 0n && admission.data ? auction.walletCap - admission.data.deposited : null;
+  const admitted = !auction.allowlist || Boolean(admission.data?.listed);
+  const withinCap = room === null || deposit <= room;
 
   const place = () =>
     action.run("place", async () => {
       if (!signer) throw new Error("Connect a wallet first");
       if (!price.ticks) throw new Error("Enter a valid price");
+      // A wallet on the allowlist joins the sale once, before its first bid.
+      const join = await buildJoinAuction(signer.publicKey, auction);
+      if (join) {
+        await sendTransaction(join, signer);
+        admission.reload();
+      }
       const size = BigInt(quantity);
       const { tx, bid, evicted } = await buildPlaceBid(signer.publicKey, auction, price.ticks, size, deposit);
       const noted = await addNotes(tx, signer, bid, price.ticks, size, evicted);
       const sig = await sendTransaction(tx, signer);
       saveNote(bid, auction.address, price.ticks, size);
+      track("Bid placed", { kind: "nfts" });
       onPlaced();
       evict.eviction.reload();
       return placedMessage(sig, evicted, noted);
@@ -917,8 +946,9 @@ function NftBidComposer({ auction, asset, onPlaced }: { auction: Auction; asset:
         Every winner pays the same price per NFT, never more than their own. You can raise a bid until bidding
         closes, but not lower or cancel it.
       </p>
+      <SaleRulesHint auction={auction} admission={admission.data} loading={admission.loading} error={admission.error} room={room} deposit={deposit} />
       {signer ? (
-        <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!valid}>
+        <Button variant="primary" onClick={place} busy={action.busy === "place"} disabled={!valid || !admitted || !withinCap}>
           Seal and place bid
         </Button>
       ) : (
@@ -1922,6 +1952,11 @@ export function AuctionPage({ address }: { address: string }) {
     () => (collectionUri ? fetchCollectionMetadata(collectionUri) : Promise.resolve(null)),
     [collectionUri]
   );
+  // A token's own details (description and links), from its metadata file.
+  const tokenUri = asset.token?.uri ?? null;
+  const tokenMeta = useLoader(() => (tokenUri ? fetchCollectionMetadata(tokenUri) : Promise.resolve(null)), [tokenUri]);
+  const verifiedAll = useLoader(fetchVerified, [address]);
+  const verified = verifiedAll.data?.[address] ?? null;
   const named = Boolean(auction?.namedItems);
   const itemList = useLoader(() => (named && key ? fetchItemList(key) : Promise.resolve(null)), [address, named]);
   const entries = itemList.data?.entries ?? null;
@@ -1959,7 +1994,8 @@ export function AuctionPage({ address }: { address: string }) {
   const lastName = `${auction.itemName} #${formatCount(Number(auction.supply))}`;
   const minPrice = formatPrice(auction, auction.minPrice, asset.decimals);
 
-  const about = collection ? meta.data ?? null : null;
+  const about = collection ? meta.data ?? null : tokenMeta.data ?? null;
+  const isSeller = Boolean(publicKey && publicKey.equals(auction.seller));
 
   return (
     <main className="page">
@@ -1980,6 +2016,7 @@ export function AuctionPage({ address }: { address: string }) {
               <span className="auction-head__name">{token.name}</span>
             ) : null}
           </h1>
+          {verified ? <VerifiedBadge verified={verified} /> : null}
           {about?.description ? <p className="auction-head__about">{about.description}</p> : null}
           {about?.website || about?.x ? (
             <p className="auction-head__links">
@@ -2015,6 +2052,9 @@ export function AuctionPage({ address }: { address: string }) {
         </div>
       </header>
       {isAdmin ? <AdminControls auction={auction} refresh={loaded.reload} /> : null}
+      {isSeller && !verified && KEEPER_URL && auction.status !== "cancelled" ? (
+        <VerifyX auction={auction} title={asset.title} claimed={about?.x ?? null} onVerified={verifiedAll.reload} />
+      ) : null}
       {replaced > 0 ? (
         <Notice tone="info">
           {replaced === 1 ? "One of your bids was" : `${replaced} of your bids were`} replaced by a larger deposit
@@ -2258,8 +2298,35 @@ function LaunchTag({ auction, phase, failed, cleared }: { auction: Auction; phas
 }
 
 /** A reminder in the person's own calendar: when bidding opens and before it closes. */
+/** Phases after bidding in which a reminder still has something to tell: when the sale is over. */
+const UNTIL_OVER: Phase[] = ["checking", "ready-to-clear", "settling", "stalled"];
+
 function RemindMe({ title, auction, phase }: { title: string; auction: Auction; phase: Phase }) {
   const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState<"push" | "email" | null>(null);
+  const notify = useLoader(() => (KEEPER_URL ? fetchNotifyInfo() : Promise.resolve(null)), []);
+  const canPush = Boolean(notify.data?.push) && pushSupported();
+  const canEmail = Boolean(notify.data?.email);
+  const address = auction.address.toBase58();
+  const sendReminder = async (kind: "push" | "email") => {
+    setSending(kind);
+    try {
+      if (kind === "push") await remindByPush(address, notify.data!.push!);
+      else await remindByEmail(address, email.trim());
+      track("Reminder set", { by: kind });
+      pushToast(
+        kind === "push"
+          ? "Done. This browser will notify you before bidding ends and when the sale is over."
+          : "Done. Check your inbox: we sent a confirmation."
+      );
+      setOpen(false);
+    } catch (e) {
+      pushToast(errorMessage(e));
+    } finally {
+      setSending(null);
+    }
+  };
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent | KeyboardEvent) => {
@@ -2272,7 +2339,8 @@ function RemindMe({ title, auction, phase }: { title: string; auction: Auction; 
       document.removeEventListener("keydown", close);
     };
   }, [open]);
-  if (phase !== "upcoming" && phase !== "bidding") return null;
+  const afterBidding = UNTIL_OVER.includes(phase);
+  if (phase !== "upcoming" && phase !== "bidding" && !(afterBidding && (canPush || canEmail))) return null;
   const url = window.location.href;
   const late = "If the sale fills up near the end, late bids can keep bidding open a few minutes longer.";
   // Before bidding opens: the whole bidding window, with alarms as it opens and
@@ -2316,30 +2384,69 @@ function RemindMe({ title, auction, phase }: { title: string; auction: Auction; 
       {open ? (
         <span className="remind__menu" role="menu">
           <span className="remind__note">
-            {phase === "upcoming" ? "As bidding opens, and 30 minutes before it closes." : "30 minutes before bidding closes."}
+            {afterBidding
+              ? "When the sale is over and your tokens or refund are on their way."
+              : phase === "upcoming"
+                ? "As bidding opens, and 30 minutes before it closes."
+                : "30 minutes before bidding closes."}
           </span>
-          <a
-            role="menuitem"
-            className="remind__item"
-            href={googleCalendarUrl(reminder)}
-            target="_blank"
-            rel="noreferrer noopener"
-            onClick={() => setOpen(false)}
-          >
-            Google Calendar
-          </a>
-          <button
-            type="button"
-            role="menuitem"
-            className="remind__item"
-            onClick={() => {
-              downloadIcs(reminder, file);
-              setOpen(false);
-              pushToast("Reminder downloaded. Open the file to add it to your calendar.");
-            }}
-          >
-            Apple Calendar, Outlook (.ics)
-          </button>
+          {afterBidding ? null : (
+            <>
+              <a
+                role="menuitem"
+                className="remind__item"
+                href={googleCalendarUrl(reminder)}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={() => setOpen(false)}
+              >
+                Google Calendar
+              </a>
+              <button
+                type="button"
+                role="menuitem"
+                className="remind__item"
+                onClick={() => {
+                  downloadIcs(reminder, file);
+                  setOpen(false);
+                  pushToast("Reminder downloaded. Open the file to add it to your calendar.");
+                }}
+              >
+                Apple Calendar, Outlook (.ics)
+              </button>
+            </>
+          )}
+          {canPush ? (
+            <button type="button" role="menuitem" className="remind__item" disabled={sending !== null} onClick={() => void sendReminder("push")}>
+              {sending === "push" ? "Asking your browser…" : "Browser notification"}
+            </button>
+          ) : null}
+          {canEmail ? (
+            <form
+              className="remind__email"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void sendReminder("email");
+              }}
+            >
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                aria-label="Email for the reminder"
+              />
+              <button type="submit" className="btn btn--secondary" disabled={sending !== null || !email.includes("@")}>
+                {sending === "email" ? "…" : "Email me"}
+              </button>
+            </form>
+          ) : null}
+          {canPush || canEmail ? (
+            <span className="remind__fine">
+              Also when the sale is over. <a href="#/privacy">Privacy</a>
+            </span>
+          ) : null}
         </span>
       ) : null}
     </span>
@@ -2384,5 +2491,110 @@ function ShareRow({ title, auction, phase }: { title: string; auction: Auction; 
       </a>
       <RemindMe title={title} auction={auction} phase={phase} />
     </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// X verification
+
+/** The sale's creator proved they run this X account. */
+function VerifiedBadge({ verified }: { verified: Verified }) {
+  return (
+    <p className="verified">
+      <a href={verified.post} target="_blank" rel="noreferrer noopener" title="The creator proved they control this X account">
+        <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+          <path d="M10 1.5 12.2 3.4 15.1 3.1 15.8 6 18.3 7.6 17.2 10.3 18.3 13 15.8 14.6 15.1 17.5 12.2 17.2 10 19.1 7.8 17.2 4.9 17.5 4.2 14.6 1.7 13 2.8 10.3 1.7 7.6 4.2 6 4.9 3.1 7.8 3.4Z" />
+          <path className="verified__tick" d="m6.6 10.3 2.3 2.3 4.6-4.9" />
+        </svg>
+        Verified creator: @{verified.handle}
+      </a>
+    </p>
+  );
+}
+
+/**
+ * The seller links their X account to the sale: a public post from the
+ * account that names the sale, and a free signature from the wallet that
+ * opened it. Then every visitor sees a Verified badge.
+ */
+function VerifyX({
+  auction,
+  title,
+  claimed,
+  onVerified,
+}: {
+  auction: Auction;
+  title: string;
+  claimed: string | null;
+  onVerified: () => void;
+}) {
+  const { signer } = useWallet();
+  const action = useAction();
+  const [postUrl, setPostUrl] = useState("");
+  const [open, setOpen] = useState(false);
+  const address = auction.address.toBase58();
+  const text = `Verifying my sale ${title} on @${PROJECT_X_HANDLE}: ${address}`;
+  const intent = `https://x.com/intent/post?text=${encodeURIComponent(text)}`;
+  const valid = /^https:\/\/(www\.)?(x|twitter)\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+/.test(postUrl.trim());
+  const verify = () =>
+    action.run("verify", async () => {
+      if (!signer) throw new Error("Connect the wallet that opened the sale.");
+      const result = await verifySale(signer, address, postUrl);
+      track("Sale verified");
+      onVerified();
+      return <>Verified: bidders now see @{result.handle} on this sale.</>;
+    });
+  if (!open) {
+    return (
+      <div className="verify-x verify-x--closed">
+        <p>
+          <strong>Verify your X account.</strong> A Verified badge shows bidders this sale really is yours.
+          {claimed ? null : " Add your X account when you launch to show it too."}
+        </p>
+        <button type="button" className="btn btn--secondary" onClick={() => setOpen(true)}>
+          Verify on X
+        </button>
+      </div>
+    );
+  }
+  return (
+    <section className="panel verify-x" aria-labelledby="verify-title">
+      <h2 id="verify-title" className="panel__title">
+        Verify your X account
+      </h2>
+      <ol className="verify-x__steps">
+        <li>
+          <span>
+            <strong>Post from your project's X account.</strong> The post must include this sale's address, written out
+            in full.
+          </span>
+          <a className="btn btn--secondary" href={intent} target="_blank" rel="noreferrer noopener">
+            Write the post on X
+          </a>
+        </li>
+        <li>
+          <label htmlFor="verify-post">
+            <strong>Paste the post's link.</strong> Open the post and copy its address.
+          </label>
+          <input
+            id="verify-post"
+            value={postUrl}
+            onChange={(e) => setPostUrl(e.target.value)}
+            placeholder="https://x.com/yourproject/status/…"
+            aria-invalid={postUrl !== "" && !valid}
+          />
+        </li>
+        <li>
+          <span>
+            <strong>Sign with your wallet.</strong> A free signature proves the sale is yours; nothing is sent.
+          </span>
+          <Button variant="primary" onClick={verify} busy={action.busy === "verify"} disabled={!valid || !signer}>
+            Verify
+          </Button>
+        </li>
+      </ol>
+      {action.error ? <Notice tone="error">{action.error}</Notice> : null}
+      {action.done ? <Notice tone="success">{action.done}</Notice> : null}
+    </section>
   );
 }

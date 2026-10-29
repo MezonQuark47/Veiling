@@ -1376,3 +1376,35 @@ export function launchSettleSecs(bids: number, pages: number): number {
   const SECS_PER_COMPUTATION = 20;
   return (2 * batches + clearing) * SECS_PER_COMPUTATION + 2 * 15;
 }
+
+/**
+ * Proof that a pool's liquidity is locked, read from its Meteora DAMM v2
+ * position: how much of it can still be withdrawn (should be none) and how
+ * much is permanently locked, with the transaction that locked it.
+ */
+export interface PoolLock {
+  unlocked: bigint;
+  permanent: bigint;
+  /** The first transaction of the position: the one that opened and locked it. */
+  lockedIn: string | null;
+}
+
+/** Offsets in a DAMM v2 `Position`: unlocked, vested and permanently locked liquidity (u128 each). */
+const POSITION_LIQUIDITY_AT = { unlocked: 152, permanent: 184 };
+
+const u128At = (data: Uint8Array, at: number) => {
+  let v = 0n;
+  for (let i = 15; i >= 0; i--) v = (v << 8n) | BigInt(data[at + i]);
+  return v;
+};
+
+export async function fetchPoolLock(position: PublicKey): Promise<PoolLock | null> {
+  const info = await connection.getAccountInfo(position, "confirmed");
+  if (!info || info.data.length < POSITION_LIQUIDITY_AT.permanent + 16) return null;
+  const signatures = await connection.getSignaturesForAddress(position, { limit: 1000 }, "confirmed").catch(() => []);
+  return {
+    unlocked: u128At(info.data, POSITION_LIQUIDITY_AT.unlocked),
+    permanent: u128At(info.data, POSITION_LIQUIDITY_AT.permanent),
+    lockedIn: signatures.length > 0 ? signatures[signatures.length - 1].signature : null,
+  };
+}

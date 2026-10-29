@@ -494,10 +494,24 @@ export function mockStats(): import("./stats").StatsSnapshot {
       };
     })
     .sort((a, b) => b.points - a.points);
+  // The wallet a preview is seen as (?mock&as=) has a place on the board too.
+  const as = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("as") : null;
+  if (as && !leaderboard.some((w) => w.wallet === as)) {
+    leaderboard.push({ wallet: as, boughtSol: 2.42, raisedSol: 0, bids: 9, steps: 4, points: 312 });
+    leaderboard.sort((a, b) => b.points - a.points);
+  }
   return {
     updatedAt: Math.floor(Date.now() / 1000) - 40,
     network: "devnet",
-    points: { perSolBought: 100, perSolRaised: 50, perBid: 5, bidsPerSale: 3, perStep: 5 },
+    points: { perSolBought: 100, perSolRaised: 50, perBid: 5, bidsPerSale: 3, perStep: 5, perInvite: 25, inviteShare: 0.1 },
+    season: {
+      name: "Season 0",
+      start: Date.UTC(2026, 9, 30) / 1000,
+      end: Date.UTC(2026, 11, 15) / 1000,
+      players: leaderboard.length,
+      leaderboard: leaderboard.map((w) => ({ ...w, points: Math.round(w.points * 0.4) })),
+      wallets: Object.fromEntries(leaderboard.map((w) => [w.wallet, Math.round(w.points * 0.4)])),
+    },
     totals: {
       sales: days.reduce((n, d) => n + d.sales, 0),
       newTokens: 41,
@@ -534,6 +548,8 @@ export function mockWalletView(wallet: string): import("./stats").WalletView {
     updatedAt: now - 30,
     points: 312,
     rank: 18,
+    season: { name: "Season 0", points: 125, rank: 14 },
+    invites: { joined: 4, active: 2, points: 63 },
     totals: {
       bids: 9,
       salesJoined: joined.length,

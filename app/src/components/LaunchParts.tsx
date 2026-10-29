@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MAX_ITEM_NAME_LEN, MAX_ITEMS } from "../config";
 import { MAX_TRAITS, MAX_TRAIT_TYPE_LEN, MAX_TRAIT_VALUE_LEN, type Sheet, type Trait, readSheet, sheetTemplate } from "../lib/csv";
 import { formatCount, plural } from "../lib/format";
+import type { AccessPlan, BidAccess } from "../lib/saleRules";
 import type { PreparedImage } from "../lib/images";
 import type { NftFile } from "../lib/uploads";
 import { isDisplayText } from "../lib/validate";
@@ -582,5 +583,105 @@ export function ItemsEditor({ value, onChange }: { value: DraftItem[]; onChange:
         image and traits.
       </p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Who can bid
+// ---------------------------------------------------------------------------
+
+/**
+ * Who may bid: anyone, or only the wallets on a list the seller pastes in,
+ * each with an optional limit on what it deposits. The list is published
+ * with the sale, so every bidder can check it.
+ */
+export function BidAccessField({
+  value,
+  onChange,
+  plan,
+  idPrefix,
+}: {
+  value: BidAccess;
+  onChange: (value: BidAccess) => void;
+  plan: AccessPlan;
+  idPrefix: string;
+}) {
+  const set = <K extends keyof BidAccess>(key: K, v: BidAccess[K]) => onChange({ ...value, [key]: v });
+  const readFile = async (file: File | undefined) => {
+    if (!file) return;
+    const text = await file.text();
+    set("text", value.text.trim() ? `${value.text.trim()}\n${text}` : text);
+  };
+  return (
+    <fieldset className="group">
+      <legend className="group__title">Who can bid</legend>
+      <div className="segmented" role="group" aria-label="Who can bid">
+        {(
+          [
+            [false, "Anyone"],
+            [true, "Only wallets on my list"],
+          ] as const
+        ).map(([listed, label]) => (
+          <button
+            key={label}
+            type="button"
+            className={`segmented__item${value.listed === listed ? " segmented__item--on" : ""}`}
+            aria-pressed={value.listed === listed}
+            onClick={() => set("listed", listed)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {value.listed ? (
+        <>
+          <div className="field">
+            <label htmlFor={`${idPrefix}-list`}>Wallets that may bid</label>
+            <textarea
+              id={`${idPrefix}-list`}
+              rows={5}
+              value={value.text}
+              onChange={(e) => set("text", e.target.value)}
+              placeholder={"One wallet address per line\n7xKX…\n9WzD…"}
+              spellCheck={false}
+            />
+            <p className="hint">
+              Paste addresses, one per line or separated by commas, or{" "}
+              <label className="linkish">
+                add a CSV file
+                <input type="file" accept=".csv,.txt,text/plain,text/csv" hidden onChange={(e) => void readFile(e.target.files?.[0])} />
+              </label>
+              .{" "}
+              {plan.wallets.length > 0 ? (
+                <strong>
+                  {formatCount(plan.wallets.length)} {plan.wallets.length === 1 ? "wallet" : "wallets"}
+                </strong>
+              ) : null}
+              {plan.invalid.length > 0 ? <span className="hint--bad"> · {formatCount(plan.invalid.length)} not valid</span> : null}
+            </p>
+          </div>
+          <div className="field">
+            <label htmlFor={`${idPrefix}-cap`}>Most one wallet can deposit (SOL, optional)</label>
+            <input
+              id={`${idPrefix}-cap`}
+              className="field__short"
+              inputMode="decimal"
+              value={value.cap}
+              onChange={(e) => set("cap", e.target.value.replace(/[^0-9.]/g, ""))}
+              placeholder="No limit"
+            />
+            <p className="hint">
+              Spreads the sale across more people: no wallet on the list can put in more than this across all its bids.
+              The list is published with the sale, so every bidder can check whether they are on it.
+            </p>
+          </div>
+        </>
+      ) : (
+        <p className="hint">
+          Any wallet can bid. Choose a list for a private round, a community sale or a sale to people who passed your
+          own checks; you can then also limit how much each wallet puts in.
+        </p>
+      )}
+    </fieldset>
   );
 }

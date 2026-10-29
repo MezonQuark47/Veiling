@@ -2,7 +2,8 @@ import type { MouseEvent } from "react";
 import type { Auction } from "../lib/chain";
 import { formatPrice, phaseOf, saleFailed, supplyShare } from "../lib/chain";
 import { formatCount, formatDuration, formatSol, shortAddress } from "../lib/format";
-import { type AssetInfo, goodsAmount, useAssetInfo } from "./ui";
+import { fetchVerified } from "../lib/keeper";
+import { type AssetInfo, goodsAmount, useAssetInfo, useLoader } from "./ui";
 
 export function statusText(a: Auction, now: number, asset: AssetInfo): string {
   const clearing = `${formatPrice(a, a.clearingPrice, asset.decimals)}${a.launch ? " FDV" : ""}`;
@@ -65,6 +66,7 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
   const named = auction.kind === "collection" ? asset.collection !== null : Boolean(asset.token?.symbol || asset.token?.name);
   const href = `#/auction/${auction.address.toBase58()}`;
   const open = openOnClick(href);
+  const verified = useLoader(fetchVerified, []).data?.[auction.address.toBase58()] ?? null;
   return (
     <tr
       className={`row--link${live ? " row--live" : ""}`}
@@ -75,7 +77,16 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
     >
       <td>
         <a className="row__token" href={href}>
-          <span className="row__symbol">{asset.title}</span>
+          <span className="row__symbol">
+            {asset.title}
+            {verified ? (
+              <svg className="row__verified" viewBox="0 0 20 20" width="14" height="14" role="img" aria-label={`Verified: @${verified.handle}`}>
+                <title>{`Verified creator: @${verified.handle}`}</title>
+                <path d="M10 1.5 12.2 3.4 15.1 3.1 15.8 6 18.3 7.6 17.2 10.3 18.3 13 15.8 14.6 15.1 17.5 12.2 17.2 10 19.1 7.8 17.2 4.9 17.5 4.2 14.6 1.7 13 2.8 10.3 1.7 7.6 4.2 6 4.9 3.1 7.8 3.4Z" />
+                <path className="verified__tick" d="m6.6 10.3 2.3 2.3 4.6-4.9" />
+              </svg>
+            ) : null}
+          </span>
           <span className="row__name">{asset.sub}</span>
           {named ? (
             <span className="row__mint" title={auction.mint.toBase58()}>

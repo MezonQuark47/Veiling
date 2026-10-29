@@ -15,6 +15,7 @@ import {
   MAX_UPLOADED_ITEMS,
   MAX_URI_LEN,
   NFT_MINT_COST_LAMPORTS,
+  NFT_PRICE_SCALE,
   REVEAL_DELAY_SECS,
   MAX_START_DELAY_SECS,
 } from "../config";
@@ -26,6 +27,7 @@ import {
   type Details,
   type DraftItem,
   type Kind,
+  BidAccessField,
   DetailsFields,
   ItemsEditor,
   KindChooser,
@@ -70,6 +72,8 @@ import {
   nftPriceToTicks,
   parseAmount,
 } from "../lib/price";
+import { track } from "../lib/analytics";
+import { OPEN_TO_ANYONE, accessPlan, withSaleRules, type BidAccess } from "../lib/saleRules";
 import { revealKey } from "../lib/sealed";
 import { creditFor, ensureCredit, fetchStorageRates, quoteStorage, walletSignature, walletUploadKey } from "../lib/storage";
 import { sendTransactions } from "../lib/tx";
@@ -371,6 +375,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
   // Collections built item by item.
   const [items, setItems] = useState<DraftItem[]>([]);
 
+  const [access, setAccess] = useState<BidAccess>(OPEN_TO_ANYONE);
   const [nfts, setNfts] = useState("100");
   const [maxPerBidInput, setMaxPerBid] = useState<string | null>(null);
   const [nftMinPriceInput, setNftMinPrice] = useState("0.1");
@@ -627,13 +632,16 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
           : "Your wallet cannot sign messages, which paid storage needs. Use another wallet, or free storage."
       );
     }
+    const accessed = accessPlan(access, minTicks > 0n ? minTicks * NFT_PRICE_SCALE : 0n);
+    if (accessed.problem) add(2, accessed.problem);
     const royaltyBps = Math.round(Number.parseFloat(royalty || "0") * 100);
     if (!Number.isFinite(royaltyBps) || royaltyBps < 0 || royaltyBps > MAX_ROYALTY_BPS)
       add(2, `Creator earnings must be between 0 and ${MAX_ROYALTY_BPS / 100}%.`);
 
     if (fees.data === null) add(3, "The platform's fees are not set up yet, so auctions cannot open.");
-    return { problems, byStep, minTicks, minPriceShown, rounded };
+    return { problems, byStep, minTicks, minPriceShown, rounded, accessed };
   }, [
+    access,
     details,
     linked,
     collectionUri,
@@ -739,7 +747,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
       fees.data,
       Boolean(listed)
     );
-    txs.push(built.tx);
+    txs.push(...(await withSaleRules(built.tx, signer.publicKey, built.auction, plan.accessed)));
     setTxProgress([0, txs.length]);
     await sendTransactions(txs, signer, (done, total) => setTxProgress([done, total]));
     seedRef.current = null;
@@ -753,6 +761,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
         if (problems.length > 0) throw new Error(problems[0]);
         if (!fees.data) throw new Error("The platform's fees are not set up yet.");
         const auction = await launchCollection();
+        track("Sale launched", { kind, allowlist: access.listed });
         window.location.hash = `#/auction/${auction.toBase58()}`;
       })
       .finally(() => {
@@ -1086,6 +1095,8 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
         <BiddingWindow startAt={startAt} onStartAt={setStartAt} duration={duration} onDuration={setDuration}>
           <BidRoom />
         </BiddingWindow>
+
+        <BidAccessField value={access} onChange={setAccess} plan={plan.accessed} idPrefix="c-access" />
 
         <fieldset className="group">
           <legend className="group__title">Earnings</legend>

@@ -15,29 +15,64 @@
  *   - helping:    5 per finishing step you ran (from the site's "Finish the
  *                 sale" button or your own crank); the platform's own keeper
  *                 wallets earn none
+ *   - inviting:  25 for each wallet you invited that wins in a sale, plus
+ *                10% of the buying points your invitees earn after joining
  * Points have no cash value; the rules can change.
+ *
+ * A season (Season 0, the devnet test campaign) counts the same points for
+ * what happened between its start and end only, for its own leaderboard.
+ * Invites are not on chain: the keeper keeps the signed invites
+ * (`scripts/lib/services.ts`) and passes them in.
  */
 import { BorshCoder, EventParser } from "@anchor-lang/core";
 import { Connection, PublicKey, type ConfirmedSignatureInfo } from "@solana/web3.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname } from "path";
 
-export const POINTS = { perSolBought: 100, perSolRaised: 50, perBid: 5, bidsPerSale: 3, perStep: 5 };
+export const POINTS = { perSolBought: 100, perSolRaised: 50, perBid: 5, bidsPerSale: 3, perStep: 5, perInvite: 25, inviteShare: 0.1 };
+
+/** A season's bounds, in unix seconds. */
+export interface Season {
+  name: string;
+  start: number;
+  end: number;
+}
+
+/** A signed invite: the wallet that joined through it, who invited it and when. */
+export interface Invite {
+  referrer: string;
+  at: number;
+  signature: string;
+}
+
+/** What one wallet earned, all time or in a season. */
+interface Earned {
+  /** Lamports paid for what this wallet won. */
+  paid: number;
+  /** Lamports this wallet's sales raised. */
+  raised: number;
+  /** Bids that count for points (at most `bidsPerSale` per sale). */
+  countedBids: number;
+  steps: number;
+  /** Lamports this wallet's invitees paid for what they won, after joining. */
+  invitePaid: number;
+  /** Invitees who won something after joining. */
+  invitesActive: number;
+}
+
+const noEarnings = (): Earned => ({ paid: 0, raised: 0, countedBids: 0, steps: 0, invitePaid: 0, invitesActive: 0 });
 
 const LAMPORTS = 1e9;
 /** The site's "Finish the sale" sessions name the wallet that funded them. */
 const HELPER_MEMO = /Memo \(len \d+\): "veiling:helper:([1-9A-HJ-NP-Za-km-z]{32,44})"/;
 
-interface WalletRow {
-  /** Lamports paid for what this wallet won. */
-  paid: number;
-  /** Lamports this wallet's sales raised. */
-  raised: number;
+interface WalletRow extends Earned {
   bids: number;
-  /** Bids that count for points (at most `bidsPerSale` per sale). */
-  countedBids: number;
-  steps: number;
   sales: number;
+  /** The same, counted in the season only. */
+  season: Earned;
+  /** Won something since joining through an invite (counted for the inviter once). */
+  wonAfterInvite?: boolean;
   firstSeen: number;
   /** Every sale this wallet bid in, by sale address. */
   joined: Record<string, Part>;
@@ -88,8 +123,10 @@ interface DayRow {
 }
 
 export interface StatsState {
-  version: 2;
+  version: 3;
   programId: string;
+  /** The season these counters are for; another season starts the counting over. */
+  season: Season | null;
   /** The newest transaction already read. */
   newest: string | null;
   transactions: number;
@@ -105,6 +142,17 @@ export interface StatsSnapshot {
   updatedAt: number;
   network: string;
   points: typeof POINTS;
+  /** The season's own leaderboard, while there is a season. */
+  season: {
+    name: string;
+    start: number;
+    end: number;
+    /** Wallets with season points. */
+    players: number;
+    leaderboard: WalletPoints[];
+    /** Every wallet's season points. */
+    wallets: Record<string, number>;
+  } | null;
   totals: {
     sales: number;
     newTokens: number;
@@ -135,9 +183,10 @@ export interface WalletPoints {
   steps: number;
 }
 
-const emptyState = (programId: PublicKey): StatsState => ({
-  version: 2,
+const emptyState = (programId: PublicKey, season: Season | null): StatsState => ({
+  version: 3,
   programId: programId.toBase58(),
+  season,
   newest: null,
   transactions: 0,
   wallets: {},
@@ -147,12 +196,14 @@ const emptyState = (programId: PublicKey): StatsState => ({
   deposited: 0,
 });
 
-export function loadState(path: string, programId: PublicKey): StatsState {
-  if (!existsSync(path)) return emptyState(programId);
+export function loadState(path: string, programId: PublicKey, season: Season | null): StatsState {
+  if (!existsSync(path)) return emptyState(programId, season);
   const state = JSON.parse(readFileSync(path, "utf8")) as StatsState;
-  // A new program (or a redeploy at a new address) starts over.
-  // So does an older state file, which lacks what newer versions keep.
-  return state.programId === programId.toBase58() && state.version === 2 ? state : emptyState(programId);
+  // A new program (or a redeploy at a new address) starts over, and so does
+  // another season. So does an older state file, which lacks what newer
+  // versions keep.
+  const sameSeason = JSON.stringify(state.season ?? null) === JSON.stringify(season);
+  return state.programId === programId.toBase58() && state.version === 3 && sameSeason ? state : emptyState(programId, season);
 }
 
 function saveJson(path: string, value: unknown) {
@@ -186,7 +237,8 @@ export async function indexHistory(
   idl: any,
   state: StatsState,
   log: (line: string) => void = () => {},
-  checkpoint: () => void = () => {}
+  checkpoint: () => void = () => {},
+  invites: Record<string, Invite> = {}
 ): Promise<number> {
   // Newest first, page by page, back to where the last run stopped.
   const fresh: ConfirmedSignatureInfo[] = [];
@@ -211,12 +263,10 @@ export async function indexHistory(
     let row = state.wallets[wallet];
     if (!row) {
       row = state.wallets[wallet] = {
-        paid: 0,
-        raised: 0,
+        ...noEarnings(),
         bids: 0,
-        countedBids: 0,
-        steps: 0,
         sales: 0,
+        season: noEarnings(),
         firstSeen: at,
         joined: {},
       };
@@ -248,6 +298,16 @@ export async function indexHistory(
       day(at).newUsers++;
     }
     return row;
+  };
+
+  const season = state.season;
+  const inSeason = (at: number) => Boolean(season && at >= season.start && at < season.end);
+  /** Adds to a wallet's all-time earnings and, in the season, to its season's. */
+  const earn = (row: WalletRow, at: number, add: Partial<Earned>) => {
+    for (const [k, v] of Object.entries(add) as [keyof Earned, number][]) {
+      row[k] += v;
+      if (inSeason(at)) row.season[k] += v;
+    }
   };
 
   const AT_ONCE = 4;
@@ -306,9 +366,9 @@ export async function indexHistory(
             if (sale) {
               sale.bids++;
               sale.bidders[bidder] = (sale.bidders[bidder] ?? 0) + 1;
-              if (sale.bidders[bidder] <= POINTS.bidsPerSale) row.countedBids++;
+              if (sale.bidders[bidder] <= POINTS.bidsPerSale) earn(row, at, { countedBids: 1 });
             } else {
-              row.countedBids++;
+              earn(row, at, { countedBids: 1 });
             }
             const deposit = num(field(data, "deposit"));
             state.deposited += deposit;
@@ -333,18 +393,30 @@ export async function indexHistory(
             mine.won += num(field(data, "won"));
             mine.paid += payment;
             if (payment <= 0) break;
-            seen(str(field(data, "bidder")), at).paid += payment;
+            const bidder = str(field(data, "bidder"));
+            const buyer = seen(bidder, at);
+            earn(buyer, at, { paid: payment });
+            // Whoever invited this wallet earns a share of what it buys after joining.
+            const invite = invites[bidder];
+            if (invite && at >= invite.at && invite.referrer !== bidder) {
+              const inviter = seen(invite.referrer, at);
+              earn(inviter, at, { invitePaid: payment });
+              if (!buyer.wonAfterInvite) {
+                buyer.wonAfterInvite = true;
+                earn(inviter, at, { invitesActive: 1 });
+              }
+            }
             const sale = state.sales[auction];
             if (sale) {
               sale.raised += payment;
-              seen(sale.seller, at).raised += payment;
+              earn(seen(sale.seller, at), at, { raised: payment });
             }
             day(at).volume += payment;
             break;
           }
           case "CrankPaid": {
             const cranker = str(field(data, "cranker"));
-            seen(state.helpers[cranker] ?? cranker, at).steps++;
+            earn(seen(state.helpers[cranker] ?? cranker, at), at, { steps: 1 });
             break;
           }
           case "LaunchGraduated": {
@@ -397,12 +469,20 @@ export async function indexHistory(
   return fresh.length;
 }
 
-export function pointsOf(row: WalletRow): number {
+export function pointsOf(row: Earned): number {
   return Math.round(
     (row.paid / LAMPORTS) * POINTS.perSolBought +
       (row.raised / LAMPORTS) * POINTS.perSolRaised +
       row.countedBids * POINTS.perBid +
-      row.steps * POINTS.perStep
+      row.steps * POINTS.perStep +
+      invitePointsOf(row)
+  );
+}
+
+/** The part of a wallet's points that its invites earned. */
+export function invitePointsOf(row: Earned): number {
+  return Math.round(
+    (row.invitePaid / LAMPORTS) * POINTS.perSolBought * POINTS.inviteShare + row.invitesActive * POINTS.perInvite
   );
 }
 
@@ -433,10 +513,33 @@ export function snapshot(state: StatsState, network: string, exclude: Set<string
       running += d.newUsers;
       return { day, sales: d.sales, bids: d.bids, volumeSol: sol(d.volume), newUsers: d.newUsers, users: running };
     });
+  const season = state.season;
+  const seasonBoard: WalletPoints[] = season
+    ? rows
+        .filter(([wallet]) => !exclude.has(wallet))
+        .map(([wallet, r]) => ({
+          wallet,
+          points: pointsOf(r.season),
+          boughtSol: sol(r.season.paid),
+          raisedSol: sol(r.season.raised),
+          bids: r.season.countedBids,
+          steps: r.season.steps,
+        }))
+        .filter((w) => w.points > 0)
+        .sort((a, b) => b.points - a.points || b.boughtSol - a.boughtSol)
+    : [];
   return {
     updatedAt: Math.floor(Date.now() / 1000),
     network,
     points: POINTS,
+    season: season
+      ? {
+          ...season,
+          players: seasonBoard.length,
+          leaderboard: seasonBoard.slice(0, 100),
+          wallets: Object.fromEntries(seasonBoard.map((w) => [w.wallet, w.points])),
+        }
+      : null,
     totals: {
       sales: sales.length,
       newTokens: sales.filter((s) => s.kind.toLowerCase() === "launch").length,
@@ -465,6 +568,10 @@ export interface WalletView {
   points: number;
   /** Place on the leaderboard (1 is first), or null without points. */
   rank: number | null;
+  /** The season's points and place, while there is a season. */
+  season: { name: string; points: number; rank: number | null } | null;
+  /** Wallets that joined through this wallet's invite link, and what they earned it. */
+  invites: { joined: number; active: number; points: number };
   totals: {
     bids: number;
     salesJoined: number;
@@ -508,10 +615,16 @@ export interface WalletView {
   }[];
 }
 
-export function walletView(state: StatsState, wallet: string, latest: StatsSnapshot | null): WalletView | null {
+export function walletView(
+  state: StatsState,
+  wallet: string,
+  latest: StatsSnapshot | null,
+  invites: Record<string, Invite> = {}
+): WalletView | null {
   const row = state.wallets[wallet];
   const launchedSales = Object.entries(state.sales).filter(([, s]) => s.seller === wallet);
-  if (!row && launchedSales.length === 0) return null;
+  const invited = Object.values(invites).filter((i) => i.referrer === wallet).length;
+  if (!row && launchedSales.length === 0 && invited === 0) return null;
   const parts = Object.entries(row?.joined ?? {});
   const sum = (f: (p: Part) => number) => parts.reduce((n, [, p]) => n + f(p), 0);
   const deposited = (p: Part) => Object.values(p.deposits).reduce((n, d) => n + d, 0);
@@ -520,11 +633,20 @@ export function walletView(state: StatsState, wallet: string, latest: StatsSnaps
     latest && latest.wallets[wallet]
       ? Object.values(latest.wallets).filter(([p]) => p > latest.wallets[wallet][0]).length + 1
       : null;
+  const seasonPoints = latest?.season?.wallets[wallet] ?? 0;
   return {
     wallet,
     updatedAt: Math.floor(Date.now() / 1000),
     points,
     rank,
+    season: latest?.season
+      ? {
+          name: latest.season.name,
+          points: seasonPoints,
+          rank: seasonPoints > 0 ? Object.values(latest.season.wallets).filter((p) => p > seasonPoints).length + 1 : null,
+        }
+      : null,
+    invites: { joined: invited, active: row?.invitesActive ?? 0, points: row ? invitePointsOf(row) : 0 },
     totals: {
       bids: row?.bids ?? 0,
       salesJoined: parts.length,

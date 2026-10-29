@@ -3,7 +3,10 @@ import { NETWORK_LABEL } from "../config";
 import { shortAddress } from "../lib/format";
 import { CONNECT_EVENT, useWallet } from "../lib/wallet";
 import { errorMessage } from "../lib/tx";
+import { track } from "../lib/analytics";
+import { TERMS_EVENT, termsAccepted } from "../lib/terms";
 import { AccountChip, AccountPanel } from "./Account";
+import { TermsGate } from "./TermsGate";
 
 /**
  * A sealed bid seen from above, the final price drawn in light under it,
@@ -24,12 +27,23 @@ export function Header({ route }: { route: string }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // The terms are agreed to once, before the first wallet connects.
+  const [accepted, setAccepted] = useState(true);
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    const check = () => setAccepted(termsAccepted());
+    check();
+    window.addEventListener(TERMS_EVENT, check);
+    return () => window.removeEventListener(TERMS_EVENT, check);
+  }, []);
+  const openWallets = () => (termsAccepted() ? setOpen((o) => !o) : setAsking(true));
 
   // A "Connect wallet" button elsewhere on the page opens this menu.
   useEffect(() => {
     const show = () => {
       window.scrollTo({ top: 0, behavior: "smooth" });
-      setOpen(true);
+      if (termsAccepted()) setOpen(true);
+      else setAsking(true);
     };
     window.addEventListener(CONNECT_EVENT, show);
     return () => window.removeEventListener(CONNECT_EVENT, show);
@@ -57,6 +71,17 @@ export function Header({ route }: { route: string }) {
 
   return (
     <header className="topbar">
+      {asking && !publicKey ? (
+        <TermsGate
+          onAccept={() => {
+            setAsking(false);
+            setOpen(true);
+          }}
+          onCancel={() => setAsking(false)}
+        />
+      ) : null}
+      {/* A wallet that reconnected on its own, before these terms: agree, or disconnect. */}
+      {publicKey && !accepted ? <TermsGate onAccept={() => setAccepted(true)} onCancel={() => void disconnect()} cancelLabel="Disconnect" /> : null}
       <div className="topbar__inner">
         <a href="#/" className="brand" aria-label="Veiling home">
           <Logo />
@@ -89,7 +114,7 @@ export function Header({ route }: { route: string }) {
             ) : (
               <button
                 className="btn btn--primary"
-                onClick={() => setOpen((o) => !o)}
+                onClick={openWallets}
                 aria-expanded={open}
                 aria-haspopup="menu"
                 disabled={connecting}
@@ -132,6 +157,7 @@ export function Header({ route }: { route: string }) {
                         try {
                           await connect(w);
                           setOpen(false);
+                          track("Wallet connected", { wallet: w.name });
                         } catch (e) {
                           setError(errorMessage(e));
                         }

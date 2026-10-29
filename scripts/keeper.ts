@@ -27,6 +27,13 @@
  *   DATA_DIR         where the keeper keeps its state (default keeper-data)
  *   EXCLUDE_WALLETS  more wallets, comma separated, that earn no points
  *   STATS_ONLY=1     only keep the totals; finish no sales
+ *   SEASON_NAME, SEASON_START, SEASON_END
+ *                    the season with its own leaderboard (dates like
+ *                    2026-10-30); on devnet Season 0 by default, none on
+ *                    mainnet. Must match SEASON in app/src/config.ts.
+ *
+ * It also takes invites, X checks and reminders for the site
+ * (`scripts/lib/services.ts`, which lists their settings).
  *
  *   yarn run ts-node scripts/keeper.ts
  */
@@ -38,7 +45,8 @@ import { createServer } from "http";
 import { homedir } from "os";
 import { join } from "path";
 import { finishAuction } from "./lib/finish";
-import { indexHistory, loadState, saveSnapshot, saveState, snapshot, type StatsSnapshot, walletView } from "./lib/stats";
+import { createServices, type SaleNow } from "./lib/services";
+import { indexHistory, loadState, saveSnapshot, saveState, snapshot, type Season, type StatsSnapshot, walletView } from "./lib/stats";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -66,6 +74,16 @@ const WALLET_PATH = (process.env.KEEPER_WALLET ?? "~/.config/solana/veiling-keep
 const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.DATA_DIR ?? "keeper-data";
 const STATS_ONLY = process.env.STATS_ONLY === "1";
+/** A date setting (2026-10-30, or any date JavaScript reads) in unix seconds. */
+const dateSetting = (value: string | undefined, fallback: string) => Math.floor(Date.parse(value || fallback) / 1000);
+const SEASON: Season | null =
+  NETWORK === "mainnet" && !process.env.SEASON_START
+    ? null
+    : {
+        name: process.env.SEASON_NAME || "Season 0",
+        start: dateSetting(process.env.SEASON_START, "2026-10-30T00:00:00Z"),
+        end: dateSetting(process.env.SEASON_END, "2026-12-15T00:00:00Z"),
+      };
 const IDL_PATH = [process.env.IDL, "target/idl/sealed_auction.json", "app/src/idl/sealed_auction.json"].find(
   (p) => p && existsSync(p)
 );
@@ -124,7 +142,20 @@ async function main() {
 
   const statePath = join(DATA_DIR, "stats-state.json");
   const snapshotPath = join(DATA_DIR, "stats.json");
-  const state = loadState(statePath, programId);
+  const state = loadState(statePath, programId, SEASON);
+  if (SEASON) {
+    log(`${SEASON.name}: ${new Date(SEASON.start * 1000).toISOString().slice(0, 10)} to ${new Date(SEASON.end * 1000).toISOString().slice(0, 10)}`);
+  }
+  const reader = new Program(idl, new anchor.AnchorProvider(connection, new anchor.Wallet(Keypair.generate()), {})) as Program<any>;
+  const services = createServices({
+    dataDir: DATA_DIR,
+    state: () => state,
+    fetchAuction: async (address) => {
+      const a = await (reader.account as any).auction.fetchNullable(new PublicKey(address), "confirmed");
+      return a ? { seller: a.seller.toBase58(), status: variant(a.status), endTime: a.endTime.toNumber() } : null;
+    },
+    log,
+  });
   let latest: StatsSnapshot | null = existsSync(snapshotPath) ? JSON.parse(readFileSync(snapshotPath, "utf8")) : null;
   let indexing = false;
   async function updateStats() {
@@ -137,7 +168,8 @@ async function main() {
         idl,
         state,
         (line) => log(line),
-        () => saveState(statePath, state)
+        () => saveState(statePath, state),
+        services.invites
       );
       if (read > 0 || !latest) {
         saveState(statePath, state);
@@ -160,10 +192,12 @@ async function main() {
     }
   }
 
-  createServer((req, res) => {
+  createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Cache-Control", "public, max-age=30");
-    const path = (req.url ?? "/").split("?")[0];
+    res.setHeader("Cache-Control", req.method === "GET" ? "public, max-age=30" : "no-store");
+    const url = new URL(req.url ?? "/", "http://keeper");
+    const path = url.pathname;
+    if (await services.handle(req, res, path, url.searchParams)) return;
     if (path === "/stats.json") {
       if (!latest) {
         res.writeHead(503, { "Content-Type": "application/json" }).end('{"error":"not ready"}');
@@ -172,7 +206,7 @@ async function main() {
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(latest));
     } else if (/^\/wallet\/[1-9A-HJ-NP-Za-km-z]{32,44}\.json$/.test(path)) {
       // One wallet's own history, for its dashboard.
-      const view = walletView(state, path.slice("/wallet/".length, -".json".length), latest);
+      const view = walletView(state, path.slice("/wallet/".length, -".json".length), latest, services.invites);
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(view));
     } else if (path === "/health") {
       res
@@ -229,6 +263,23 @@ async function main() {
       const program = new Program(idl, new anchor.AnchorProvider(connection, new anchor.Wallet(keeper!), {})) as Program<any>;
       const all = (await (program.account as any).auction.all()) as { publicKey: PublicKey; account: any }[];
       const now = Date.now() / 1000;
+      // Reminders: every sale's state now; a sale that is gone is closed, so over.
+      const sales = new Map<string, SaleNow>();
+      for (const { publicKey, account: a } of all) {
+        const status = variant(a.status);
+        const end = a.endTime.toNumber();
+        const settled = a.resolvedCount >= a.bidCount && a.liveBids === 0 && (a.liquidity ?? 0) !== LIQUIDITY_PLANNED;
+        sales.set(publicKey.toBase58(), {
+          status,
+          endTime: end,
+          done: status === "finished" || (status === "settling" && settled) || (status === "open" && end <= now && a.bidCount === 0),
+          failed: Boolean(a.raiseMissed),
+        });
+      }
+      void services.sendReminders(sales, (auction) => {
+        const sale = state.sales[auction];
+        return sale?.symbol ? `the ${sale.symbol} sale` : sale?.name ? `the ${sale.name} sale` : "this sale";
+      });
       let nextEnd = Infinity;
       for (const { publicKey, account: a } of all) {
         const key = publicKey.toBase58();

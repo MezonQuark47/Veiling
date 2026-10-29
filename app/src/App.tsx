@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Component, Fragment, type ReactNode, useEffect, useState } from "react";
 import { Header, Logo } from "./components/Header";
 import { AuctionPage } from "./pages/AuctionPage";
 import { Docs } from "./pages/Docs";
@@ -7,9 +7,14 @@ import { Home } from "./pages/Home";
 import { Launch } from "./pages/Launch";
 import { MyBids } from "./pages/MyBids";
 import { Stats } from "./pages/Stats";
-import { FEATURE_CONTACT, GITHUB_URL, PROJECT_X_URL } from "./config";
+import { Legal } from "./pages/Legal";
+import { Season } from "./pages/Season";
+import { FEATURE_CONTACT, GITHUB_URL, PROJECT_X_URL, SEASON } from "./config";
 import { Toaster } from "./components/ui";
 import { NetworkNotice } from "./components/NetworkNotice";
+import { SeasonBar } from "./components/SeasonBar";
+import { InviteBanner } from "./components/InviteBanner";
+import { reportError } from "./lib/analytics";
 
 function currentRoute(): string {
   // The app's pages live in the hash (#/launch); "#/" is the front page.
@@ -35,6 +40,29 @@ function XIcon() {
       <path d="M17.75 3h3.07l-6.72 7.68L22 21h-6.19l-4.85-6.34L5.41 21H2.33l7.19-8.21L2 3h6.34l4.38 5.8L17.75 3Zm-1.08 16.18h1.7L7.4 4.72H5.57l11.1 14.46Z" />
     </svg>
   );
+}
+
+/** A page that breaks shows a way out instead of a blank screen, and the error is reported. */
+class PageBoundary extends Component<{ children: ReactNode }, { broken: boolean }> {
+  state = { broken: false };
+  static getDerivedStateFromError() {
+    return { broken: true };
+  }
+  componentDidCatch(error: unknown) {
+    reportError(error);
+  }
+  render() {
+    if (!this.state.broken) return this.props.children;
+    return (
+      <main className="page">
+        <h1 className="page__title">Something went wrong</h1>
+        <p className="page__lede">This page hit an error. Your funds are safe: nothing is sent without your wallet.</p>
+        <button className="btn btn--primary" onClick={() => window.location.reload()}>
+          Reload the page
+        </button>
+      </main>
+    );
+  }
 }
 
 function Footer() {
@@ -67,6 +95,7 @@ function Footer() {
           <a href="#/launch">Launch an auction</a>
           <a href="#/bids">Your dashboard</a>
           <a href="#/stats">Stats and points</a>
+          {SEASON ? <a href="#/season">{SEASON.name}</a> : null}
         </nav>
         <nav className="band__links" aria-label="Docs">
           <h2 className="band__heading">Docs</h2>
@@ -86,9 +115,14 @@ function Footer() {
           </a>
         </div>
       </div>
-      <p className="band__fine">
-        Running on Solana with Arcium encrypted compute.
-      </p>
+      <div className="band__fine">
+        <p>Running on Solana with Arcium encrypted compute. Unaudited software: read the risks before you bid.</p>
+        <nav className="band__legal" aria-label="Legal">
+          <a href="#/terms">Terms of Use</a>
+          <a href="#/risks">Risk disclosure</a>
+          <a href="#/privacy">Privacy policy</a>
+        </nav>
+      </div>
     </footer>
   );
 }
@@ -152,6 +186,10 @@ export function App({ route: fixed }: { route?: string }) {
           ? "Dashboard · Veiling"
           : route.startsWith("stats")
             ? "Stats and points · Veiling"
+          : route.startsWith("season")
+            ? `${SEASON?.name ?? "Season"} · Veiling`
+          : route === "terms" || route === "risks" || route === "privacy"
+            ? `${route === "terms" ? "Terms of Use" : route === "risks" ? "Risk disclosure" : "Privacy policy"} · Veiling`
           : route.startsWith("auction/")
             ? "Auction · Veiling"
             : route.startsWith("auctions")
@@ -165,15 +203,21 @@ export function App({ route: fixed }: { route?: string }) {
   else if (route.startsWith("launch")) page = <Launch />;
   else if (route.startsWith("bids") || route.startsWith("dashboard")) page = <MyBids />;
   else if (route.startsWith("stats")) page = <Stats />;
+  else if (route.startsWith("season")) page = <Season />;
+  else if (route === "terms" || route === "risks" || route === "privacy") page = <Legal page={route} />;
   else if (route.startsWith("docs")) page = <Docs section={route.slice("docs/".length)} />;
   else page = <Home />;
 
   return (
     <>
       <Header route={route} />
+      <SeasonBar route={route} />
       <NetworkNotice />
+      <InviteBanner />
       {/* A new route mounts a new page, which fades in. */}
-      <Fragment key={route}>{page}</Fragment>
+      <PageBoundary key={route}>
+        <Fragment>{page}</Fragment>
+      </PageBoundary>
       <Toaster />
       <Footer />
     </>

@@ -163,12 +163,58 @@ export const STORAGE_PRICE_MARGIN_PERCENT = 1n;
 /** Compute units for the instructions that queue an MPC computation. */
 export const QUEUE_COMPUTE_UNITS = { check: 400_000, clear: 1_000_000, fold: 1_000_000, settle: 400_000, settleBatch: 400_000, draw: 400_000 } as const;
 
+/** Veiling's own X account. */
+export const PROJECT_X_HANDLE = "Veil_ing";
+export const PROJECT_X_URL: string | null = `https://x.com/${PROJECT_X_HANDLE}`;
 /** Where sellers ask to have an auction featured. */
-export const FEATURE_CONTACT = { label: "@mezonquark47", href: "https://x.com/mezonquark47" };
+export const FEATURE_CONTACT = { label: `@${PROJECT_X_HANDLE}`, href: `https://x.com/${PROJECT_X_HANDLE}` };
 /** The project's source code: the program, the circuits and this app. */
 export const GITHUB_URL = "https://github.com/MezonQuark47/Veiling";
-/** Veiling's own X account. The X icon in the footer shows once this is set. */
-export const PROJECT_X_URL: string | null = null;
+
+/**
+ * The keeper's address, where it takes invites, X checks and reminders: the
+ * folder of STATS_URL (e.g. https://stats.veiling.xyz). Null without one, and
+ * those features then stay hidden.
+ */
+export const KEEPER_URL: string | null = STATS_URL ? STATS_URL.replace(/\/stats\.json$/, "") : null;
+
+/**
+ * Season 0: the test campaign on devnet, where points are earned by trying
+ * Veiling out. Times in unix seconds (UTC); none on mainnet. Must match the
+ * keeper's SEASON_START and SEASON_END.
+ */
+export const SEASON: { name: string; start: number; end: number } | null = MAINNET
+  ? null
+  : { name: "Season 0", start: Date.UTC(2026, 9, 30) / 1000, end: Date.UTC(2026, 11, 15) / 1000 };
+
+/** The terms a visitor agrees to before connecting a wallet; a new date asks again. */
+export const TERMS_VERSION = "2026-10-30";
+/**
+ * Where Veiling may not be used. A visitor confirms they are not a resident
+ * of, or located in, any of these before connecting a wallet. Hosting can
+ * also block them by location (see README, Before any mainnet launch).
+ */
+export const RESTRICTED_REGIONS = [
+  "the United States",
+  "Canada",
+  "the United Kingdom",
+  "mainland China",
+  "Cuba",
+  "Iran",
+  "North Korea",
+  "Syria",
+  "Russia",
+  "Belarus",
+  "the Crimea, Donetsk and Luhansk regions of Ukraine",
+];
+
+/**
+ * Privacy-friendly analytics (Plausible: no cookies, no personal data) and
+ * error reports (Sentry), each only when its setting is there at build time.
+ */
+export const PLAUSIBLE_DOMAIN: string | null = import.meta.env.VITE_PLAUSIBLE_DOMAIN || null;
+export const PLAUSIBLE_SCRIPT: string = import.meta.env.VITE_PLAUSIBLE_SRC || "https://plausible.io/js/script.hash.outbound-links.js";
+export const SENTRY_DSN: string | null = import.meta.env.VITE_SENTRY_DSN || null;
 
 // Auto-liquidity: a token sale can open a Meteora DAMM v2 pool at its
 // final price. Must match the program's `liquidity` module.

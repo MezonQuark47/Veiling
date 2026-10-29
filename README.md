@@ -275,6 +275,16 @@ A token sale can open with rules (`SaleRules`, fixed in `create_auction`):
   A replaced bid's deposit comes off its wallet's count. Since a budget never
   exceeds its deposit, this caps what one wallet can buy.
 
+Fair launches and collections take the allowlist and wallet cap too:
+`set_sale_rules(wallet_cap, allowlist)` sets them on any sale, by its
+seller, while it is open and has no bids. The launch page's "Who can bid"
+step sends it, with `set_allowlist`, in the same transaction that opens the
+sale (or right after it, when they do not fit), so no bid can come before
+them. Their minimum raise stays the one they opened with. A fair launch's
+or collection's close does not take the list's account, so
+`close_allowlist` returns its rent to the seller once bidding is over; the
+app adds it in front of the close.
+
 ### Auto-liquidity
 
 A token sale can open a Meteora DAMM v2 pool the moment it settles, at
@@ -801,7 +811,8 @@ these services.
 - On devnet, paid storage goes to Turbo's test service, which deletes files
   after about three days, so a hidden drop stored there must be revealed
   within three days of launching.
-- No allowlists or mint stages: once bidding opens, anyone can bid.
+- One stage per sale: a sale is open to anyone or only to its allowlist,
+  not one and then the other.
 - A bidder who has turned on required memos for their Token-2022 account must
   turn it off before the tokens they won can be delivered.
 - `@solana/web3.js` v1, required by Arcium's client, carries npm advisories that

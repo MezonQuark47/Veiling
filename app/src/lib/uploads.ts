@@ -89,7 +89,13 @@ export const gatewayOf = (storage: StorageKind) => (storage === "paid" ? PAID_ST
 
 /** Uploads a new token's image (if any) and metadata file; returns the metadata link. */
 export async function uploadTokenMetadata(
-  token: { name: string; symbol: string; description: string; image: PreparedImage | null },
+  token: {
+    name: string;
+    symbol: string;
+    description: string;
+    image: PreparedImage | null;
+    links?: { website: string; x: string };
+  },
   progress: Progress,
   target: UploadTarget
 ): Promise<string> {
@@ -105,6 +111,12 @@ export async function uploadTokenMetadata(
       symbol: token.symbol,
       ...withDescription(token.description),
       ...(image ? { image } : {}),
+      // Where wallets and explorers look for a token's links, and where Veiling does.
+      ...(token.links?.website ? { external_url: token.links.website, website: token.links.website } : {}),
+      ...(token.links?.x ? { twitter: token.links.x } : {}),
+      ...(token.links?.website || token.links?.x
+        ? { veiling: { links: { website: token.links.website || undefined, x: token.links.x || undefined } } }
+        : {}),
     },
     target
   );

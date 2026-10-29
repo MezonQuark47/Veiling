@@ -1,4 +1,6 @@
+import type { PublicKey } from "@solana/web3.js";
 import {
+  EXPLORER_CLUSTER,
   ANTI_SNIPER_FEE_BPS,
   ANTI_SNIPER_MINUTES,
   DAMM_PROTOCOL_FEE_PERCENT,
@@ -8,10 +10,12 @@ import {
 import { buildBootstrapLiquidity, buildClaimPoolFees, buildCloseLaunch, buildGraduateLaunch } from "../lib/actions";
 import {
   type Auction,
+  type PoolLock,
   emergencyOpensAt,
   fetchAuction,
   fetchLaunchToken,
   fetchLiquidityPlan,
+  fetchPoolLock,
   launchSettleSecs,
   pagesInUse,
   formatPercent,
@@ -39,6 +43,9 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
     () => (auction.launch ? fetchLaunchToken(auction.address) : Promise.resolve(null)),
     [auction.address.toBase58(), auction.liquidity, auction.resolvedCount]
   );
+  // Once the pool is open, the lock is read from Meteora's own account, so anyone can check it.
+  const position = loaded.data && auction.liquidity === "pooled" ? loaded.data.position : null;
+  const lock = useLoader(() => (position ? fetchPoolLock(position) : Promise.resolve(null)), [position?.toBase58() ?? ""]);
   if (auction.liquidity === "none") return null;
   const plan = loaded.data;
   const launch = auction.launch;
@@ -275,7 +282,10 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
           </div>
           <div>
             <dt>Liquidity</dt>
-            <dd>Locked forever; no one can withdraw it</dd>
+            <dd>
+              Locked forever; no one can withdraw it
+              <PoolLockProof lock={lock.data ?? null} loading={lock.loading} position={plan.position} />
+            </dd>
           </div>
           <div>
             <dt>Trading fee</dt>
@@ -307,5 +317,35 @@ export function LiquidityPanel({ auction, asset, refresh }: { auction: Auction; 
       {loaded.error ? <Notice tone="error">{loaded.error}</Notice> : body}
       {action.error ? <Notice tone="error">{action.error}</Notice> : null}
     </section>
+  );
+}
+
+/** The lock, checked on chain, with one click to see it on the explorer. */
+function PoolLockProof({ lock, loading, position }: { lock: PoolLock | null; loading: boolean; position: PublicKey }) {
+  const href = lock?.lockedIn
+    ? `https://explorer.solana.com/tx/${lock.lockedIn}${EXPLORER_CLUSTER}`
+    : `https://explorer.solana.com/address/${position.toBase58()}${EXPLORER_CLUSTER}`;
+  const proven = lock && lock.unlocked === 0n && lock.permanent > 0n;
+  return (
+    <span className={`lock-proof${proven ? " lock-proof--ok" : ""}`}>
+      {loading && !lock ? (
+        "Checking the lock on chain…"
+      ) : proven ? (
+        <>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <rect x="3" y="7" width="10" height="7" rx="1.5" />
+            <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+          </svg>
+          Checked on chain: 100% of the pool's position is permanently locked.
+        </>
+      ) : lock ? (
+        "The position shows liquidity that is not locked. Check it on the explorer."
+      ) : (
+        "The lock could not be read right now."
+      )}{" "}
+      <a href={href} target="_blank" rel="noreferrer noopener">
+        See the proof
+      </a>
+    </span>
   );
 }

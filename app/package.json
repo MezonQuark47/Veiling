@@ -15,6 +15,7 @@
     "@fontsource-variable/funnel-sans": "5.3.0",
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0",
+    "@sentry/browser": "11.7.0",
     "@solana/spl-token": "0.4.15",
     "@solana/spl-token-metadata": "0.1.6",
     "@solana/web3.js": "1.99.0",
