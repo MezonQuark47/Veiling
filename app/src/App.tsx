@@ -186,7 +186,7 @@ export function App({ route: fixed }: { route?: string }) {
           ? "Dashboard · Veiling"
           : route.startsWith("stats")
             ? "Stats and points · Veiling"
-          : route.startsWith("season")
+          : route.startsWith("season") || route.startsWith("invite")
             ? `${SEASON?.name ?? "Season"} · Veiling`
           : route === "terms" || route === "risks" || route === "privacy"
             ? `${route === "terms" ? "Terms of Use" : route === "risks" ? "Risk disclosure" : "Privacy policy"} · Veiling`
@@ -203,7 +203,7 @@ export function App({ route: fixed }: { route?: string }) {
   else if (route.startsWith("launch")) page = <Launch />;
   else if (route.startsWith("bids") || route.startsWith("dashboard")) page = <MyBids />;
   else if (route.startsWith("stats")) page = <Stats />;
-  else if (route.startsWith("season")) page = <Season />;
+  else if (route.startsWith("season") || route.startsWith("invite")) page = <Season />;
   else if (route === "terms" || route === "risks" || route === "privacy") page = <Legal page={route} />;
   else if (route.startsWith("docs")) page = <Docs section={route.slice("docs/".length)} />;
   else page = <Home />;

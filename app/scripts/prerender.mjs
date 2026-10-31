@@ -38,6 +38,19 @@ const PAGES = [
     description:
       "How Veiling's sealed-bid auctions work: bidding, the final price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
   },
+  {
+    // Invite links (/invite/?ref=<X name or wallet>) open here: on X they show
+    // their own card, then the app takes the visitor to Season 0.
+    route: "invite",
+    file: "invite/index.html",
+    path: "/invite/",
+    title: "You're invited to Veiling Season 0",
+    description:
+      "Join Veiling's Season 0: bid in sealed-bid launches on Solana, launch your own and invite friends to earn points. Bids stay hidden and every winner pays one fair price.",
+    image: "/og-invite.png",
+    imageAlt: "You're invited to Veiling Season 0. Sealed-bid launches on Solana.",
+    noindex: true,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -137,8 +150,12 @@ for (const page of PAGES) {
     .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${escape(page.description)}" />`)
     .replace(/<meta property="og:title" content="[^"]*" \/>/, `<meta property="og:title" content="${escape(page.title)}" />`)
     .replace(/<meta property="og:description" content="[^"]*" \/>/, `<meta property="og:description" content="${escape(page.description)}" />`)
-    // Link previews need the image's full address (public/og.png).
-    .replaceAll('content="/og.png"', `content="${escape(url("/og.png"))}"`)
+    // Link previews need the image's full address (public/og.png, or the page's own).
+    .replaceAll('content="/og.png"', `content="${escape(url(page.image ?? "/og.png"))}"`)
+    .replace(/<meta property="og:image:alt" content="[^"]*" \/>/, (tag) =>
+      page.imageAlt ? `<meta property="og:image:alt" content="${escape(page.imageAlt)}" />` : tag
+    )
+    .replace("</head>", page.noindex ? '<meta name="robots" content="noindex" />\n  </head>' : "</head>")
     .replace("</head>", `${[...head, ...structuredData(page).map(jsonLd)].join("\n    ")}\n  </head>`)
     .replace('<div id="root"></div>', `<div id="root">${body}</div>`);
   await mkdir(dirname(join(dist, page.file)), { recursive: true });
@@ -253,7 +270,7 @@ await writeFile(join(dist, "robots.txt"), robots);
 if (SITE) {
   const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${PAGES.map((p) => `  <url><loc>${escape(url(p.path))}</loc><lastmod>${today}</lastmod></url>`).join("\n")}
+${PAGES.filter((p) => !p.noindex).map((p) => `  <url><loc>${escape(url(p.path))}</loc><lastmod>${today}</lastmod></url>`).join("\n")}
 </urlset>
 `;
   await writeFile(join(dist, "sitemap.xml"), sitemap);

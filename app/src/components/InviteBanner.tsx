@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { KEEPER_URL } from "../config";
 import { track } from "../lib/analytics";
 import { shortAddress } from "../lib/format";
-import { acceptInvite, setInviteState, storedInvite, type StoredInvite } from "../lib/keeper";
+import { acceptInvite, resolveReferrer, setInviteState, storedInvite, type StoredInvite } from "../lib/keeper";
 import { errorMessage } from "../lib/tx";
 import { useWallet } from "../lib/wallet";
 import { Avatar } from "./Account";
-import { pushToast } from "./ui";
+import { pushToast, useLoader } from "./ui";
 
 /**
  * Someone who came through an invite link sees, once their wallet is
@@ -17,8 +17,11 @@ export function InviteBanner() {
   const [invite, setInvite] = useState<StoredInvite | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => setInvite(storedInvite()), [publicKey]);
-  if (!KEEPER_URL || !invite || invite.state !== "pending" || !publicKey || !signer) return null;
-  if (invite.referrer === publicKey.toBase58()) return null;
+  const pending = invite?.state === "pending" ? invite.referrer : null;
+  // An invite name (an X handle) is looked up to find its wallet.
+  const referrer = useLoader(() => (pending && KEEPER_URL ? resolveReferrer(pending) : Promise.resolve(null)), [pending ?? ""]).data ?? null;
+  if (!KEEPER_URL || !invite || invite.state !== "pending" || !publicKey || !signer || !referrer) return null;
+  if (referrer.wallet === publicKey.toBase58()) return null;
   const finish = (state: StoredInvite["state"]) => {
     setInviteState(state);
     setInvite(storedInvite());
@@ -26,7 +29,7 @@ export function InviteBanner() {
   const accept = async () => {
     setBusy(true);
     try {
-      await acceptInvite(signer, invite.referrer);
+      await acceptInvite(signer, referrer.wallet);
       track("Invite accepted");
       pushToast("Invite accepted. Welcome to Veiling!");
       finish("done");
@@ -41,10 +44,10 @@ export function InviteBanner() {
   };
   return (
     <div className="invite-banner" role="status">
-      <Avatar address={invite.referrer} size={30} />
+      <Avatar address={referrer.wallet} size={30} />
       <p>
-        <strong>{shortAddress(invite.referrer)}</strong> invited you to Veiling. Accept to give them credit: it is a free
-        signature, not a transaction.
+        <strong>{referrer.handle ? `@${referrer.handle}` : shortAddress(referrer.wallet)}</strong> invited you to Veiling.
+        Accept to give them credit: it is a free signature, not a transaction.
       </p>
       <div className="invite-banner__actions">
         <button type="button" className="btn btn--primary" onClick={accept} disabled={busy}>

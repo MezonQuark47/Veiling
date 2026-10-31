@@ -5,6 +5,10 @@
  * folder.
  *
  *   POST /invite      a wallet accepts an invite, with a signed message
+ *   POST /handle      a wallet takes its X name as its invite name: a signed
+ *                     message, and a public post from the account with the
+ *                     wallet's code (VEIL-…)
+ *   GET  /handle/<name>.json   the wallet an invite name belongs to
  *   POST /verify      a seller links an X account to their sale: a signed
  *                     message from the seller, and a public post from the
  *                     account that names the sale
@@ -22,7 +26,7 @@
  */
 import { ed25519 } from "@noble/curves/ed25519";
 import { PublicKey } from "@solana/web3.js";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { join } from "path";
@@ -55,6 +59,15 @@ export const inviteMessage = (wallet: string, referrer: string) =>
 
 export const verifyMessage = (auction: string, post: string) =>
   `Veiling X verification\n\nI opened sale ${auction} and link it to this X post:\n${post}`;
+
+export const handleMessage = (wallet: string, handle: string, post: string) =>
+  `Veiling invite name\n\nLink my wallet ${wallet} to the X account @${handle}.\nPost: ${post}`;
+
+/** The code a wallet's post carries to prove the X account agrees: VEIL- and 8 hex digits. */
+export const handleCode = (wallet: string, handle: string) =>
+  `VEIL-${createHash("sha256").update(`veiling:${wallet}:${handle.toLowerCase()}`).digest("hex").slice(0, 8).toUpperCase()}`;
+
+const POST_LINK = /^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/status\/(\d{5,25})/;
 
 const isAddress = (value: unknown): value is string => {
   if (typeof value !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return false;
@@ -148,6 +161,13 @@ interface Verified {
   at: number;
 }
 
+interface InviteName {
+  handle: string;
+  wallet: string;
+  post: string;
+  at: number;
+}
+
 interface Reminder {
   id: string;
   auction: string;
@@ -165,11 +185,14 @@ export function createServices(ctx: ServiceContext) {
     invites: join(ctx.dataDir, "invites.json"),
     verified: join(ctx.dataDir, "verified.json"),
     reminders: join(ctx.dataDir, "reminders.json"),
+    handles: join(ctx.dataDir, "handles.json"),
     vapid: join(ctx.dataDir, "vapid.json"),
   };
   const invites = readJson<Record<string, Invite>>(paths.invites, {});
   const verified = readJson<Record<string, Verified>>(paths.verified, {});
   let reminders = readJson<Reminder[]>(paths.reminders, []);
+  /** Invite names by lowercase X handle. */
+  const handles = readJson<Record<string, InviteName>>(paths.handles, {});
 
   const SITE_URL = (process.env.SITE_URL ?? "http://localhost:5173").replace(/\/$/, "");
   const PUBLIC_URL = (process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 8787}`).replace(/\/$/, "");
@@ -205,29 +228,54 @@ export function createServices(ctx: ServiceContext) {
 
   // --------------------------------------------------------- X verification
 
-  async function verifySale(input: any) {
-    const { auction, post, message, signature } = input ?? {};
-    if (!isAddress(auction)) throw new HttpError(400, "That is not a sale address.");
-    const m = typeof post === "string" ? /^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/status\/(\d{5,25})/.exec(post.trim()) : null;
+  /** A public X post as X embeds it: who wrote it and its text (as HTML). */
+  async function readPost(link: string) {
+    const m = POST_LINK.exec(link);
     if (!m) throw new HttpError(400, "Paste the link to your post on X (https://x.com/…/status/…).");
-    const sale = await ctx.fetchAuction(auction);
-    if (!sale) throw new HttpError(404, "No sale at this address.");
-    if (!signedBy(sale.seller, verifyMessage(auction, post.trim()), message, signature))
-      throw new HttpError(403, "Only the wallet that opened the sale can verify it.");
-    const url = `https://twitter.com/${m[1]}/status/${m[2]}`;
-    const res = await fetch(`https://publish.x.com/oembed?omit_script=1&dnt=true&url=${encodeURIComponent(url)}`);
+    const res = await fetch(`https://publish.x.com/oembed?omit_script=1&dnt=true&url=${encodeURIComponent(`https://twitter.com/${m[1]}/status/${m[2]}`)}`);
     if (!res.ok) throw new HttpError(422, "X did not show that post. Check it is public and try again.");
     const embed = (await res.json()) as { author_name?: string; author_url?: string; html?: string };
     const handle = /(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/?$/.exec(embed.author_url ?? "")?.[1];
     if (!handle) throw new HttpError(422, "X did not say who wrote that post.");
-    if (!(embed.html ?? "").includes(auction))
-      throw new HttpError(422, "The post must include the sale's address, written out in full.");
-    verified[auction] = {
-      handle,
-      name: String(embed.author_name ?? handle).slice(0, 60),
-      post: `https://x.com/${handle}/status/${m[2]}`,
-      at: Math.floor(Date.now() / 1000),
-    };
+    return { handle, name: String(embed.author_name ?? handle).slice(0, 60), html: embed.html ?? "", link: `https://x.com/${handle}/status/${m[2]}` };
+  }
+
+  /** A wallet takes its X name as its invite name, proven by a post from that account. */
+  async function claimHandle(input: any) {
+    const { wallet, post, message, signature } = input ?? {};
+    if (!isAddress(wallet)) throw new HttpError(400, "That is not a wallet address.");
+    const link = typeof post === "string" ? post.trim() : "";
+    const named = POST_LINK.exec(link)?.[1];
+    if (!named) throw new HttpError(400, "Paste the link to your post on X (https://x.com/…/status/…).");
+    if (!signedBy(wallet, handleMessage(wallet, named, link), message, signature))
+      throw new HttpError(400, "The signature does not match.");
+    const read = await readPost(link);
+    if (read.handle.toLowerCase() !== named.toLowerCase()) throw new HttpError(422, "That post is from another account.");
+    if (!read.html.includes(handleCode(wallet, read.handle)))
+      throw new HttpError(422, `The post must include your code, ${handleCode(wallet, read.handle)}.`);
+    // One name per wallet: a wallet that had another name gives it up.
+    for (const [key, entry] of Object.entries(handles)) if (entry.wallet === wallet) delete handles[key];
+    handles[read.handle.toLowerCase()] = { handle: read.handle, wallet, post: read.link, at: Math.floor(Date.now() / 1000) };
+    writeJson(paths.handles, handles);
+    ctx.log(`invite name: @${read.handle} is ${wallet.slice(0, 4)}…`);
+    return { ok: true, handle: read.handle };
+  }
+
+  /** The X name a wallet invites with, if it took one. */
+  const handleOf = (wallet: string) => Object.values(handles).find((h) => h.wallet === wallet)?.handle ?? null;
+
+  async function verifySale(input: any) {
+    const { auction, post, message, signature } = input ?? {};
+    if (!isAddress(auction)) throw new HttpError(400, "That is not a sale address.");
+    const link = typeof post === "string" ? post.trim() : "";
+    if (!POST_LINK.test(link)) throw new HttpError(400, "Paste the link to your post on X (https://x.com/…/status/…).");
+    const sale = await ctx.fetchAuction(auction);
+    if (!sale) throw new HttpError(404, "No sale at this address.");
+    if (!signedBy(sale.seller, verifyMessage(auction, link), message, signature))
+      throw new HttpError(403, "Only the wallet that opened the sale can verify it.");
+    const read = await readPost(link);
+    if (!read.html.includes(auction)) throw new HttpError(422, "The post must include the sale's address, written out in full.");
+    verified[auction] = { handle: read.handle, name: read.name, post: read.link, at: Math.floor(Date.now() / 1000) };
     writeJson(paths.verified, verified);
     ctx.log(`verified: ${auction.slice(0, 4)}… is @${handle}`);
     return { ok: true, ...verified[auction] };
@@ -362,6 +410,13 @@ export function createServices(ctx: ServiceContext) {
       if (req.method === "POST" && path === "/invite") {
         limit(req, 10);
         send(res, 200, await acceptInvite(await body(req)));
+      } else if (req.method === "POST" && path === "/handle") {
+        limit(req, 5);
+        send(res, 200, await claimHandle(await body(req)));
+      } else if (/^\/handle\/[A-Za-z0-9_]{1,15}\.json$/.test(path)) {
+        const entry = handles[path.slice("/handle/".length, -".json".length).toLowerCase()];
+        if (entry) send(res, 200, { handle: entry.handle, wallet: entry.wallet });
+        else send(res, 404, { error: "No one has this invite name." });
       } else if (req.method === "POST" && path === "/verify") {
         limit(req, 5);
         send(res, 200, await verifySale(await body(req)));
@@ -392,5 +447,5 @@ export function createServices(ctx: ServiceContext) {
     return true;
   }
 
-  return { invites, verified, handle, sendReminders };
+  return { invites, verified, handle, handleOf, sendReminders };
 }

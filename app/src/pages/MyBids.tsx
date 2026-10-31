@@ -173,7 +173,7 @@ export function MyBids() {
           {view ? <DashboardSummary view={view} /> : null}
 
           <section className="section" aria-label="Invite friends">
-            <InviteCard wallet={publicKey.toBase58()} view={view} />
+            <InviteCard wallet={publicKey.toBase58()} view={view} onChanged={history.reload} />
             {SEASON ? (
               <p className="muted dash__note">
                 Invites count for <a href="#/season">{SEASON.name}</a> too.

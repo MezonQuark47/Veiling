@@ -14,7 +14,7 @@ export function SeasonBar({ route }: { route: string }) {
     }
   });
   const now = nowSecs();
-  if (!SEASON || hidden || route.startsWith("season") || now < SEASON.start - 7 * 86_400 || now >= SEASON.end) return null;
+  if (!SEASON || hidden || route.startsWith("season") || route.startsWith("invite") || now < SEASON.start - 7 * 86_400 || now >= SEASON.end) return null;
   const days = Math.ceil((SEASON.end - now) / 86_400);
   const live = now >= SEASON.start;
   return (

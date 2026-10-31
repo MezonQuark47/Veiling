@@ -206,7 +206,22 @@ async function main() {
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(latest));
     } else if (/^\/wallet\/[1-9A-HJ-NP-Za-km-z]{32,44}\.json$/.test(path)) {
       // One wallet's own history, for its dashboard.
-      const view = walletView(state, path.slice("/wallet/".length, -".json".length), latest, services.invites);
+      const wallet = path.slice("/wallet/".length, -".json".length);
+      const found = walletView(state, wallet, latest, services.invites);
+      // The X name it invites with, if it took one.
+      const handle = services.handleOf(wallet);
+      const empty = {
+        wallet,
+        updatedAt: Math.floor(Date.now() / 1000),
+        points: 0,
+        rank: null,
+        season: latest?.season ? { name: latest.season.name, points: 0, rank: null } : null,
+        invites: { joined: 0, active: 0, points: 0 },
+        totals: { bids: 0, salesJoined: 0, salesWon: 0, paid: "0", deposited: "0", refunded: "0", salesLaunched: 0, raised: "0", steps: 0 },
+        joined: [],
+        launched: [],
+      };
+      const view = found ? { ...found, handle } : handle ? { ...empty, handle } : null;
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(view));
     } else if (path === "/health") {
       res

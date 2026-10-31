@@ -1,4 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
+import { sha256 } from "@noble/hashes/sha2";
+import { bytesToHex } from "@noble/hashes/utils";
 import { KEEPER_URL } from "../config";
 import type { WalletSigner } from "./tx";
 
@@ -13,6 +15,21 @@ export const inviteMessage = (wallet: string, referrer: string) =>
   `Veiling invite\n\nI joined Veiling through the invite of ${referrer}.\n\nWallet: ${wallet}`;
 export const verifyMessage = (auction: string, post: string) =>
   `Veiling X verification\n\nI opened sale ${auction} and link it to this X post:\n${post}`;
+export const handleMessage = (wallet: string, handle: string, post: string) =>
+  `Veiling invite name\n\nLink my wallet ${wallet} to the X account @${handle}.\nPost: ${post}`;
+/** The code a post carries to prove the X account and the wallet belong together. */
+export const handleCode = (wallet: string, handle: string) =>
+  `VEIL-${bytesToHex(sha256(new TextEncoder().encode(`veiling:${wallet}:${handle.toLowerCase()}`))).slice(0, 8).toUpperCase()}`;
+
+/** An X handle: letters, digits and underscores, up to 15. */
+export const isHandle = (text: string) => /^[A-Za-z0-9_]{1,15}$/.test(text);
+const isWallet = (text: string) => {
+  try {
+    return new PublicKey(text).toBase58() === text;
+  } catch {
+    return false;
+  }
+};
 
 const toBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 
@@ -49,20 +66,36 @@ async function sign(signer: WalletSigner, text: string) {
 
 const REF_KEY = "veiling:invite";
 
-/** Keeps the inviting wallet from a link like https://veiling.xyz/?ref=<wallet>, and tidies the address bar. */
+/**
+ * Keeps who invited this visitor from a link like
+ * https://veiling.xyz/invite/?ref=mezonquark47 (an X name) or ?ref=<wallet>,
+ * and tidies the address bar. An invite link opens on the Season 0 page.
+ */
 export function captureInvite() {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   const ref = url.searchParams.get("ref");
-  if (!ref) return;
-  try {
-    const key = new PublicKey(ref);
-    if (key.toBase58() === ref) localStorage.setItem(REF_KEY, JSON.stringify({ referrer: ref, state: "pending" }));
-  } catch {
-    // Not a wallet, or no storage: the invite is simply not kept.
+  const invitePage = /^\/invite\/?$/.test(url.pathname);
+  if (!ref && !invitePage) return;
+  if (ref && (isWallet(ref) || isHandle(ref))) {
+    try {
+      localStorage.setItem(REF_KEY, JSON.stringify({ referrer: ref, state: "pending" }));
+    } catch {
+      // No storage: the invite is simply not kept.
+    }
   }
   url.searchParams.delete("ref");
-  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  const path = invitePage ? "/" : url.pathname;
+  const hash = invitePage && !url.hash ? "#/season" : url.hash;
+  window.history.replaceState(null, "", `${path}${url.search}${hash}`);
+}
+
+/** The wallet an invite name (an X handle) belongs to; a wallet stays as it is. */
+export async function resolveReferrer(ref: string): Promise<{ wallet: string; handle: string | null } | null> {
+  if (isWallet(ref)) return { wallet: ref, handle: null };
+  if (!isHandle(ref)) return null;
+  const found = await get<{ wallet: string; handle: string }>(`/handle/${ref.toLowerCase()}.json`).catch(() => null);
+  return found ? { wallet: found.wallet, handle: found.handle } : null;
 }
 
 export interface StoredInvite {
@@ -90,8 +123,18 @@ export function setInviteState(state: StoredInvite["state"]) {
   }
 }
 
-/** The link that invites people as `wallet`. */
-export const inviteLink = (wallet: string) => `${window.location.origin}/?ref=${wallet}`;
+/** The link that invites people as `name`: an X handle once linked, else the wallet. */
+export const inviteLink = (name: string) => `${window.location.origin}/invite/?ref=${name}`;
+
+/** Links the wallet to the X account that wrote `postUrl`, so its invite link can use that name. */
+export async function claimHandle(signer: WalletSigner, postUrl: string) {
+  const link = postUrl.trim();
+  const handle = /^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/status\/\d+/.exec(link)?.[1];
+  if (!handle) throw new Error("Paste the link to your post on X (https://x.com/…/status/…).");
+  const wallet = signer.publicKey.toBase58();
+  const signed = await sign(signer, handleMessage(wallet, handle, link));
+  return post<{ ok: true; handle: string }>("/handle", { wallet, post: link, ...signed });
+}
 
 export async function acceptInvite(signer: WalletSigner, referrer: string) {
   const wallet = signer.publicKey.toBase58();

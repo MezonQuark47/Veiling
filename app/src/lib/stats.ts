@@ -77,6 +77,8 @@ export interface WalletView {
   rank: number | null;
   season?: { name: string; points: number; rank: number | null } | null;
   invites?: { joined: number; active: number; points: number };
+  /** The X name this wallet invites with, once it linked one. */
+  handle?: string | null;
   totals: {
     bids: number;
     salesJoined: number;

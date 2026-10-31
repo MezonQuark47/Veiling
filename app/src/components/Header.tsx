@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NETWORK_LABEL } from "../config";
+import { NETWORK_LABEL, SEASON } from "../config";
 import { shortAddress } from "../lib/format";
 import { CONNECT_EVENT, useWallet } from "../lib/wallet";
 import { errorMessage } from "../lib/tx";
@@ -91,6 +91,16 @@ export function Header({ route }: { route: string }) {
           {link("#/auctions", "Auctions", (r) => r.startsWith("auction"))}
           {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
           {link("#/stats", "Stats", (r) => r.startsWith("stats"))}
+          {SEASON ? (
+            <a
+              href="#/season"
+              className={`nav__link nav__link--season${route.startsWith("season") ? " nav__link--active" : ""}`}
+              aria-current={route.startsWith("season") ? "page" : undefined}
+            >
+              <span className="nav__live" aria-hidden="true" />
+              {SEASON.name}
+            </a>
+          ) : null}
           {/* A real path, so crawlers find the docs from every page. */}
           {link("/docs/", "Docs", (r) => r.startsWith("docs"))}
         </nav>
