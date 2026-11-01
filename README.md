@@ -871,3 +871,7 @@ these services.
 - Point the app at mainnet (`WALLET_CHAIN`, `RPC_URL`), which also moves paid
   storage to Turbo's main services, and check the pinned Turbo payment
   address in `config.ts` against Turbo's own records.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

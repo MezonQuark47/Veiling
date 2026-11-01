@@ -1,5 +1,5 @@
 {
-  "license": "ISC",
+  "license": "MIT",
   "scripts": {
     "keeper": "ts-node --transpile-only scripts/keeper.ts",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
