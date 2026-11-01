@@ -1,0 +1,11 @@
+# Security headers, read by Cloudflare Pages and Netlify when the site is
+# hosted there (other hosts take the same headers in their own settings).
+# No page may be shown inside another site's frame, so nobody can trick a
+# visitor into clicking a wallet button through an invisible overlay.
+/*
+  Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains

@@ -808,10 +808,8 @@ export async function fetchItemList(auction: PublicKey): Promise<ItemList | null
 }
 
 // Deposits sit after the 8-byte discriminator, 64 batch records of 64 bytes
-// and 64 nonces of 16 bytes (see `BidBook` in the program); clearing sizes
-// after the deposits and the auction key.
+// and 64 nonces of 16 bytes (see `BidBook` in the program).
 const BOOK_DEPOSITS_OFFSET = 8 + 64 * 64 + 64 * 16;
-const BOOK_CLEARING_QUANTITIES_OFFSET = BOOK_DEPOSITS_OFFSET + 8 * PAGE_BIDS + 32;
 
 /** Pages of the auction's book, in order (all of them by default): `PAGE_BIDS` slots each. */
 async function fetchBookPages(a: Auction, pages = [0, ...extraPageAddresses(a).map((_, k) => k + 1)]): Promise<DataView[]> {
@@ -865,35 +863,6 @@ export async function findSmallestPage(a: Auction): Promise<{ page: number; depo
   let page = 0;
   for (let p = 1; p <= a.extraPages; p++) if (index.smallestDeposits[p] < index.smallestDeposits[page]) page = p;
   return { page, deposit: index.smallestDeposits[page] };
-}
-
-/** NFTs asked for by each bid revealed at the final price, by bid index (0 for the rest). */
-export async function fetchClearingQuantities(a: Auction): Promise<number[]> {
-  if (MOCK) return Array.from({ length: bidCapacity(a) }, (_, i) => (i === 2 ? 3 : 0));
-  const pages = await fetchBookPages(a);
-  return pages.flatMap((view) =>
-    Array.from({ length: PAGE_BIDS }, (_, i) => view.getUint32(BOOK_CLEARING_QUANTITIES_OFFSET + 4 * i, true))
-  );
-}
-
-/**
- * A collection bid's share at the final price, as `finalize_share`
- * computes it: each bid there gets its size times the NFTs left over the
- * demand at that price, rounded down, and the NFTs lost to rounding go one
- * each to the bids with the lowest indices.
- */
-export function clearingShare(a: Auction, quantities: number[], index: number): bigint {
-  const remaining = a.supply - a.weightAbove;
-  const total = a.weightAt;
-  let floors = 0n;
-  let earlier = 0n;
-  quantities.forEach((size, j) => {
-    if (size === 0) return;
-    floors += (BigInt(size) * remaining) / total;
-    if (j < index) earlier += 1n;
-  });
-  const own = (BigInt(quantities[index] ?? 0) * remaining) / total;
-  return own + (earlier < remaining - floors ? 1n : 0n);
 }
 
 /**

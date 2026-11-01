@@ -173,7 +173,10 @@ yarn keeper            # or: npx ts-node --transpile-only scripts/keeper.ts
 Settings (environment or `keeper.env`): `HELIUS_API_KEY` (or `RPC_URL`),
 `NETWORK` (`devnet` or `mainnet`), `KEEPER_WALLET`, `PORT` (8787),
 `DATA_DIR` (`keeper-data`), `EXCLUDE_WALLETS` (wallets that earn no points,
-such as test wallets) and `STATS_ONLY=1`.
+such as test wallets), `STATS_ONLY=1`, and for the services below
+`SEASON_NAME`, `SEASON_START`, `SEASON_END`, `SITE_URL`, `PUBLIC_URL`,
+`RESEND_API_KEY`, `MAIL_FROM`, `VAPID_SUBJECT` and `TRUST_PROXY=1` (only
+behind a proxy that sets `X-Forwarded-For`).
 
 If the keeper is ever slow, the sale page's **Finish the sale** button does
 the same from a browser (`app/src/lib/finish.ts`): one transfer funds a
@@ -204,9 +207,34 @@ users and SOL bought over time, and a points leaderboard:
 | 50 per SOL | your sales raised |
 | 5 per bid | at most 3 bids in each sale |
 | 5 per step | each finishing step you run (the keeper's own wallets earn none) |
+| 25 per invite | each wallet you invited that wins in a sale, plus 10% of the buying points it earns after joining |
 
 Points have no cash value; the rules are in one place (`POINTS` in
-`scripts/lib/stats.ts`) and can change.
+`scripts/lib/stats.ts`) and can change. A season (Season 0 on devnet,
+`SEASON_*`) counts the same points for its own dates only, for its own
+leaderboard on the app's `#/season` page.
+
+### Invites, X verification and reminders
+
+The keeper also serves a few requests for the site
+(`scripts/lib/services.ts`), each kept in a small file in `keeper-data/`:
+
+- **Invites.** A link like `/invite/?ref=<wallet or X name>` opens Season 0;
+  the visitor accepts with a signed message (no transaction), and only
+  wallets that never used Veiling can join through one. A wallet can make its
+  link end in its X name: it posts a code made from the wallet and the name
+  (`VEIL-` and 8 hex digits) from that account and signs; the keeper reads
+  the post through X's public embed and checks the author and the code.
+- **Verified creators.** A seller posts the sale's address from their X
+  account and signs with the wallet that opened it; the sale then shows a
+  Verified badge.
+- **Reminders.** Browser notifications (Web Push, with a key pair the keeper
+  makes once) and email through Resend, 30 minutes before bidding ends and
+  when the sale is over. Subscriptions only go to the browsers' own push
+  services, and every email has an unsubscribe link.
+
+Posts are rate limited per address. None of this touches funds: the worst a
+bad request can do is fail.
 
 ### Why 1,024 bids for tokens and 10,240 for collections
 
@@ -638,8 +666,18 @@ the browser the app replaces the static HTML when it starts; the app reads
 its page from the hash (`#/launch`), or from the path when there is none, so
 `/docs/` opens the docs.
 
-`VITE_RPC_URL` overrides the public devnet RPC. `VITE_STATS_URL` points the
-Stats page and the front page's totals at the keeper's `stats.json`. `npm run dev` with `?mock` in
+`VITE_RPC_URL` overrides the public devnet RPC. It ends up in the public
+JavaScript, so an RPC key in it must be limited to the site's domain in the
+provider's settings. `VITE_STATS_URL` points the Stats page and the front
+page's totals at the keeper's `stats.json`, and the invites, X checks and
+reminders at the keeper next to it. `VITE_PLAUSIBLE_DOMAIN` turns on
+Plausible's cookie-free visit counts and `VITE_SENTRY_DSN` Sentry's error
+reports (without IP addresses; wallet addresses are cut from them).
+
+`public/_headers` sets security headers on Cloudflare Pages and Netlify (no
+framing by other sites, no content sniffing); on another host, set the same
+headers there. `/invite/` is prerendered with its own link preview
+(`public/og-invite.png`) and is kept out of the sitemap. `npm run dev` with `?mock` in
 the URL shows sample data for design work (`?mock&nofeature` shows the front
 page without a featured auction); production builds drop it.
 
@@ -659,8 +697,8 @@ account next to the bid), encrypted with AES-256-GCM under a key made from the
 wallet's signature of a fixed message. Ed25519 signatures are deterministic,
 so the same wallet opens its notes on any device after one signature, and
 nobody else can. The note's rent (about 0.0012 SOL) comes back when the bid is
-collected; notes of bids replaced in a full auction can be closed from My
-bids. A wallet that cannot sign messages bids without a note on chain. The
+collected; notes of bids replaced in a full auction can be closed from the
+Dashboard. A wallet that cannot sign messages bids without a note on chain. The
 browser keeps a copy so it need not ask again, deleted once the bid is
 collected and after 30 days. A collection's metadata file and image
 are fetched without cookies or referrer, and only https images are shown. The
@@ -815,8 +853,9 @@ these services.
   not one and then the other.
 - A bidder who has turned on required memos for their Token-2022 account must
   turn it off before the tokens they won can be delivered.
-- `@solana/web3.js` v1, required by Arcium's client, carries npm advisories that
-  affect Node servers parsing untrusted JSON, not this browser app.
+- `@solana/web3.js` v1, required by Arcium's client, carries npm advisories
+  about parsing untrusted JSON with it. The browser app does not, and the
+  keeper reads requests with `JSON.parse` only.
 
 ## Before any mainnet launch
 

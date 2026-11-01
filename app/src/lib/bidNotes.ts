@@ -52,9 +52,6 @@ export function noteKeyMessage(wallet: PublicKey): Uint8Array {
 
 const keys = new Map<string, Promise<CryptoKey>>();
 
-/** Whether this page already holds the wallet's note key, so using it asks for nothing. */
-export const hasNoteKey = (wallet: PublicKey) => keys.has(wallet.toBase58());
-
 /** The wallet's note key. Asks the wallet to sign once per page. */
 export function walletNoteKey(signer: WalletSigner): Promise<CryptoKey> {
   const id = signer.publicKey.toBase58();

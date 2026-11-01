@@ -66,10 +66,6 @@ export function allowlistProof(wallets: PublicKey[], wallet: PublicKey): Uint8Ar
   return proof;
 }
 
-/** The root a proof leads to, as the program checks it. */
-export const rootOfProof = (wallet: PublicKey, proof: Uint8Array[]) =>
-  proof.reduce((node, sibling) => allowlistNode(node, sibling), allowlistLeaf(wallet));
-
 /**
  * Reads wallet addresses typed or pasted by a seller, one per line or
  * separated by commas, spaces or semicolons (a CSV's first column works too).

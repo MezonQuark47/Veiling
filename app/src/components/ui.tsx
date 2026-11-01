@@ -7,7 +7,6 @@ import {
   fetchCollectionInfo,
   fetchMetadataImage,
   fetchSaleTokenInfo,
-  fetchTokenInfo,
 } from "../lib/chain";
 import { EXPLORER_CLUSTER } from "../config";
 import { formatTokens, nowSecs, plural, shortAddress } from "../lib/format";
@@ -95,23 +94,6 @@ export function useSaleTokenInfo(auction: Auction | null | undefined): TokenInfo
     if (!auction) return;
     let cancelled = false;
     fetchSaleTokenInfo(auction)
-      .then((t) => !cancelled && setInfo(t))
-      .catch(() => !cancelled && setInfo(null));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return info;
-}
-
-export function useTokenInfo(mint: PublicKey | null | undefined): TokenInfo | null {
-  const [info, setInfo] = useState<TokenInfo | null>(null);
-  const key = mint?.toBase58();
-  useEffect(() => {
-    if (!mint) return;
-    let cancelled = false;
-    fetchTokenInfo(mint)
       .then((t) => !cancelled && setInfo(t))
       .catch(() => !cancelled && setInfo(null));
     return () => {

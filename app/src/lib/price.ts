@@ -70,12 +70,6 @@ export function formatDecimal(value: Decimal, maxDecimals?: number): string {
   return decimalString(value.mantissa, value.exponent, maxDecimals);
 }
 
-/** Whether two decimals are the same number. */
-export function sameDecimal(a: Decimal, b: Decimal): boolean {
-  const low = Math.min(a.exponent, b.exponent);
-  return a.mantissa * pow10(a.exponent - low) === b.mantissa * pow10(b.exponent - low);
-}
-
 /** log10 of a token auction's price unit, a power of ten. */
 export function unitExponent(priceUnit: bigint): number {
   let e = 0;
@@ -130,11 +124,6 @@ export function tokensForBudget(budget: bigint, priceUnit: bigint, ticks: bigint
   return ticks > 0n ? (budget * priceUnit) / ticks : 0n;
 }
 
-/** Lamports that `baseUnits` cost at `ticks`, rounded up as the program does. */
-export function costOfTokens(baseUnits: bigint, priceUnit: bigint, ticks: bigint): bigint {
-  return (baseUnits * ticks + priceUnit - 1n) / priceUnit;
-}
-
 // ---------------------------------------------------------------------------
 // NFT prices
 // ---------------------------------------------------------------------------
@@ -149,14 +138,6 @@ export function nftPrice(ticks: bigint): Decimal {
 /** The price in ticks of `solPerNft`, rounded to a whole tick (0.000001 SOL). */
 export function nftPriceToTicks(solPerNft: Decimal, round: "down" | "up"): bigint {
   return shift(solPerNft.mantissa, solPerNft.exponent + 9 - NFT_SCALE_EXPONENT, round);
-}
-
-/** `n` rounded up to `digits` significant digits: 195_312 -> 200_000 for 2. */
-export function roundUpSignificant(n: bigint, digits: number): bigint {
-  const length = n.toString().length;
-  if (length <= digits) return n;
-  const step = pow10(length - digits);
-  return ((n + step - 1n) / step) * step;
 }
 
 /** The first of 1, 2, 5, 10, 20, 50, ... at or above `n` (n >= 1). */

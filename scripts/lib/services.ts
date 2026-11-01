@@ -21,8 +21,11 @@
  *   SITE_URL          the site's address, for links in reminders
  *   PUBLIC_URL        the keeper's own public address, for unsubscribe links
  *   RESEND_API_KEY    Resend key; without it there are no email reminders
- *   MAIL_FROM         the sender, e.g. "Veiling <reminders@veiling.xyz>"
- *   VAPID_SUBJECT     contact for browser push, e.g. mailto:team@veiling.xyz
+ *   MAIL_FROM         the sender, e.g. "Veiling <reminders@your-domain.com>"
+ *   VAPID_SUBJECT     contact for browser push services, a mailto: or https:
+ *                     address (default: Veiling's X page)
+ *   TRUST_PROXY=1     the keeper runs behind a proxy that sets
+ *                     X-Forwarded-For, so rate limits count the real address
  */
 import { ed25519 } from "@noble/curves/ed25519";
 import { PublicKey } from "@solana/web3.js";
@@ -117,11 +120,21 @@ async function body(req: IncomingMessage): Promise<any> {
   }
 }
 
-/** A few posts per address per minute; the rest wait. */
+/**
+ * A few posts per address per minute; the rest wait. Behind a proxy
+ * (TRUST_PROXY=1) the address is the one the proxy saw; otherwise the header
+ * is ignored, since anyone can send it.
+ */
 const hits = new Map<string, number[]>();
+let lastSweep = 0;
 function limit(req: IncomingMessage, perMinute: number) {
-  const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
+  const forwarded = process.env.TRUST_PROXY === "1" ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "";
+  const ip = forwarded || req.socket.remoteAddress || "unknown";
   const now = Date.now();
+  if (now - lastSweep > 60_000) {
+    for (const [key, times] of hits) if (times.every((t) => now - t >= 60_000)) hits.delete(key);
+    lastSweep = now;
+  }
   const recent = (hits.get(ip) ?? []).filter((t) => now - t < 60_000);
   if (recent.length >= perMinute) throw new HttpError(429, "Too many requests. Try again in a minute.");
   recent.push(now);
@@ -180,6 +193,27 @@ interface Reminder {
 
 const ENDING_SOON_SECS = 30 * 60;
 
+/**
+ * The browsers' own push services. A subscription can only point at one of
+ * them, so the keeper never sends requests to an address someone chose.
+ */
+const PUSH_HOSTS = [
+  /^fcm\.googleapis\.com$/,
+  /^updates\.push\.services\.mozilla\.com$/,
+  /^web\.push\.apple\.com$/,
+  /\.notify\.windows\.com$/,
+  /^push\.services\.mozilla\.com$/,
+];
+function isPushService(endpoint: unknown): boolean {
+  if (typeof endpoint !== "string" || endpoint.length > 1_000) return false;
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "https:" && PUSH_HOSTS.some((host) => host.test(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
 export function createServices(ctx: ServiceContext) {
   const paths = {
     invites: join(ctx.dataDir, "invites.json"),
@@ -206,7 +240,7 @@ export function createServices(ctx: ServiceContext) {
     vapid = webpush.generateVAPIDKeys();
     writeJson(paths.vapid, vapid);
   }
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT ?? "mailto:hello@veiling.xyz", vapid.publicKey, vapid.privateKey);
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT ?? "https://x.com/Veil_ing", vapid.publicKey, vapid.privateKey);
 
   // ---------------------------------------------------------------- invites
 
@@ -290,7 +324,7 @@ export function createServices(ctx: ServiceContext) {
     if (!sale) throw new HttpError(404, "No sale at this address.");
     if (sale.status === "cancelled") throw new HttpError(409, "This sale was cancelled.");
     const reminder: Reminder = { id: randomBytes(16).toString("hex"), auction, created: Math.floor(Date.now() / 1000) };
-    if (push && typeof push === "object" && typeof push.endpoint === "string" && /^https:\/\//.test(push.endpoint) && push.keys) {
+    if (push && typeof push === "object" && isPushService(push.endpoint) && push.keys) {
       reminder.push = { endpoint: push.endpoint, keys: { p256dh: String(push.keys.p256dh), auth: String(push.keys.auth) } };
       if (reminders.some((r) => r.auction === auction && r.push?.endpoint === push.endpoint)) return { ok: true };
     } else if (typeof email === "string" && /^[^\s@]{1,64}@[^\s@]{1,255}\.[a-z]{2,}$/i.test(email.trim())) {

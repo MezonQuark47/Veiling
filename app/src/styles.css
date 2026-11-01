@@ -83,10 +83,6 @@ html {
   height: 52px;
 }
 
-.skeleton--line {
-  height: 18px;
-}
-
 .skeleton--card {
   height: 220px;
   border-radius: var(--radius-lg);
@@ -1447,23 +1443,6 @@ p {
 
 .hint--error {
   color: var(--error);
-}
-
-.stepper {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  padding: 4px;
-}
-
-.stepper__value {
-  flex: 1;
-  text-align: center;
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: var(--step-1);
 }
 
 .sums {
@@ -5803,10 +5782,6 @@ section.verify-x {
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
-}
-
-.hint--bad {
-  color: var(--error);
 }
 
 @media (max-width: 900px) {

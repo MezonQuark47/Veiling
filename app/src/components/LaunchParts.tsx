@@ -657,7 +657,7 @@ export function BidAccessField({
                   {formatCount(plan.wallets.length)} {plan.wallets.length === 1 ? "wallet" : "wallets"}
                 </strong>
               ) : null}
-              {plan.invalid.length > 0 ? <span className="hint--bad"> · {formatCount(plan.invalid.length)} not valid</span> : null}
+              {plan.invalid.length > 0 ? <span className="hint--error"> · {formatCount(plan.invalid.length)} not valid</span> : null}
             </p>
           </div>
           <div className="field">

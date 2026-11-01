@@ -68,7 +68,7 @@ const REF_KEY = "veiling:invite";
 
 /**
  * Keeps who invited this visitor from a link like
- * https://veiling.xyz/invite/?ref=mezonquark47 (an X name) or ?ref=<wallet>,
+ * https://your-domain.com/invite/?ref=yourname (an X name) or ?ref=<wallet>,
  * and tidies the address bar. An invite link opens on the Season 0 page.
  */
 export function captureInvite() {

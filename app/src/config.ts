@@ -17,7 +17,7 @@ export const MXE_X25519_PUBLIC_KEY: string = "3af7353bdb51c48ff2af7fe35b740509b4
 export const RPC_URL: string = import.meta.env.VITE_RPC_URL || "https://api.devnet.solana.com";
 /**
  * Where the keeper (scripts/keeper.ts) serves all-time totals and points,
- * e.g. https://stats.veiling.xyz/stats.json. Without it the site shows what
+ * e.g. https://stats.your-domain.com/stats.json. Without it the site shows what
  * is on chain right now, and no Stats page data.
  */
 export const STATS_URL: string | null = import.meta.env.VITE_STATS_URL || null;
@@ -173,7 +173,7 @@ export const GITHUB_URL = "https://github.com/MezonQuark47/Veiling";
 
 /**
  * The keeper's address, where it takes invites, X checks and reminders: the
- * folder of STATS_URL (e.g. https://stats.veiling.xyz). Null without one, and
+ * folder of STATS_URL (e.g. https://stats.your-domain.com). Null without one, and
  * those features then stay hidden.
  */
 export const KEEPER_URL: string | null = STATS_URL ? STATS_URL.replace(/\/stats\.json$/, "") : null;

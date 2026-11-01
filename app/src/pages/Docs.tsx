@@ -32,6 +32,7 @@ import {
   LAUNCH_SUPPLY,
 } from "../config";
 import { useLoader } from "../components/ui";
+import { SEASON } from "../config";
 import { type FeeConfig, bidCrankFee, fetchCrankRewards, fetchFeeConfig, formatPercent, sellerCrankFee, supplyShare } from "../lib/chain";
 import { formatCount, formatSol, formatTokens } from "../lib/format";
 import { formatKb, formatMb } from "../lib/images";
@@ -48,6 +49,7 @@ export const DOC_SECTIONS: [string, string][] = [
   ["nfts", "NFT collections"],
   ["token", "New tokens"],
   ["liquidity", "The token's pool"],
+  ["trust", "Checking a sale"],
   ["fees", "Fees"],
   ["privacy", "What stays private"],
   ["safety", "If something gets stuck"],
@@ -578,6 +580,32 @@ export function Docs({ section }: { section: string }) {
             </ul>
           </Section>
 
+          <Section id="trust" title="Checking a sale">
+            <p>Before you bid, a sale's page shows what you need to trust it, and links to where you can check it yourself.</p>
+            <ul className="doc__bullets">
+              <li>
+                <strong>Verified creator.</strong> A creator can link their X account to their sale: they post the
+                sale's address from that account and sign with the wallet that opened it. The sale then shows a
+                Verified badge with a link to the post. It proves who runs the sale, not that the project is good.
+              </li>
+              <li>
+                <strong>The lock, checked on chain.</strong> Once a new token's pool is open, its page reads the pool's
+                position from Meteora and shows that all of its liquidity is permanently locked, with a link to the
+                transaction that locked it.
+              </li>
+              <li>
+                <strong>Who can bid.</strong> A creator can open a sale to everyone, or only to the wallets on a list,
+                and limit how much each listed wallet can deposit. The rules are set in the same transaction that
+                opens the sale, so they apply to the first bid, and the list is published so every bidder can check
+                it.
+              </li>
+              <li>
+                <strong>Reminders.</strong> <em>Remind me</em> on a sale adds it to your calendar, or sends a browser
+                notification or an email 30 minutes before bidding ends and again when the sale is over.
+              </li>
+            </ul>
+          </Section>
+
           <Section id="fees" title="Fees">
             <table className="doc__table">
               <thead>
@@ -710,8 +738,18 @@ export function Docs({ section }: { section: string }) {
               <li>100 points for every SOL you pay for what you win;</li>
               <li>50 points for every SOL your sales raise;</li>
               <li>5 points per bid, up to 3 bids in each sale;</li>
-              <li>5 points for each finishing step you run.</li>
+              <li>5 points for each finishing step you run;</li>
+              <li>
+                25 points for each friend you invite who wins in a sale, plus 10% of the buying points they earn. Your
+                invite link is on your <a href="#/bids">dashboard</a>, and can end in your X name.
+              </li>
             </ul>
+            {SEASON ? (
+              <p>
+                <a href="#/season">{SEASON.name}</a> counts the same points for what happens during the season only,
+                on its own leaderboard.
+              </p>
+            ) : null}
             <p>Points have no cash value, and the rules may change.</p>
           </Section>
 
