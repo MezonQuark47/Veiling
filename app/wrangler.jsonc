@@ -1,0 +1,9 @@
+// Cloudflare hosts the built site (dist) as static files: `npm run build`,
+// then `npx wrangler deploy`. public/_headers sets its security headers.
+{
+  "name": "veiling",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./dist"
+  }
+}
