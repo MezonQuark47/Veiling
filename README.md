@@ -656,11 +656,15 @@ Search and AI crawlers (ChatGPT's OAI-SearchBot, Claude, Perplexity) mostly do
 not run JavaScript, so `npm run build` ends with `scripts/prerender.mjs`. It
 renders the front page, the docs and the app's main pages into static HTML
 (`dist/index.html`, `dist/docs.html`, `dist/auctions.html` and so on, with
-the fees read from the chain), adds titles,
-descriptions and schema.org data (Organization, WebSite, WebApplication, and
-the docs' questions as FAQPage), and writes `robots.txt` (search, answer and
-training crawlers all allowed), `llms.txt`, `llms-full.txt` (the docs as
-Markdown) and, with `SITE_URL` set, `sitemap.xml` and canonical links. Link
+the fees read from the chain), adds titles, descriptions and schema.org data
+(Organization, WebSite and WebApplication; the docs as a TechArticle and the
+comparison page `/compare` as an Article, both dated `CONTENT_UPDATED` in
+`config.ts`; the questions answered on the front page, in the docs and on
+`/compare` as FAQPage), and writes `robots.txt` (search, answer and training
+crawlers all allowed), `llms.txt`, `llms-full.txt` (the docs and the
+comparison as Markdown) and, with `SITE_URL` set, `sitemap.xml` and canonical
+links. Answers are written to stand on their own, the answer first, so answer
+engines can quote them as they are. Link
 previews on X, Telegram and Discord show `public/og.png` (1200×630). In the
 browser the app replaces the static HTML when it starts.
 

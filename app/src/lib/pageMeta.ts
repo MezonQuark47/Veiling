@@ -1,4 +1,4 @@
-import { SEASON } from "../config";
+import { CONTENT_UPDATED, SEASON } from "../config";
 
 export interface PageMeta {
   title: string;
@@ -44,6 +44,11 @@ export function pageMeta(route: string): PageMeta {
       `${season} · Veiling`,
       `Veiling's ${season}: bid in sealed-bid launches on Solana, launch your own and invite friends to earn points.`,
       "/season"
+    );
+  if (route === "compare")
+    return page(
+      `Veiling vs pump.fun and other Solana launchpads (${CONTENT_UPDATED.slice(0, 4)}) · Veiling`,
+      "How Veiling's sealed-bid launches compare to bonding-curve launchpads like pump.fun, curated token sales and first-come NFT mints: who gets the best price, what bots can do and what happens if demand is low."
     );
   if (route === "terms") return page("Terms of Use · Veiling", "The terms for using Veiling, a sealed-bid launchpad on Solana.");
   if (route === "risks")

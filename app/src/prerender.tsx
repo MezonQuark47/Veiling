@@ -12,6 +12,10 @@ import { FAQ } from "./pages/Docs";
 
 /** Veiling's profiles elsewhere, for the Organization data and llms.txt. */
 export { GITHUB_URL, PROJECT_X_URL } from "./config";
+/** The questions the front page and the comparison page answer, and when that content last changed. */
+export { homeFaq } from "./pages/Docs";
+export { COMPARE_FAQ } from "./pages/Compare";
+export { CONTENT_UPDATED } from "./config";
 /** Each page's title and description, the same the app sets in the browser. */
 export { pageMeta } from "./lib/pageMeta";
 

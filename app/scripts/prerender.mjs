@@ -52,6 +52,7 @@ const PAGES = [
     image: "/og-invite.png",
     imageAlt: "Veiling Season 0. Sealed-bid launches on Solana.",
   },
+  { route: "compare", file: "compare.html", path: "/compare" },
   { route: "terms", file: "terms.html", path: "/terms" },
   { route: "risks", file: "risks.html", path: "/risks" },
   { route: "privacy", file: "privacy.html", path: "/privacy" },
@@ -112,30 +113,42 @@ const faq = await ssr.faq();
 const escape = (text) => text.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const jsonLd = (data) => `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>`;
 
+const faqPage = (items) => ({
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: items.map(({ question, answer }) => ({
+    "@type": "Question",
+    name: question,
+    acceptedAnswer: { "@type": "Answer", text: answer },
+  })),
+});
+
+const organization = () => ({
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: NAME,
+  ...(SITE ? { url: url("/"), logo: url("/favicon.svg") } : {}),
+  sameAs: [ssr.GITHUB_URL, ssr.PROJECT_X_URL].filter(Boolean),
+});
+
+// An article's dates and publisher, for the docs and the comparison page.
+const article = (type, page) => ({
+  "@context": "https://schema.org",
+  "@type": type,
+  headline: page.title,
+  description: page.description,
+  ...(SITE ? { url: url(page.path), mainEntityOfPage: url(page.path) } : {}),
+  dateModified: ssr.CONTENT_UPDATED,
+  author: { "@type": "Organization", name: NAME },
+  publisher: organization(),
+});
+
 function structuredData(page) {
-  if (page.route === "docs") {
-    return [
-      {
-        "@context": "https://schema.org",
-        "@type": "FAQPage",
-        mainEntity: faq.map(({ question, answer }) => ({
-          "@type": "Question",
-          name: question,
-          acceptedAnswer: { "@type": "Answer", text: answer },
-        })),
-      },
-    ];
-  }
+  if (page.route === "docs") return [article("TechArticle", page), faqPage(faq)];
+  if (page.route === "compare") return [article("Article", page), faqPage(ssr.COMPARE_FAQ)];
   const site = SITE ? { url: url("/") } : {};
-  return [
-    {
-      "@context": "https://schema.org",
-      "@type": "Organization",
-      name: NAME,
-      ...site,
-      ...(SITE ? { logo: url("/favicon.svg") } : {}),
-      sameAs: [ssr.GITHUB_URL, ssr.PROJECT_X_URL].filter(Boolean),
-    },
+  const data = [
+    organization(),
     { "@context": "https://schema.org", "@type": "WebSite", name: NAME, description: page.description, ...site },
     {
       "@context": "https://schema.org",
@@ -147,6 +160,9 @@ function structuredData(page) {
       ...site,
     },
   ];
+  // The front page answers the questions people ask most.
+  if (page.route === "") data.push(faqPage(ssr.homeFaq()));
+  return data;
 }
 
 const shell = await readFile(join(dist, "index.html"), "utf8");
@@ -197,7 +213,7 @@ const inline = (html) =>
     .trim();
 
 function markdown(html) {
-  const start = html.indexOf('<div class="docs__body">');
+  const start = html.indexOf('<div class="docs__body');
   const docs = html.slice(start, html.indexOf("<footer", start));
   const out = [];
   // A paragraph or heading after a list or table starts a new block.
@@ -251,7 +267,8 @@ Key facts:
 ## Docs
 
 - [How Veiling works](${url("/docs")}): bidding, the final price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
-- [Full docs as text](${url("/llms-full.txt")}): the same docs in one Markdown file
+- [Veiling vs other launchpads](${url("/compare")}): how sealed-bid launches compare to bonding curves like pump.fun, curated sales and NFT mints
+- [Full docs as text](${url("/llms-full.txt")}): the same docs and the comparison in one Markdown file
 - [Source code](${ssr.GITHUB_URL}): the Solana program, the Arcium circuits and the app
 
 ## App
@@ -271,7 +288,7 @@ Key facts:
 await writeFile(join(dist, "llms.txt"), llms);
 await writeFile(
   join(dist, "llms-full.txt"),
-  `# ${NAME}: how it works\n\n> ${summary}\n\nSource: ${url("/docs")}\n\n${markdown(rendered.docs)}\n`
+  `# ${NAME}: how it works\n\n> ${summary}\n\nSource: ${url("/docs")}\n\n${markdown(rendered.docs)}\n\n# Veiling vs other launchpads\n\nSource: ${url("/compare")}\n\n${markdown(rendered.compare)}\n`
 );
 
 // ---------------------------------------------------------------------------

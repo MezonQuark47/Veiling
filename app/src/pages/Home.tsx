@@ -8,6 +8,7 @@ import { rank } from "./Auctions";
 import { sendTransaction } from "../lib/tx";
 import { fetchStats } from "../lib/stats";
 import { useWallet } from "../lib/wallet";
+import { homeFaq } from "./Docs";
 
 /** A number that counts up from zero the first time it is scrolled into view. */
 function CountUp({ value, decimals = 0 }: { value: number; decimals?: number }) {
@@ -366,6 +367,26 @@ export function Home() {
             </p>
           </div>
         </div>
+      </section>
+
+      <section className="section" id="questions" aria-labelledby="questions-title">
+        <div className="section__intro" data-reveal>
+          <h2 id="questions-title" className="section__title">
+            Questions
+          </h2>
+        </div>
+        <dl className="home-faq">
+          {homeFaq().map(({ question, answer }, i) => (
+            <div key={question} className="home-faq__item" data-reveal style={{ "--i": i % 2 } as CSSProperties}>
+              <dt>{question}</dt>
+              <dd>{answer}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="how__fine">
+          More answers are in the <a href="/docs/faq">docs</a>, and here is how Veiling{" "}
+          <a href="/compare">compares to other launchpads</a>.
+        </p>
       </section>
     </main>
   );

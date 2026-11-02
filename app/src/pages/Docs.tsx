@@ -30,6 +30,7 @@ import {
   LAUNCH_MIN_RAISE,
   LAUNCH_SALE_SUPPLY,
   LAUNCH_SUPPLY,
+  CONTENT_UPDATED,
 } from "../config";
 import { useLoader } from "../components/ui";
 import { SEASON } from "../config";
@@ -74,6 +75,16 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
         "Veiling is a launchpad on Solana that sells new tokens and NFT collections by sealed-bid auction. Buyers bid in private, and when bidding closes one final price is found that every winner pays.",
     },
     {
+      question: "What is a sealed-bid auction?",
+      answer:
+        "In a sealed-bid auction, everyone names a price without seeing anyone else's bid. When bidding closes, the bids are opened together and one price is set from them. Veiling uses the uniform-price kind: the price at which the whole supply sells, paid by every winner.",
+    },
+    {
+      question: "How is Veiling different from pump.fun?",
+      answer:
+        "On pump.fun and other bonding-curve launchpads, the price rises with every buy, so whoever buys first pays the least, usually bots and insiders. On Veiling, everyone bids in private in one round and every winner pays the same final price. The token exists only if its sale sells out, and its pool is locked forever.",
+    },
+    {
       question: "How does a sealed bid stay private?",
       answer:
         "Your price is encrypted in your browser before it leaves it. Arcium's network checks and settles the bids without anyone, Veiling included, seeing them. Only the final price is made public.",
@@ -82,6 +93,10 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
       question: "Does every winner pay the same price?",
       answer:
         "Yes. Every winner pays the final price, which is never above their own bid. Bids below it win nothing and get their whole deposit back.",
+    },
+    {
+      question: "How do I launch a token on Solana with Veiling?",
+      answer: `Connect a Solana wallet, open Launch and choose Token. Give it a name, a symbol and an image, set how much SOL you want to raise (at least ${formatSol(LAUNCH_MIN_RAISE)} SOL) and pick ${LAUNCH_HOURS.join(", ").replace(/, (\d+)$/, " or $1")} hours of bidding, then approve the sale in your wallet. It takes a few minutes.`,
     },
     {
       question: "How does a new token launch work?",
@@ -102,6 +117,11 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
       answer: `Sellers pay ${listing} and ${sale}. Each bid pays a small processing fee for the private steps that finish the sale. Deposits that are not spent come back in full.`,
     },
     {
+      question: "Is Veiling audited?",
+      answer:
+        "Not yet. Veiling's program, its Arcium circuits and this app are open source on GitHub, so anyone can check them, and an independent security audit is planned before mainnet. Until then, bid only what you can afford to lose.",
+    },
+    {
       question: "What happens if a sale gets stuck?",
       answer:
         "Nothing stays locked. If Arcium's network stops answering, anyone can return every unsettled bid's whole deposit to its owner one day after bidding ends for a new token, or three days for an NFT collection.",
@@ -112,6 +132,23 @@ export function FAQ(fees: FeeConfig | null | undefined): { question: string; ans
     },
   ];
 }
+
+/** The questions the front page answers; the rest are in the docs. */
+export const HOME_QUESTIONS = [
+  "What is Veiling?",
+  "What is a sealed-bid auction?",
+  "How is Veiling different from pump.fun?",
+  "Does every winner pay the same price?",
+  "How do I launch a token on Solana with Veiling?",
+  "Is Veiling audited?",
+];
+
+/** The front page's questions and answers. */
+export const homeFaq = () => FAQ(null).filter(({ question }) => HOME_QUESTIONS.includes(question));
+
+/** When the docs last changed, as people read it: "November 2, 2026". */
+export const updatedOn = (date: string) =>
+  new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
@@ -198,6 +235,10 @@ export function Docs({ section }: { section: string }) {
         <p className="page__lede">
           Veiling sells new tokens and NFT collections through sealed bids and a single final price. This page
           explains what happens to your bid, your deposit and your sale, and what everyone else can see.
+        </p>
+        <p className="docs__updated">
+          Updated <time dateTime={CONTENT_UPDATED}>{updatedOn(CONTENT_UPDATED)}</time>.{" "}
+          <a href="/compare">How Veiling compares to other launchpads</a>
         </p>
       </header>
       <div className="docs__layout">
@@ -754,7 +795,7 @@ export function Docs({ section }: { section: string }) {
           </Section>
 
           <Section id="faq" title="Questions">
-            <dl className="doc__list">
+            <dl className="doc__list doc__list--faq">
               {FAQ(fees.data).map(({ question, answer }) => (
                 <div key={question}>
                   <dt>{question}</dt>

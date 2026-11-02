@@ -187,6 +187,13 @@ export const SEASON: { name: string; start: number; end: number } | null = MAINN
   ? null
   : { name: "Season 0", start: Date.UTC(2026, 9, 30) / 1000, end: Date.UTC(2026, 11, 15) / 1000 };
 
+/**
+ * When the docs and the comparison page last changed in substance, shown on
+ * them and given to search engines. Change it with their content, not on
+ * every build.
+ */
+export const CONTENT_UPDATED = "2026-11-02";
+
 /** The terms a visitor agrees to before connecting a wallet; a new date asks again. */
 export const TERMS_VERSION = "2026-10-30";
 /**

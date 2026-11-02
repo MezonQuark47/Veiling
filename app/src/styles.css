@@ -6539,3 +6539,91 @@ section.verify-x {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------- Front page: questions */
+
+.home-faq {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.home-faq__item {
+  padding: 28px 32px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.home-faq dt {
+  font-size: var(--step-1);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.home-faq dd {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .home-faq {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .home-faq__item {
+    padding: 22px 20px;
+  }
+}
+
+/* ---------------------------------------------------------------- Docs and comparison: last change */
+
+.docs__updated {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* A wide table scrolls on its own on a narrow screen, never the page. */
+.table-scroll {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.table-scroll .doc__table {
+  min-width: 720px;
+}
+
+.compare__table td:nth-child(2) {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.compare__table td {
+  color: var(--muted);
+}
+
+/* Questions and answers: each question above its answer. */
+.doc__list--faq {
+  gap: 22px;
+}
+
+.doc__list--faq > div {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+/* The comparison table gets the page's full width; its text stays at reading width. */
+.compare .docs__body {
+  max-width: 1080px;
+}
+
+.compare .doc p,
+.compare .doc__list,
+.compare .doc__fine {
+  max-width: 68ch;
+}
+
+.compare > .docs__updated {
+  margin-bottom: 40px;
+}
