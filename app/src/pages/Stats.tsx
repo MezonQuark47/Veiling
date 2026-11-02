@@ -288,9 +288,10 @@ export function Stats() {
 
   if (loaded.loading && !stats) {
     return (
-      <main className="page" aria-label="Loading stats" role="status">
-        <span className="skeleton skeleton--title" />
-        <span className="skeleton skeleton--card" />
+      <main className="page stats-page">
+        <h1 className="page__title">Stats</h1>
+        <p className="page__lede">Everything that has happened on Veiling since its first sale, and who earned the most points.</p>
+        <span className="skeleton skeleton--card" role="status" aria-label="Loading stats" />
       </main>
     );
   }

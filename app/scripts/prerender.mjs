@@ -21,24 +21,12 @@ const url = (path) => (SITE ? `${SITE}${path}` : path);
 const today = new Date().toISOString().slice(0, 10);
 
 const NAME = "Veiling";
+// Titles and descriptions come from the app (src/lib/pageMeta.ts) unless a
+// page sets its own.
 const PAGES = [
-  {
-    route: "",
-    file: "index.html",
-    path: "/",
-    title: "Veiling, future of launchpads · Private bids. Public price.",
-    description:
-      "Veiling sells new tokens and NFT collections on Solana by sealed-bid auction. Bids stay private, every winner pays one final price, and a new token is made only if its sale sells out.",
-  },
-  {
-    route: "docs",
-    // "docs.html" is served at /docs; every page's address has no slash at the end.
-    file: "docs.html",
-    path: "/docs",
-    title: "How Veiling works · Sealed-bid auctions on Solana",
-    description:
-      "How Veiling's sealed-bid auctions work: bidding, the final price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
-  },
+  { route: "", file: "index.html", path: "/" },
+  // "docs.html" is served at /docs; every page's address has no slash at the end.
+  { route: "docs", file: "docs.html", path: "/docs" },
   {
     // Invite links (/invite/?ref=<X name or wallet>) open here: on X they show
     // their own card, then the app takes the visitor to Season 0.
@@ -54,57 +42,19 @@ const PAGES = [
   },
   // The app's other main pages. Each is the app at that address, so a visitor
   // sees the right page from the first moment and crawlers can read it.
-  {
-    route: "auctions",
-    file: "auctions.html",
-    path: "/auctions",
-    title: "Auctions · Veiling",
-    description: "Live, upcoming and ended sealed-bid sales of new tokens and NFT collections on Solana. Bids stay private and every winner pays one final price.",
-  },
-  {
-    route: "launch",
-    file: "launch.html",
-    path: "/launch",
-    title: "Launch a sale · Veiling",
-    description: "Launch a new token, an NFT drop or a collection on Solana by sealed-bid auction. A new token is made only if its sale sells out, with its pool locked forever.",
-  },
-  {
-    route: "stats",
-    file: "stats.html",
-    path: "/stats",
-    title: "Stats and points · Veiling",
-    description: "Everything sold on Veiling since the first sale, and the points leaderboard for bidders and launchers.",
-  },
+  { route: "auctions", file: "auctions.html", path: "/auctions" },
+  { route: "launch", file: "launch.html", path: "/launch" },
+  { route: "stats", file: "stats.html", path: "/stats" },
   {
     route: "season",
     file: "season.html",
     path: "/season",
-    title: "Season 0 · Veiling",
-    description: "Veiling's Season 0: bid in sealed-bid launches on Solana, launch your own and invite friends to earn points.",
     image: "/og-invite.png",
     imageAlt: "Veiling Season 0. Sealed-bid launches on Solana.",
   },
-  {
-    route: "terms",
-    file: "terms.html",
-    path: "/terms",
-    title: "Terms of Use · Veiling",
-    description: "The terms for using Veiling, a sealed-bid launchpad on Solana.",
-  },
-  {
-    route: "risks",
-    file: "risks.html",
-    path: "/risks",
-    title: "Risk disclosure · Veiling",
-    description: "The risks of bidding in and launching sales on Veiling, unaudited software on Solana.",
-  },
-  {
-    route: "privacy",
-    file: "privacy.html",
-    path: "/privacy",
-    title: "Privacy policy · Veiling",
-    description: "What Veiling collects, what it never collects, and what stays private in a sealed-bid sale.",
-  },
+  { route: "terms", file: "terms.html", path: "/terms" },
+  { route: "risks", file: "risks.html", path: "/risks" },
+  { route: "privacy", file: "privacy.html", path: "/privacy" },
 ];
 
 // The host answers every other address (an auction, a docs section, the
@@ -145,6 +95,11 @@ await build({
   logLevel: "error",
 });
 const ssr = await import(pathToFileURL(join(work, "prerender.mjs")).href);
+for (const page of PAGES) {
+  const meta = ssr.pageMeta(page.route);
+  page.title ??= meta.title;
+  page.description ??= meta.description;
+}
 
 // The fees come from the chain; a page without them says "…" in their place.
 const live = await Promise.race([
@@ -201,10 +156,13 @@ const rendered = {};
 for (const page of PAGES) {
   const body = ssr.render(page.route);
   rendered[page.route] = body;
+  // index.html also answers the addresses without a page of their own (an
+  // auction, a docs section), so it names no address: the app sets the right
+  // one in the browser, where search engines read it.
   const head = [
     `<link rel="canonical" href="${escape(url(page.path))}" />`,
     `<meta property="og:url" content="${escape(url(page.path))}" />`,
-  ].filter(() => SITE);
+  ].filter(() => SITE && page.route !== "");
   const html = shell
     .replace(/<title>[^<]*<\/title>/, `<title>${escape(page.title)}</title>`)
     .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${escape(page.description)}" />`)
@@ -300,6 +258,14 @@ Key facts:
 
 - [Auctions](${url("/auctions")}): live, upcoming and ended sales
 - [Launch](${url("/launch")}): open a sale of a new token, a drop or a collection
+- [Stats and points](${url("/stats")}): everything sold so far, and the points leaderboard
+- [Season 0](${url("/season")}): the points campaign on devnet, with its leaderboard and invites
+
+## Legal
+
+- [Terms of Use](${url("/terms")})
+- [Risk disclosure](${url("/risks")})
+- [Privacy policy](${url("/privacy")})
 `;
 
 await writeFile(join(dist, "llms.txt"), llms);

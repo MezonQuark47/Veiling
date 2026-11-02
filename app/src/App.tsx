@@ -1,4 +1,4 @@
-import { Component, Fragment, type ReactNode, useEffect, useState } from "react";
+import { Component, Fragment, type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 import { Header, Logo } from "./components/Header";
 import { AuctionPage } from "./pages/AuctionPage";
 import { Docs } from "./pages/Docs";
@@ -16,6 +16,7 @@ import { SeasonBar } from "./components/SeasonBar";
 import { InviteBanner } from "./components/InviteBanner";
 import { reportError } from "./lib/analytics";
 import { currentRoute, followLinks, onRouteChange } from "./lib/router";
+import { applyPageMeta } from "./lib/pageMeta";
 
 /** GitHub's mark. */
 function GitHubIcon() {
@@ -174,26 +175,9 @@ export function App({ route: fixed }: { route?: string }) {
     };
   }, [route]);
 
-  // Each page's own title, as the static pages have (scripts/prerender.mjs).
-  useEffect(() => {
-    document.title = route.startsWith("docs")
-      ? "How Veiling works · Sealed-bid auctions on Solana"
-      : route.startsWith("launch")
-        ? "Launch a sale · Veiling"
-        : route.startsWith("bids") || route.startsWith("dashboard")
-          ? "Dashboard · Veiling"
-          : route.startsWith("stats")
-            ? "Stats and points · Veiling"
-          : route.startsWith("season") || route.startsWith("invite")
-            ? `${SEASON?.name ?? "Season"} · Veiling`
-          : route === "terms" || route === "risks" || route === "privacy"
-            ? `${route === "terms" ? "Terms of Use" : route === "risks" ? "Risk disclosure" : "Privacy policy"} · Veiling`
-          : route.startsWith("auction/")
-            ? "Auction · Veiling"
-            : route.startsWith("auctions")
-              ? "Auctions · Veiling"
-            : "Veiling, future of launchpads · Private bids. Public price.";
-  }, [route]);
+  // Each page's own title, description and address, as the static pages have (scripts/prerender.mjs).
+  // Set before the page's own effects, so a page can then name itself (a sale after its token).
+  useLayoutEffect(() => applyPageMeta(route), [route]);
 
   let page;
   if (route.startsWith("auction/")) page = <AuctionPage address={route.slice("auction/".length)} />;

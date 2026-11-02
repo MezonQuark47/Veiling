@@ -12,6 +12,8 @@ import { FAQ } from "./pages/Docs";
 
 /** Veiling's profiles elsewhere, for the Organization data and llms.txt. */
 export { GITHUB_URL, PROJECT_X_URL } from "./config";
+/** Each page's title and description, the same the app sets in the browser. */
+export { pageMeta } from "./lib/pageMeta";
 
 /** Loads the platform's fees once, so the static pages show them. */
 export async function loadLiveData(): Promise<{ fees: boolean; crank: boolean }> {

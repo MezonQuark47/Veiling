@@ -117,6 +117,7 @@ import {
   verifySale,
   type Verified,
 } from "../lib/keeper";
+import { setPageTitle } from "../lib/pageMeta";
 
 // ---------------------------------------------------------------------------
 
@@ -1911,6 +1912,12 @@ function Gallery({ auction, meta, entries }: { auction: Auction; meta: Collectio
 
 // ---------------------------------------------------------------------------
 
+/** The tab and search results name the sale once its token or collection is known. */
+function SaleTitle({ title, description }: { title: string; description: string | null }) {
+  useEffect(() => setPageTitle(title, description), [title, description]);
+  return null;
+}
+
 export function AuctionPage({ address }: { address: string }) {
   const now = useNow();
   const { publicKey } = useWallet();
@@ -1999,6 +2006,10 @@ export function AuctionPage({ address }: { address: string }) {
 
   return (
     <main className="page">
+      <SaleTitle
+        title={`${asset.title} ${collection ? "NFT sale" : "token sale"} · Veiling`}
+        description={about?.description ?? null}
+      />
       <a className="back" href="/auctions">
         All auctions
       </a>

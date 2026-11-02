@@ -670,7 +670,11 @@ page without reloading it. The host serves `dist/docs.html` at `/docs`, and
 answers any address without a file of its own with `index.html`
 (`wrangler.jsonc`: `not_found_handling`), which the app then fills in with
 the right page. Older links that kept the page after a `#` (`/#/auctions`)
-open at their new address.
+open at their new address. Each page's title, description and canonical
+address come from `src/lib/pageMeta.ts`, for the static pages and in the
+browser alike: a sale's page is named after its token or collection once it
+loads, the docs' sections all point to `/docs`, and the dashboard (different
+for every wallet) is kept out of search results.
 
 `VITE_RPC_URL` overrides the public devnet RPC. It ends up in the public
 JavaScript, so an RPC key in it must be limited to the site's domain in the
