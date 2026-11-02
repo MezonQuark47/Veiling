@@ -87,6 +87,7 @@ import {
 } from "../lib/uploads";
 import { byteLength, isDisplayText, isMetadataUri } from "../lib/validate";
 import { requestConnect, useWallet } from "../lib/wallet";
+import { navigate } from "../lib/router";
 
 const DURATIONS: { label: string; secs: number }[] = [
   { label: "10 min", secs: 600 },
@@ -215,7 +216,7 @@ function BidRoom() {
       <p className="hint">
         Up to {formatCount(MAX_COLLECTION_BIDS)} bids, enough for a 10,000-NFT collection to sell out at one NFT a bid.
         If it fills up, a larger deposit can take the smallest bid's place. Details in the{" "}
-        <a href="#/docs/bidding">docs</a>.
+        <a href="/docs/bidding">docs</a>.
       </p>
     </div>
   );
@@ -762,7 +763,7 @@ function CollectionLaunch({ kind }: { kind: "drop" | "collection" }) {
         if (!fees.data) throw new Error("The platform's fees are not set up yet.");
         const auction = await launchCollection();
         track("Sale launched", { kind, allowlist: access.listed });
-        window.location.hash = `#/auction/${auction.toBase58()}`;
+        navigate(`/auction/${auction.toBase58()}`);
       })
       .finally(() => {
         setStepState("form");

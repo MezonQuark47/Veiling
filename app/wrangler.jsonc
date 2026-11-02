@@ -1,9 +1,12 @@
 // Cloudflare hosts the built site (dist) as static files: `npm run build`,
 // then `npx wrangler deploy`. public/_headers sets its security headers.
+// Addresses without a file of their own (/auction/<address>, /docs/fees)
+// are answered with index.html, and the app shows the page they name.
 {
   "name": "veiling",
   "compatibility_date": "2025-10-01",
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
   }
 }

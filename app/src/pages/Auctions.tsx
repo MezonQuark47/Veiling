@@ -38,7 +38,7 @@ function FeaturedCard({ auction, now }: { auction: Auction; now: number }) {
   const phase = phaseOf(auction, now);
   const bidding = phase === "bidding";
   return (
-    <a className="feature" href={`#/auction/${auction.address.toBase58()}`}>
+    <a className="feature" href={`/auction/${auction.address.toBase58()}`}>
       <span className="feature__top">
         <span className="tag tag--featured">Featured</span>
         <span className="feature__status">{statusText(auction, now, asset)}</span>
@@ -141,7 +141,7 @@ export function Auctions() {
                 ? "No scheduled auctions right now."
                 : "Nothing here yet."}
             </p>
-            <a className="btn btn--secondary" href="#/launch">
+            <a className="btn btn--secondary" href="/launch">
               Launch the first one
             </a>
           </div>

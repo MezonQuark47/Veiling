@@ -19,7 +19,7 @@ export function SeasonBar({ route }: { route: string }) {
   const live = now >= SEASON.start;
   return (
     <div className="season-bar">
-      <a href="#/season" className="season-bar__link">
+      <a href="/season" className="season-bar__link">
         <span className="season-bar__dot" aria-hidden="true" />
         <strong>{SEASON.name}</strong>
         <span>

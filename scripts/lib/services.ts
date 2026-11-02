@@ -348,7 +348,7 @@ export function createServices(ctx: ServiceContext) {
     return { ok: true, id: reminder.id };
   }
 
-  const saleLink = (auction: string) => `${SITE_URL}/#/auction/${auction}`;
+  const saleLink = (auction: string) => `${SITE_URL}/auction/${auction}`;
 
   async function sendEmail(r: Reminder, subject: string, text: string) {
     const unsubscribe = `${PUBLIC_URL}/unsubscribe?id=${r.id}`;

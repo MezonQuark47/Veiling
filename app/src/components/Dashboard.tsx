@@ -41,7 +41,7 @@ const KIND: Record<string, string> = { launch: "New token", token: "Token", coll
 function SaleCell({ sale, title }: { sale: SaleRef; title: string }) {
   return (
     <td>
-      <a className="row__token" href={`#/auction/${sale.auction}`}>
+      <a className="row__token" href={`/auction/${sale.auction}`}>
         <span className="row__symbol">{title}</span>
         <span className="row__name">
           {KIND[sale.kind] ?? "Sale"} · {date(sale.at)}

@@ -48,7 +48,7 @@ function Terms() {
         <p>
           These terms apply when you use Veiling: this website and the tools on it for sending transactions to the
           Veiling program on Solana ("Veiling", "we", "us"). By connecting a wallet or using the site, you agree to
-          them, to the <a href="#/risks">Risk disclosure</a> and to the <a href="#/privacy">Privacy policy</a>. If you
+          them, to the <a href="/risks">Risk disclosure</a> and to the <a href="/privacy">Privacy policy</a>. If you
           do not agree, do not use Veiling.
         </p>
       </Part>
@@ -97,7 +97,7 @@ function Terms() {
       </Part>
       <Part title="5. Fees">
         <p>
-          The fees are listed in the <a href="#/docs/fees">docs</a> and shown before you sign. Every transaction also
+          The fees are listed in the <a href="/docs/fees">docs</a> and shown before you sign. Every transaction also
           pays a small Solana network fee. Fees can change for new sales; a sale keeps the fees it opened with.
         </p>
       </Part>
@@ -226,7 +226,7 @@ function Risks() {
       ) : null}
       <Part title="Questions">
         <p>
-          The <a href="#/docs">docs</a> explain how every step works, and <a href="#/docs/safety">If something gets
+          The <a href="/docs">docs</a> explain how every step works, and <a href="/docs/safety">If something gets
           stuck</a> explains how to get your SOL back.
         </p>
         <Contact />
@@ -316,7 +316,7 @@ export function Legal({ page }: { page: LegalPage }) {
       <p className="page__lede">Last updated {updated}.</p>
       <nav className="legal__tabs" aria-label="Legal pages">
         {PAGES.map(([p, label]) => (
-          <a key={p} href={`#/${p}`} className={`legal__tab${p === page ? " legal__tab--on" : ""}`} aria-current={p === page ? "page" : undefined}>
+          <a key={p} href={`/${p}`} className={`legal__tab${p === page ? " legal__tab--on" : ""}`} aria-current={p === page ? "page" : undefined}>
             {label}
           </a>
         ))}

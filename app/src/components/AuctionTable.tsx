@@ -4,6 +4,7 @@ import { formatPrice, phaseOf, saleFailed, supplyShare } from "../lib/chain";
 import { formatCount, formatDuration, formatSol, shortAddress } from "../lib/format";
 import { fetchVerified } from "../lib/keeper";
 import { type AssetInfo, goodsAmount, useAssetInfo, useLoader } from "./ui";
+import { navigate } from "../lib/router";
 
 export function statusText(a: Auction, now: number, asset: AssetInfo): string {
   const clearing = `${formatPrice(a, a.clearingPrice, asset.decimals)}${a.launch ? " FDV" : ""}`;
@@ -55,7 +56,7 @@ export function openOnClick(href: string) {
     if ((e.target as Element).closest("a, button, input, label, summary")) return;
     if (window.getSelection()?.toString()) return;
     if (e.metaKey || e.ctrlKey || e.button === 1) window.open(href, "_blank", "noopener");
-    else window.location.hash = href;
+    else navigate(href);
   };
 }
 
@@ -64,7 +65,7 @@ function Row({ auction, now }: { auction: Auction; now: number }) {
   const phase = phaseOf(auction, now);
   const live = phase === "bidding";
   const named = auction.kind === "collection" ? asset.collection !== null : Boolean(asset.token?.symbol || asset.token?.name);
-  const href = `#/auction/${auction.address.toBase58()}`;
+  const href = `/auction/${auction.address.toBase58()}`;
   const open = openOnClick(href);
   const verified = useLoader(fetchVerified, []).data?.[auction.address.toBase58()] ?? null;
   return (

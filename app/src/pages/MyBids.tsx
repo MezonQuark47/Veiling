@@ -15,7 +15,7 @@ import { shortAddress } from "../lib/format";
 
 function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; now: number }) {
   const asset = useAssetInfo(auction);
-  const open = openOnClick(`#/auction/${auction.address.toBase58()}`);
+  const open = openOnClick(`/auction/${auction.address.toBase58()}`);
   return (
     <li
       className="mybids__auction mybids__auction--link"
@@ -24,7 +24,7 @@ function AuctionBids({ auction, bids, now }: { auction: Auction; bids: Bid[]; no
         if (e.button === 1) open(e);
       }}
     >
-      <a href={`#/auction/${auction.address.toBase58()}`} className="mybids__title">
+      <a href={`/auction/${auction.address.toBase58()}`} className="mybids__title">
         <strong>{asset.title}</strong> <span className="muted">{statusText(auction, now, asset)}</span>
       </a>
       <ul className="bidlist">
@@ -113,7 +113,7 @@ export function MyBids() {
   ) : groups.length === 0 ? (
     <div className="empty">
       <p>No open bids right now.</p>
-      <a className="btn btn--secondary" href="#/auctions">
+      <a className="btn btn--secondary" href="/auctions">
         Browse auctions
       </a>
     </div>
@@ -147,10 +147,10 @@ export function MyBids() {
             </p>
           </div>
           <div className="profile__actions">
-            <a className="btn btn--secondary" href="#/stats">
+            <a className="btn btn--secondary" href="/stats">
               Leaderboard
             </a>
-            <a className="btn btn--primary" href="#/auctions">
+            <a className="btn btn--primary" href="/auctions">
               Find a sale
             </a>
           </div>
@@ -176,7 +176,7 @@ export function MyBids() {
             <InviteCard wallet={publicKey.toBase58()} view={view} onChanged={history.reload} />
             {SEASON ? (
               <p className="muted dash__note">
-                Invites count for <a href="#/season">{SEASON.name}</a> too.
+                Invites count for <a href="/season">{SEASON.name}</a> too.
               </p>
             ) : null}
           </section>

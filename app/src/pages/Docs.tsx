@@ -180,7 +180,7 @@ export function Docs({ section }: { section: string }) {
       {DOC_SECTIONS.map(([id, title]) => (
         <li key={id}>
           <a
-            href={`#/docs/${id}`}
+            href={`/docs/${id}`}
             aria-current={active === id ? "true" : undefined}
             onClick={() => menu.current?.removeAttribute("open")}
           >
@@ -731,7 +731,7 @@ export function Docs({ section }: { section: string }) {
               comes back to you along with the steps' rewards.
             </p>
             <p>
-              The <a href="#/stats">Stats</a> page counts everything since the first sale, read from the program's
+              The <a href="/stats">Stats</a> page counts everything since the first sale, read from the program's
               transaction history, and ranks wallets by points:
             </p>
             <ul className="doc__bullets">
@@ -741,12 +741,12 @@ export function Docs({ section }: { section: string }) {
               <li>5 points for each finishing step you run;</li>
               <li>
                 25 points for each friend you invite who wins in a sale, plus 10% of the buying points they earn. Your
-                invite link is on your <a href="#/bids">dashboard</a>, and can end in your X name.
+                invite link is on your <a href="/dashboard">dashboard</a>, and can end in your X name.
               </li>
             </ul>
             {SEASON ? (
               <p>
-                <a href="#/season">{SEASON.name}</a> counts the same points for what happens during the season only,
+                <a href="/season">{SEASON.name}</a> counts the same points for what happens during the season only,
                 on its own leaderboard.
               </p>
             ) : null}

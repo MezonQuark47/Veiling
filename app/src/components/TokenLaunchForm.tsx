@@ -23,6 +23,7 @@ import { requestConnect, useWallet } from "../lib/wallet";
 import { ImagePicker, isSmallImage, useImageUrl } from "./ImagePicker";
 import { BidAccessField, MAX_DESCRIPTION_LEN, isLinkOrEmpty } from "./LaunchParts";
 import { Button, Notice, useAction, useLoader } from "./ui";
+import { navigate } from "../lib/router";
 
 /** What the creator deposits for the token's accounts and its pool; it comes back. */
 const LAUNCH_DEPOSIT = 40_000_000n;
@@ -133,7 +134,7 @@ export function TokenLaunchForm() {
         const txs = await withSaleRules(built.tx, signer.publicKey, built.auction, accessed);
         await sendTransactions(txs, signer);
         track("Sale launched", { kind: "new token", allowlist: access.listed });
-        window.location.hash = `#/auction/${built.auction.toBase58()}`;
+        navigate(`/auction/${built.auction.toBase58()}`);
       })
       .finally(() => setStep("form"));
 

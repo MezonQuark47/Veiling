@@ -83,17 +83,17 @@ export function Header({ route }: { route: string }) {
       {/* A wallet that reconnected on its own, before these terms: agree, or disconnect. */}
       {publicKey && !accepted ? <TermsGate onAccept={() => setAccepted(true)} onCancel={() => void disconnect()} cancelLabel="Disconnect" /> : null}
       <div className="topbar__inner">
-        <a href="#/" className="brand" aria-label="Veiling home">
+        <a href="/" className="brand" aria-label="Veiling home">
           <Logo />
           <span className="brand__name">Veiling</span>
         </a>
         <nav className="nav" aria-label="Main">
-          {link("#/auctions", "Auctions", (r) => r.startsWith("auction"))}
-          {link("#/launch", "Launch", (r) => r.startsWith("launch"))}
-          {link("#/stats", "Stats", (r) => r.startsWith("stats"))}
+          {link("/auctions", "Auctions", (r) => r.startsWith("auction"))}
+          {link("/launch", "Launch", (r) => r.startsWith("launch"))}
+          {link("/stats", "Stats", (r) => r.startsWith("stats"))}
           {SEASON ? (
             <a
-              href="#/season"
+              href="/season"
               className={`nav__link nav__link--season${route.startsWith("season") ? " nav__link--active" : ""}`}
               aria-current={route.startsWith("season") ? "page" : undefined}
             >
@@ -102,7 +102,7 @@ export function Header({ route }: { route: string }) {
             </a>
           ) : null}
           {/* A real path, so crawlers find the docs from every page. */}
-          {link("/docs/", "Docs", (r) => r.startsWith("docs"))}
+          {link("/docs", "Docs", (r) => r.startsWith("docs"))}
         </nav>
         <div className="topbar__end">
           {NETWORK_LABEL ? (

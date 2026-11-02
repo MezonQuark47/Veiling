@@ -47,11 +47,11 @@ export function TermsGate({ onAccept, onCancel, cancelLabel = "Cancel" }: { onAc
                   {text ?? (
                     <>
                       I have read and agree to the{" "}
-                      <a href="#/terms" target="_blank" rel="noopener">
+                      <a href="/terms" target="_blank" rel="noopener">
                         Terms of Use
                       </a>{" "}
                       and the{" "}
-                      <a href="#/risks" target="_blank" rel="noopener">
+                      <a href="/risks" target="_blank" rel="noopener">
                         Risk disclosure
                       </a>
                       , and I understand I can lose what I put in.

@@ -82,7 +82,7 @@ function Stats({ auctions, now }: { auctions: Auction[]; now: number }) {
         </div>
       ))}
       {totals ? (
-        <a className="stats__more" href="#/stats">
+        <a className="stats__more" href="/stats">
           All stats and points
         </a>
       ) : null}
@@ -132,7 +132,7 @@ function TickerItem({ auction, now, hidden }: { auction: Auction; now: number; h
   return (
     <a
       className="ticker__item"
-      href={`#/auction/${auction.address.toBase58()}`}
+      href={`/auction/${auction.address.toBase58()}`}
       tabIndex={hidden ? -1 : undefined}
       aria-hidden={hidden || undefined}
     >
@@ -258,13 +258,13 @@ export function Home() {
             whatever you did not spend comes back.
           </p>
           <div className="stage__actions">
-            <a className="btn btn--primary btn--large cta cta--primary" href="#/launch">
+            <a className="btn btn--primary btn--large cta cta--primary" href="/launch">
               Launch an auction
               <svg className="cta__arrow" viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M4 10h11M11 5.5 15.5 10 11 14.5" />
               </svg>
             </a>
-            <a className="btn btn--secondary btn--large cta cta--secondary" href="#/auctions">
+            <a className="btn btn--secondary btn--large cta cta--secondary" href="/auctions">
               <span className="cta__live" aria-hidden="true" />
               See live auctions
             </a>
@@ -294,7 +294,7 @@ export function Home() {
         <p className="how__fine">
           A new token is made only if its sale sells out, and nobody can ever make more of it after that. An NFT
           collection's NFTs are made only for the people who win them. If anything ever gets stuck, bidders can
-          take their deposits back: a day after the end for a token, three days for a collection. <a href="#/docs">Read the details</a>.
+          take their deposits back: a day after the end for a token, three days for a collection. <a href="/docs">Read the details</a>.
         </p>
       </section>
 
@@ -335,7 +335,7 @@ export function Home() {
               them.
             </p>
           </div>
-          <a className="btn btn--primary btn--large" href="#/launch">
+          <a className="btn btn--primary btn--large" href="/launch">
             Launch an auction
           </a>
         </div>

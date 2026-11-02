@@ -163,7 +163,7 @@ function YourPoints({ stats }: { stats: StatsSnapshot }) {
           No points yet for {shortAddress(wallet)}. Win a sale, launch one that sells, bid, or help finish a sale to
           earn some.
         </p>
-        <a className="btn btn--secondary" href="#/auctions">
+        <a className="btn btn--secondary" href="/auctions">
           See live sales
         </a>
       </div>
@@ -367,12 +367,12 @@ export function Stats() {
                   <li>
                     <strong>{p.perInvite} points</strong> for each friend you invite who wins in a sale, plus{" "}
                     {Math.round((p.inviteShare ?? 0) * 100)}% of the buying points they earn. Your invite link is on your{" "}
-                    <a href="#/bids">dashboard</a>.
+                    <a href="/dashboard">dashboard</a>.
                   </li>
                 ) : null}
               </ul>
               <p className="muted">
-                Points have no cash value, and the rules may change. <a href="#/terms">Terms</a>
+                Points have no cash value, and the rules may change. <a href="/terms">Terms</a>
               </p>
             </div>
           </div>
@@ -402,7 +402,7 @@ export function Stats() {
             <Leaderboard board={stats.season && seasonBoard ? stats.season.leaderboard : stats.leaderboard} />
             {stats.season && seasonBoard ? (
               <p className="muted">
-                Points earned from {seasonDates(stats.season)}. <a href="#/season">About {stats.season.name}</a>
+                Points earned from {seasonDates(stats.season)}. <a href="/season">About {stats.season.name}</a>
               </p>
             ) : null}
           </div>

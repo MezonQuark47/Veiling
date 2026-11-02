@@ -1999,7 +1999,7 @@ export function AuctionPage({ address }: { address: string }) {
 
   return (
     <main className="page">
-      <a className="back" href="#/auctions">
+      <a className="back" href="/auctions">
         All auctions
       </a>
       {about?.banner ? <img className="auction-banner" src={about.banner} alt="" referrerPolicy="no-referrer" /> : null}
@@ -2444,7 +2444,7 @@ function RemindMe({ title, auction, phase }: { title: string; auction: Auction; 
           ) : null}
           {canPush || canEmail ? (
             <span className="remind__fine">
-              Also when the sale is over. <a href="#/privacy">Privacy</a>
+              Also when the sale is over. <a href="/privacy">Privacy</a>
             </span>
           ) : null}
         </span>

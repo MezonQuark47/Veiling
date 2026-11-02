@@ -32,8 +32,9 @@ const PAGES = [
   },
   {
     route: "docs",
-    file: "docs/index.html",
-    path: "/docs/",
+    // "docs.html" is served at /docs; every page's address has no slash at the end.
+    file: "docs.html",
+    path: "/docs",
     title: "How Veiling works · Sealed-bid auctions on Solana",
     description:
       "How Veiling's sealed-bid auctions work: bidding, the final price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
@@ -51,7 +52,66 @@ const PAGES = [
     imageAlt: "You're invited to Veiling Season 0. Sealed-bid launches on Solana.",
     noindex: true,
   },
+  // The app's other main pages. Each is the app at that address, so a visitor
+  // sees the right page from the first moment and crawlers can read it.
+  {
+    route: "auctions",
+    file: "auctions.html",
+    path: "/auctions",
+    title: "Auctions · Veiling",
+    description: "Live, upcoming and ended sealed-bid sales of new tokens and NFT collections on Solana. Bids stay private and every winner pays one final price.",
+  },
+  {
+    route: "launch",
+    file: "launch.html",
+    path: "/launch",
+    title: "Launch a sale · Veiling",
+    description: "Launch a new token, an NFT drop or a collection on Solana by sealed-bid auction. A new token is made only if its sale sells out, with its pool locked forever.",
+  },
+  {
+    route: "stats",
+    file: "stats.html",
+    path: "/stats",
+    title: "Stats and points · Veiling",
+    description: "Everything sold on Veiling since the first sale, and the points leaderboard for bidders and launchers.",
+  },
+  {
+    route: "season",
+    file: "season.html",
+    path: "/season",
+    title: "Season 0 · Veiling",
+    description: "Veiling's Season 0: bid in sealed-bid launches on Solana, launch your own and invite friends to earn points.",
+    image: "/og-invite.png",
+    imageAlt: "Veiling Season 0. Sealed-bid launches on Solana.",
+  },
+  {
+    route: "terms",
+    file: "terms.html",
+    path: "/terms",
+    title: "Terms of Use · Veiling",
+    description: "The terms for using Veiling, a sealed-bid launchpad on Solana.",
+  },
+  {
+    route: "risks",
+    file: "risks.html",
+    path: "/risks",
+    title: "Risk disclosure · Veiling",
+    description: "The risks of bidding in and launching sales on Veiling, unaudited software on Solana.",
+  },
+  {
+    route: "privacy",
+    file: "privacy.html",
+    path: "/privacy",
+    title: "Privacy policy · Veiling",
+    description: "What Veiling collects, what it never collects, and what stays private in a sealed-bid sale.",
+  },
 ];
+
+// The host answers every other address (an auction, a docs section, the
+// dashboard) with index.html. A page made for another address stays hidden
+// until the app has drawn the right one, so the front page never flashes in.
+const holdUnlessAt = (route) =>
+  `<script>(function(){var p=location.pathname.replace(/^\\/+|\\/+$/g,"");if(p!==${JSON.stringify(route)}||location.hash.indexOf("#/")===0)document.getElementById("root").style.visibility="hidden"})()</script>`;
 
 // ---------------------------------------------------------------------------
 // Render the app's pages ahead of time.
@@ -157,7 +217,7 @@ for (const page of PAGES) {
     )
     .replace("</head>", page.noindex ? '<meta name="robots" content="noindex" />\n  </head>' : "</head>")
     .replace("</head>", `${[...head, ...structuredData(page).map(jsonLd)].join("\n    ")}\n  </head>`)
-    .replace('<div id="root"></div>', `<div id="root">${body}</div>`);
+    .replace('<div id="root"></div>', `<div id="root">${body}</div>\n    ${holdUnlessAt(page.route)}`);
   await mkdir(dirname(join(dist, page.file)), { recursive: true });
   await writeFile(join(dist, page.file), html);
 }
@@ -171,7 +231,7 @@ const inline = (html) =>
   decode(
     html
       .replace(/<!-- -->/g, "")
-      .replace(/<a [^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/g, (_, href, text) => `[${text}](${href.startsWith("#/docs/") ? url("/docs/") : href})`)
+      .replace(/<a [^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/g, (_, href, text) => `[${text}](${href.startsWith("/docs/") ? url("/docs") : href.startsWith("/") ? url(href) : href})`)
       .replace(/<\/?strong>/g, "**")
       .replace(/<[^>]+>/g, "")
   )
@@ -232,20 +292,20 @@ Key facts:
 
 ## Docs
 
-- [How Veiling works](${url("/docs/")}): bidding, the final price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
+- [How Veiling works](${url("/docs")}): bidding, the final price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
 - [Full docs as text](${url("/llms-full.txt")}): the same docs in one Markdown file
 - [Source code](${ssr.GITHUB_URL}): the Solana program, the Arcium circuits and the app
 
 ## App
 
-- [Auctions](${url("/#/auctions")}): live, upcoming and ended sales
-- [Launch](${url("/#/launch")}): open a sale of a new token, a drop or a collection
+- [Auctions](${url("/auctions")}): live, upcoming and ended sales
+- [Launch](${url("/launch")}): open a sale of a new token, a drop or a collection
 `;
 
 await writeFile(join(dist, "llms.txt"), llms);
 await writeFile(
   join(dist, "llms-full.txt"),
-  `# ${NAME}: how it works\n\n> ${summary}\n\nSource: ${url("/docs/")}\n\n${markdown(rendered.docs)}\n`
+  `# ${NAME}: how it works\n\n> ${summary}\n\nSource: ${url("/docs")}\n\n${markdown(rendered.docs)}\n`
 );
 
 // ---------------------------------------------------------------------------

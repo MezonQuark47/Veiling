@@ -133,7 +133,7 @@ const QUESTS = (p: StatsSnapshot["points"] | undefined): Quest[] => [
     title: "Place a sealed bid",
     reward: `+${p?.perBid ?? 5} per bid`,
     text: `Up to ${p?.bidsPerSale ?? 3} bids in each sale count. Nobody sees your price.`,
-    href: "#/auctions",
+    href: "/auctions",
     cta: "Find a sale",
     done: (v) => (v?.totals.bids ?? 0) > 0,
   },
@@ -141,7 +141,7 @@ const QUESTS = (p: StatsSnapshot["points"] | undefined): Quest[] => [
     title: "Win in a sale",
     reward: `+${p?.perSolBought ?? 100} per SOL`,
     text: "For every SOL you pay at the final price for what you win.",
-    href: "#/auctions",
+    href: "/auctions",
     cta: "Bid to win",
     done: (v) => (v?.totals.salesWon ?? 0) > 0,
   },
@@ -149,7 +149,7 @@ const QUESTS = (p: StatsSnapshot["points"] | undefined): Quest[] => [
     title: "Launch your own sale",
     reward: `+${p?.perSolRaised ?? 50} per SOL`,
     text: "For every SOL your sale raises. A test token takes a few minutes to set up.",
-    href: "#/launch",
+    href: "/launch",
     cta: "Launch a sale",
     done: (v) => (v?.totals.salesLaunched ?? 0) > 0,
   },
@@ -157,7 +157,7 @@ const QUESTS = (p: StatsSnapshot["points"] | undefined): Quest[] => [
     title: "Help finish a sale",
     reward: `+${p?.perStep ?? 5} per step`,
     text: "Press Finish the sale on an ended sale to run its last steps yourself.",
-    href: "#/auctions",
+    href: "/auctions",
     cta: "See ended sales",
     done: (v) => (v?.totals.steps ?? 0) > 0,
   },
@@ -191,7 +191,7 @@ function Podium({ board, me }: { board: WalletPoints[]; me: string | null }) {
     return (
       <div className="s0-empty">
         <p>The board is empty. The first points of {SEASON?.name} put you on top.</p>
-        <a className="btn btn--primary" href="#/auctions">
+        <a className="btn btn--primary" href="/auctions">
           Be first
         </a>
       </div>
@@ -247,7 +247,7 @@ export function Season() {
     return (
       <main className="page">
         <h1 className="page__title">Seasons</h1>
-        <Notice tone="info">There is no season running right now. Points still count on the <a href="#/stats">Stats</a> page.</Notice>
+        <Notice tone="info">There is no season running right now. Points still count on the <a href="/stats">Stats</a> page.</Notice>
       </main>
     );
   }
@@ -289,7 +289,7 @@ export function Season() {
             </>
           )}
           <div className="s0-cta">
-            <a className="btn btn--primary btn--large" href="#/auctions">
+            <a className="btn btn--primary btn--large" href="/auctions">
               Start earning
             </a>
             {wallet ? (
@@ -371,7 +371,7 @@ export function Season() {
         <section className="s0-section" aria-labelledby="s0-board">
           <div className="s0-section__head">
             <h2 id="s0-board">Leaderboard</h2>
-            <a className="s0-section__link" href="#/stats">
+            <a className="s0-section__link" href="/stats">
               Full board and all-time points →
             </a>
           </div>
@@ -419,7 +419,7 @@ export function Season() {
 
         <p className="s0-fine">
           Points are a record of who helped test Veiling: they are not a token, have no cash value and promise no reward.
-          Farming them with many wallets breaks the <a href="#/terms">terms</a>, and those points are removed.
+          Farming them with many wallets breaks the <a href="/terms">terms</a>, and those points are removed.
           {PROJECT_X_URL ? (
             <>
               {" "}

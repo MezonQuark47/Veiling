@@ -15,14 +15,7 @@ import { NetworkNotice } from "./components/NetworkNotice";
 import { SeasonBar } from "./components/SeasonBar";
 import { InviteBanner } from "./components/InviteBanner";
 import { reportError } from "./lib/analytics";
-
-function currentRoute(): string {
-  // The app's pages live in the hash (#/launch); "#/" is the front page.
-  if (window.location.hash) return window.location.hash.replace(/^#\/?/, "");
-  // Without one, the path decides: the docs also live at /docs/, a real page
-  // that search engines can read (scripts/prerender.mjs).
-  return window.location.pathname.replace(/^\/+|\/+$/g, "");
-}
+import { currentRoute, followLinks, onRouteChange } from "./lib/router";
 
 /** GitHub's mark. */
 function GitHubIcon() {
@@ -70,7 +63,7 @@ function Footer() {
     <footer className="band">
       <div className="band__inner">
         <div className="band__brand">
-          <a href="#/" className="band__name" aria-label="Veiling home">
+          <a href="/" className="band__name" aria-label="Veiling home">
             <Logo />
             Veiling
           </a>
@@ -91,21 +84,21 @@ function Footer() {
         </div>
         <nav className="band__links" aria-label="Auctions">
           <h2 className="band__heading">Auctions</h2>
-          <a href="#/auctions">Browse auctions</a>
-          <a href="#/launch">Launch an auction</a>
-          <a href="#/bids">Your dashboard</a>
-          <a href="#/stats">Stats and points</a>
-          {SEASON ? <a href="#/season">{SEASON.name}</a> : null}
+          <a href="/auctions">Browse auctions</a>
+          <a href="/launch">Launch an auction</a>
+          <a href="/bids">Your dashboard</a>
+          <a href="/stats">Stats and points</a>
+          {SEASON ? <a href="/season">{SEASON.name}</a> : null}
         </nav>
         <nav className="band__links" aria-label="Docs">
           <h2 className="band__heading">Docs</h2>
-          <a href="#/docs/how">How it works</a>
-          <a href="#/docs/fees">Fees</a>
-          <a href="#/docs/launch">Drops and collections</a>
-          <a href="#/docs/token">New tokens</a>
-          <a href="#/docs/privacy">What stays private</a>
-          <a href="#/docs/safety">If something gets stuck</a>
-          <a href="#/docs/source">Source code</a>
+          <a href="/docs/how">How it works</a>
+          <a href="/docs/fees">Fees</a>
+          <a href="/docs/launch">Drops and collections</a>
+          <a href="/docs/token">New tokens</a>
+          <a href="/docs/privacy">What stays private</a>
+          <a href="/docs/safety">If something gets stuck</a>
+          <a href="/docs/source">Source code</a>
         </nav>
         <div className="band__feature">
           <h2 className="band__heading">Get featured</h2>
@@ -118,9 +111,9 @@ function Footer() {
       <div className="band__fine">
         <p>Running on Solana with Arcium encrypted compute. Unaudited software: read the risks before you bid.</p>
         <nav className="band__legal" aria-label="Legal">
-          <a href="#/terms">Terms of Use</a>
-          <a href="#/risks">Risk disclosure</a>
-          <a href="#/privacy">Privacy policy</a>
+          <a href="/terms">Terms of Use</a>
+          <a href="/risks">Risk disclosure</a>
+          <a href="/privacy">Privacy policy</a>
         </nav>
       </div>
     </footer>
@@ -132,12 +125,17 @@ export function App({ route: fixed }: { route?: string }) {
   const [route, setRoute] = useState(() => fixed ?? currentRoute());
 
   useEffect(() => {
-    const onHash = () => {
+    // A page made ahead of time for another address waits hidden until the app shows the right one (prerender.mjs).
+    document.getElementById("root")?.style.removeProperty("visibility");
+    const stopLinks = followLinks();
+    const stopRoutes = onRouteChange(() => {
       setRoute(currentRoute());
       window.scrollTo(0, 0);
+    });
+    return () => {
+      stopLinks();
+      stopRoutes();
     };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   // Parts of a page marked data-reveal rise into view as they are scrolled to.

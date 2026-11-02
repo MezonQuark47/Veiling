@@ -195,10 +195,10 @@ up the events the program logs: `AuctionCreated`, `BidPlaced`, `BidSettled`,
 `http://localhost:8787/stats.json`; point the app at it with
 `VITE_STATS_URL`. Each wallet's own history (the sales it joined and
 launched, what it deposited, paid, won and got back) is at
-`/wallet/<address>.json`, which the app's Dashboard (`#/bids`) reads. In
+`/wallet/<address>.json`, which the app's Dashboard (`/dashboard`) reads. In
 development, `VITE_STATS_URL=/keeper/stats.json` goes through the dev server's
 proxy to a keeper on the same machine, and `?mock&as=<address>` shows the
-pages as that wallet would see them. The app's Stats page (`#/stats`) shows all-time totals,
+pages as that wallet would see them. The app's Stats page (`/stats`) shows all-time totals,
 users and SOL bought over time, and a points leaderboard:
 
 | Points | For |
@@ -212,7 +212,7 @@ users and SOL bought over time, and a points leaderboard:
 Points have no cash value; the rules are in one place (`POINTS` in
 `scripts/lib/stats.ts`) and can change. A season (Season 0 on devnet,
 `SEASON_*`) counts the same points for its own dates only, for its own
-leaderboard on the app's `#/season` page.
+leaderboard on the app's `/season` page.
 
 ### Invites, X verification and reminders
 
@@ -654,17 +654,23 @@ SITE_URL=https://your.domain npm run build   # static site in app/dist
 
 Search and AI crawlers (ChatGPT's OAI-SearchBot, Claude, Perplexity) mostly do
 not run JavaScript, so `npm run build` ends with `scripts/prerender.mjs`. It
-renders the front page and the docs into static HTML (`dist/index.html`,
-`dist/docs/index.html`, with their fees read from the chain), adds titles,
+renders the front page, the docs and the app's main pages into static HTML
+(`dist/index.html`, `dist/docs.html`, `dist/auctions.html` and so on, with
+the fees read from the chain), adds titles,
 descriptions and schema.org data (Organization, WebSite, WebApplication, and
 the docs' questions as FAQPage), and writes `robots.txt` (search, answer and
 training crawlers all allowed), `llms.txt`, `llms-full.txt` (the docs as
 Markdown) and, with `SITE_URL` set, `sitemap.xml` and canonical links. Link
-previews on X, Telegram and Discord show `public/og.png` (1200×630). The
-host must serve `dist/docs/index.html` at `/docs/`, as static hosts do. In
-the browser the app replaces the static HTML when it starts; the app reads
-its page from the hash (`#/launch`), or from the path when there is none, so
-`/docs/` opens the docs.
+previews on X, Telegram and Discord show `public/og.png` (1200×630). In the
+browser the app replaces the static HTML when it starts.
+
+Every page has its own address (`/auctions`, `/auction/<address>`,
+`/docs/fees`), read by `src/lib/router.ts`; links inside the site change the
+page without reloading it. The host serves `dist/docs.html` at `/docs`, and
+answers any address without a file of its own with `index.html`
+(`wrangler.jsonc`: `not_found_handling`), which the app then fills in with
+the right page. Older links that kept the page after a `#` (`/#/auctions`)
+open at their new address.
 
 `VITE_RPC_URL` overrides the public devnet RPC. It ends up in the public
 JavaScript, so an RPC key in it must be limited to the site's domain in the
@@ -674,7 +680,8 @@ reminders at the keeper next to it. `VITE_PLAUSIBLE_DOMAIN` turns on
 Plausible's cookie-free visit counts and `VITE_SENTRY_DSN` Sentry's error
 reports (without IP addresses; wallet addresses are cut from them).
 
-`public/_headers` sets security headers on Cloudflare Pages and Netlify (no
+The site is hosted on Cloudflare: `app/wrangler.jsonc` publishes `dist`
+with `npx wrangler deploy`. `public/_headers` sets its security headers (no
 framing by other sites, no content sniffing); on another host, set the same
 headers there. `/invite/` is prerendered with its own link preview
 (`public/og-invite.png`) and is kept out of the sitemap. `npm run dev` with `?mock` in
@@ -702,7 +709,7 @@ Dashboard. A wallet that cannot sign messages bids without a note on chain. The
 browser keeps a copy so it need not ask again, deleted once the bid is
 collected and after 30 days. A collection's metadata file and image
 are fetched without cookies or referrer, and only https images are shown. The
-Docs page (`#/docs`) explains auctions, fees and privacy for users.
+Docs page (`/docs`) explains auctions, fees and privacy for users.
 
 ### Uploading art
 

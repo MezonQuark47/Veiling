@@ -120,7 +120,7 @@ export function AccountPanel({
         <span className="account__sol">{balance.data != null ? formatSol(balance.data, 4) : "…"} SOL</span>
       </div>
 
-      <a className="account__points" href="#/stats" onClick={onNavigate}>
+      <a className="account__points" href="/stats" onClick={onNavigate}>
         <span>
           <span className="account__label">Points</span>
           <span className="account__points-value">{view ? formatCount(view.points) : "—"}</span>
@@ -146,11 +146,11 @@ export function AccountPanel({
       ) : null}
 
       <nav className="account__links">
-        <a className="account__link account__link--main" role="menuitem" href="#/bids" onClick={onNavigate}>
+        <a className="account__link account__link--main" role="menuitem" href="/dashboard" onClick={onNavigate}>
           <MenuIcon d={Icon.grid} />
           Dashboard
         </a>
-        <a className="account__link" role="menuitem" href="#/stats" onClick={onNavigate}>
+        <a className="account__link" role="menuitem" href="/stats" onClick={onNavigate}>
           <MenuIcon d={Icon.chart} />
           Stats and leaderboard
         </a>

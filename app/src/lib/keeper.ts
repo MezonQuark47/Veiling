@@ -85,9 +85,8 @@ export function captureInvite() {
     }
   }
   url.searchParams.delete("ref");
-  const path = invitePage ? "/" : url.pathname;
-  const hash = invitePage && !url.hash ? "#/season" : url.hash;
-  window.history.replaceState(null, "", `${path}${url.search}${hash}`);
+  const path = invitePage ? "/season" : url.pathname;
+  window.history.replaceState(null, "", `${path}${url.search}${url.hash}`);
 }
 
 /** The wallet an invite name (an X handle) belongs to; a wallet stays as it is. */
