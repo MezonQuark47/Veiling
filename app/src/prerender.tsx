@@ -15,7 +15,7 @@ export { GITHUB_URL, PROJECT_X_URL } from "./config";
 /** The questions the front page and the comparison page answer, and when that content last changed. */
 export { homeFaq } from "./pages/Docs";
 export { COMPARE_FAQ } from "./pages/Compare";
-export { CONTENT_UPDATED } from "./config";
+export { CONTENT_UPDATED, FOUNDER, TERMS_VERSION } from "./config";
 /** Each page's title and description, the same the app sets in the browser. */
 export { pageMeta } from "./lib/pageMeta";
 

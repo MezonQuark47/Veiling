@@ -1,4 +1,5 @@
 import { CONTENT_UPDATED, SEASON } from "../config";
+import { pageKind } from "./router";
 
 export interface PageMeta {
   title: string;
@@ -8,6 +9,9 @@ export interface PageMeta {
   /** False for pages that differ per wallet, which search engines should leave out. */
   index: boolean;
 }
+
+/** The front page's title in search results and tabs: what Veiling is, in the words people search for. */
+export const HOME_TITLE = "Veiling: Sealed-Bid Token & NFT Launchpad on Solana";
 
 const HOME =
   "Veiling sells new tokens and NFT collections on Solana by sealed-bid auction. Bids stay private, every winner pays one final price, and a new token is made only if its sale sells out.";
@@ -19,54 +23,65 @@ const HOME =
 export function pageMeta(route: string): PageMeta {
   const season = SEASON?.name ?? "Season";
   const page = (title: string, description: string, path = `/${route}`, index = true): PageMeta => ({ title, description, path, index });
-  if (route.startsWith("docs"))
-    return page(
-      "How Veiling works · Sealed-bid auctions on Solana",
-      "How Veiling's sealed-bid auctions work: bidding, the final price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
-      "/docs"
-    );
-  if (route.startsWith("launch"))
-    return page(
-      "Launch a sale · Veiling",
-      "Launch a new token, an NFT drop or a collection on Solana by sealed-bid auction. A new token is made only if its sale sells out, with its pool locked forever.",
-      "/launch"
-    );
-  if (route.startsWith("bids") || route.startsWith("dashboard"))
-    return page("Dashboard · Veiling", "Your bids, your sales and your points on Veiling.", "/dashboard", false);
-  if (route.startsWith("stats"))
-    return page(
-      "Stats and points · Veiling",
-      "Everything sold on Veiling since the first sale, and the points leaderboard for bidders and launchers.",
-      "/stats"
-    );
-  if (route.startsWith("season") || route.startsWith("invite"))
-    return page(
-      `${season} · Veiling`,
-      `Veiling's ${season}: bid in sealed-bid launches on Solana, launch your own and invite friends to earn points.`,
-      "/season"
-    );
-  if (route === "compare")
-    return page(
-      `Veiling vs pump.fun and other Solana launchpads (${CONTENT_UPDATED.slice(0, 4)}) · Veiling`,
-      "How Veiling's sealed-bid launches compare to bonding-curve launchpads like pump.fun, curated token sales and first-come NFT mints: who gets the best price, what bots can do and what happens if demand is low."
-    );
-  if (route === "terms") return page("Terms of Use · Veiling", "The terms for using Veiling, a sealed-bid launchpad on Solana.");
-  if (route === "risks")
-    return page("Risk disclosure · Veiling", "The risks of bidding in and launching sales on Veiling, unaudited software on Solana.");
-  if (route === "privacy")
-    return page("Privacy policy · Veiling", "What Veiling collects, what it never collects, and what stays private in a sealed-bid sale.");
-  if (route.startsWith("auction/"))
-    return page(
-      "Auction · Veiling",
-      "A sealed-bid sale on Veiling: bids stay private until bidding closes, then every winner pays one final price."
-    );
-  if (route.startsWith("auctions"))
-    return page(
-      "Auctions · Veiling",
-      "Live, upcoming and ended sealed-bid sales of new tokens and NFT collections on Solana. Bids stay private and every winner pays one final price.",
-      "/auctions"
-    );
-  return page("Veiling, future of launchpads · Private bids. Public price.", HOME, "/");
+  switch (pageKind(route)) {
+    case "docs":
+      return page(
+        "How Veiling works · Sealed-bid auctions on Solana",
+        "How Veiling's sealed-bid auctions work: bidding, the final price, new token launches with a locked Meteora pool, NFT drops and collections, fees, privacy and refunds.",
+        "/docs"
+      );
+    case "launch":
+      return page(
+        "Launch a sale · Veiling",
+        "Launch a new token, an NFT drop or a collection on Solana by sealed-bid auction. A new token is made only if its sale sells out, with its pool locked forever.",
+        "/launch"
+      );
+    case "dashboard":
+      return page("Dashboard · Veiling", "Your bids, your sales and your points on Veiling.", "/dashboard", false);
+    case "stats":
+      return page(
+        "Stats and points · Veiling",
+        "Everything sold on Veiling since the first sale, and the points leaderboard for bidders and launchers.",
+        "/stats"
+      );
+    case "season":
+      return page(
+        `${season} · Veiling`,
+        `Veiling's ${season}: bid in sealed-bid launches on Solana, launch your own and invite friends to earn points.`,
+        "/season"
+      );
+    case "compare":
+      return page(
+        `Veiling vs pump.fun and other Solana launchpads (${CONTENT_UPDATED.slice(0, 4)}) · Veiling`,
+        "How Veiling's sealed-bid launches compare to bonding-curve launchpads like pump.fun, curated token sales and first-come NFT mints: who gets the best price, what bots can do and what happens if demand is low."
+      );
+    case "about":
+      return page(
+        "About Veiling · Who builds the sealed-bid launchpad on Solana",
+        "Who builds Veiling, why it exists, and how it is kept honest: open source code, on-chain rules and a security audit planned before mainnet."
+      );
+    case "terms":
+      return page("Terms of Use · Veiling", "The terms for using Veiling, a sealed-bid launchpad on Solana.");
+    case "risks":
+      return page("Risk disclosure · Veiling", "The risks of bidding in and launching sales on Veiling, unaudited software on Solana.");
+    case "privacy":
+      return page("Privacy policy · Veiling", "What Veiling collects, what it never collects, and what stays private in a sealed-bid sale.");
+    case "auction":
+      return page(
+        "Auction · Veiling",
+        "A sealed-bid sale on Veiling: bids stay private until bidding closes, then every winner pays one final price."
+      );
+    case "auctions":
+      return page(
+        "Auctions · Veiling",
+        "Live, upcoming and ended sealed-bid sales of new tokens and NFT collections on Solana. Bids stay private and every winner pays one final price.",
+        "/auctions"
+      );
+    case "notfound":
+      return page("Page not found · Veiling", "There is no page at this address.", `/${route}`, false);
+    default:
+      return page(HOME_TITLE, HOME, "/");
+  }
 }
 
 /** Sets a tag in the page's head, adding it when it is missing. */

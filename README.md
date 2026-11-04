@@ -659,7 +659,7 @@ renders the front page, the docs and the app's main pages into static HTML
 the fees read from the chain), adds titles, descriptions and schema.org data
 (Organization, WebSite and WebApplication; the docs as a TechArticle and the
 comparison page `/compare` as an Article, both dated `CONTENT_UPDATED` in
-`config.ts`; the questions answered on the front page, in the docs and on
+`config.ts`; `/about` as an AboutPage with its founder from `FOUNDER`; the questions answered on the front page, in the docs and on
 `/compare` as FAQPage), and writes `robots.txt` (search, answer and training
 crawlers all allowed), `llms.txt`, `llms-full.txt` (the docs and the
 comparison as Markdown) and, with `SITE_URL` set, `sitemap.xml` and canonical
@@ -671,9 +671,9 @@ browser the app replaces the static HTML when it starts.
 Every page has its own address (`/auctions`, `/auction/<address>`,
 `/docs/fees`), read by `src/lib/router.ts`; links inside the site change the
 page without reloading it. The host serves `dist/docs.html` at `/docs`, and
-answers any address without a file of its own with `index.html`
-(`wrangler.jsonc`: `not_found_handling`), which the app then fills in with
-the right page. Older links that kept the page after a `#` (`/#/auctions`)
+answers any other page's address with `index.html` (`wrangler.jsonc`:
+`not_found_handling`), which the app then fills in with the right page; an
+address that is no page gets "Page not found". Older links that kept the page after a `#` (`/#/auctions`)
 open at their new address. Each page's title, description and canonical
 address come from `src/lib/pageMeta.ts`, for the static pages and in the
 browser alike: a sale's page is named after its token or collection once it
@@ -689,9 +689,15 @@ Plausible's cookie-free visit counts and `VITE_SENTRY_DSN` Sentry's error
 reports (without IP addresses; wallet addresses are cut from them).
 
 The site is hosted on Cloudflare: `app/wrangler.jsonc` publishes `dist`
-with `npx wrangler deploy`. `public/_headers` sets its security headers (no
-framing by other sites, no content sniffing); on another host, set the same
-headers there. `/invite/` is prerendered with its own link preview
+with `npx wrangler deploy`, behind a small worker (`app/worker/index.ts`).
+The worker answers addresses that are no page of the site
+(`src/lib/router.ts`, `pageKind`) with "404 Not Found", and gives each sale's
+page its own title, description and link preview (the token's or
+collection's name, image and description, and when bidding ends), read from
+the chain and kept for five minutes; everything else is served from `dist`
+as it is. `public/_headers` sets the security headers (no framing by other
+sites, no content sniffing) and lets browsers keep the hashed files under
+`/assets` for a year; on another host, set the same headers there. `/invite/` is prerendered with its own link preview
 (`public/og-invite.png`) and is kept out of the sitemap. `npm run dev` with `?mock` in
 the URL shows sample data for design work (`?mock&nofeature` shows the front
 page without a featured auction); production builds drop it.

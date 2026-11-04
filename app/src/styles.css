@@ -6627,3 +6627,47 @@ section.verify-x {
 .compare > .docs__updated {
   margin-bottom: 40px;
 }
+
+/* ---------------------------------------------------------------- About: the founder */
+
+.about__person {
+  display: grid;
+  gap: 12px;
+  padding: 24px 28px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.legal__body .about__name {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--step-1);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.about__role {
+  font-family: inherit;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.about__links {
+  display: flex;
+  gap: 16px;
+}
+
+/* ---------------------------------------------------------------- Page not found */
+
+.notfound__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.about > .page__lede {
+  margin-bottom: 40px;
+}

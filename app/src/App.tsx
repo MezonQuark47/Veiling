@@ -10,13 +10,14 @@ import { Stats } from "./pages/Stats";
 import { Legal } from "./pages/Legal";
 import { Season } from "./pages/Season";
 import { Compare } from "./pages/Compare";
+import { About } from "./pages/About";
 import { FEATURE_CONTACT, GITHUB_URL, PROJECT_X_URL, SEASON } from "./config";
 import { Toaster } from "./components/ui";
 import { NetworkNotice } from "./components/NetworkNotice";
 import { SeasonBar } from "./components/SeasonBar";
 import { InviteBanner } from "./components/InviteBanner";
 import { reportError } from "./lib/analytics";
-import { currentRoute, followLinks, onRouteChange } from "./lib/router";
+import { currentRoute, followLinks, onRouteChange, pageKind } from "./lib/router";
 import { applyPageMeta } from "./lib/pageMeta";
 
 /** GitHub's mark. */
@@ -58,6 +59,27 @@ class PageBoundary extends Component<{ children: ReactNode }, { broken: boolean 
       </main>
     );
   }
+}
+
+/** An address that is no page of the site; the host answers it with "404 Not Found" too. */
+function NotFound() {
+  return (
+    <main className="page notfound">
+      <h1 className="page__title">Page not found</h1>
+      <p className="page__lede">There is no page at this address. It may have moved, or the link may be mistyped.</p>
+      <div className="notfound__links">
+        <a className="btn btn--primary" href="/">
+          Go to the front page
+        </a>
+        <a className="btn btn--secondary" href="/auctions">
+          See live auctions
+        </a>
+        <a className="btn btn--secondary" href="/docs">
+          Read the docs
+        </a>
+      </div>
+    </main>
+  );
 }
 
 function Footer() {
@@ -102,6 +124,7 @@ function Footer() {
           <a href="/docs/safety">If something gets stuck</a>
           <a href="/docs/source">Source code</a>
           <a href="/compare">Veiling vs other launchpads</a>
+          <a href="/about">About Veiling</a>
         </nav>
         <div className="band__feature">
           <h2 className="band__heading">Get featured</h2>
@@ -181,16 +204,19 @@ export function App({ route: fixed }: { route?: string }) {
   // Set before the page's own effects, so a page can then name itself (a sale after its token).
   useLayoutEffect(() => applyPageMeta(route), [route]);
 
+  const kind = pageKind(route);
   let page;
-  if (route.startsWith("auction/")) page = <AuctionPage address={route.slice("auction/".length)} />;
-  else if (route.startsWith("auctions")) page = <Auctions />;
-  else if (route.startsWith("launch")) page = <Launch />;
-  else if (route.startsWith("bids") || route.startsWith("dashboard")) page = <MyBids />;
-  else if (route.startsWith("stats")) page = <Stats />;
-  else if (route.startsWith("season") || route.startsWith("invite")) page = <Season />;
-  else if (route === "terms" || route === "risks" || route === "privacy") page = <Legal page={route} />;
-  else if (route.startsWith("docs")) page = <Docs section={route.slice("docs/".length)} />;
-  else if (route === "compare") page = <Compare />;
+  if (kind === "auction") page = <AuctionPage address={route.slice("auction/".length)} />;
+  else if (kind === "auctions") page = <Auctions />;
+  else if (kind === "launch") page = <Launch />;
+  else if (kind === "dashboard") page = <MyBids />;
+  else if (kind === "stats") page = <Stats />;
+  else if (kind === "season") page = <Season />;
+  else if (kind === "terms" || kind === "risks" || kind === "privacy") page = <Legal page={kind} />;
+  else if (kind === "docs") page = <Docs section={route.slice("docs/".length)} />;
+  else if (kind === "compare") page = <Compare />;
+  else if (kind === "about") page = <About />;
+  else if (kind === "notfound") page = <NotFound />;
   else page = <Home />;
 
   return (

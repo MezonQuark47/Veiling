@@ -172,6 +172,18 @@ export const FEATURE_CONTACT = { label: `@${PROJECT_X_HANDLE}`, href: `https://x
 export const GITHUB_URL = "https://github.com/MezonQuark47/Veiling";
 
 /**
+ * Who builds Veiling, shown on the About page and given to search engines.
+ * Links left null are not shown.
+ */
+export const FOUNDER: { name: string; role: string; location: string | null; x: string | null; linkedin: string | null } = {
+  name: "Berk",
+  role: "Founder",
+  location: "Ankara, Turkey",
+  x: "https://x.com/mezonquark47",
+  linkedin: null,
+};
+
+/**
  * The keeper's address, where it takes invites, X checks and reminders: the
  * folder of STATS_URL (e.g. https://stats.your-domain.com). Null without one, and
  * those features then stay hidden.
@@ -192,7 +204,7 @@ export const SEASON: { name: string; start: number; end: number } | null = MAINN
  * them and given to search engines. Change it with their content, not on
  * every build.
  */
-export const CONTENT_UPDATED = "2026-11-02";
+export const CONTENT_UPDATED = "2026-11-04";
 
 /** The terms a visitor agrees to before connecting a wallet; a new date asks again. */
 export const TERMS_VERSION = "2026-10-30";

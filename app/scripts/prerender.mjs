@@ -18,7 +18,6 @@ const dist = join(app, "dist");
 const work = join(app, "dist-ssr");
 const SITE = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
 const url = (path) => (SITE ? `${SITE}${path}` : path);
-const today = new Date().toISOString().slice(0, 10);
 
 const NAME = "Veiling";
 // Titles and descriptions come from the app (src/lib/pageMeta.ts) unless a
@@ -53,9 +52,10 @@ const PAGES = [
     imageAlt: "Veiling Season 0. Sealed-bid launches on Solana.",
   },
   { route: "compare", file: "compare.html", path: "/compare" },
-  { route: "terms", file: "terms.html", path: "/terms" },
-  { route: "risks", file: "risks.html", path: "/risks" },
-  { route: "privacy", file: "privacy.html", path: "/privacy" },
+  { route: "about", file: "about.html", path: "/about" },
+  { route: "terms", file: "terms.html", path: "/terms", legal: true },
+  { route: "risks", file: "risks.html", path: "/risks", legal: true },
+  { route: "privacy", file: "privacy.html", path: "/privacy", legal: true },
 ];
 
 // The host answers every other address (an auction, a docs section, the
@@ -100,6 +100,9 @@ for (const page of PAGES) {
   const meta = ssr.pageMeta(page.route);
   page.title ??= meta.title;
   page.description ??= meta.description;
+  // When the page last changed, for the sitemap: the legal pages with the
+  // terms, everything else with the site's content.
+  page.updated = page.legal ? ssr.TERMS_VERSION : ssr.CONTENT_UPDATED;
 }
 
 // The fees come from the chain; a page without them says "…" in their place.
@@ -123,11 +126,20 @@ const faqPage = (items) => ({
   })),
 });
 
+const founder = () => ({
+  "@type": "Person",
+  name: ssr.FOUNDER.name,
+  jobTitle: ssr.FOUNDER.role,
+  ...(ssr.FOUNDER.location ? { homeLocation: { "@type": "Place", name: ssr.FOUNDER.location } } : {}),
+  sameAs: [ssr.FOUNDER.x, ssr.FOUNDER.linkedin].filter(Boolean),
+});
+
 const organization = () => ({
   "@context": "https://schema.org",
   "@type": "Organization",
   name: NAME,
   ...(SITE ? { url: url("/"), logo: url("/favicon.svg") } : {}),
+  founder: founder(),
   sameAs: [ssr.GITHUB_URL, ssr.PROJECT_X_URL].filter(Boolean),
 });
 
@@ -146,6 +158,18 @@ const article = (type, page) => ({
 function structuredData(page) {
   if (page.route === "docs") return [article("TechArticle", page), faqPage(faq)];
   if (page.route === "compare") return [article("Article", page), faqPage(ssr.COMPARE_FAQ)];
+  if (page.route === "about") {
+    return [
+      {
+        "@context": "https://schema.org",
+        "@type": "AboutPage",
+        name: page.title,
+        description: page.description,
+        ...(SITE ? { url: url(page.path) } : {}),
+        about: organization(),
+      },
+    ];
+  }
   const site = SITE ? { url: url("/") } : {};
   const data = [
     organization(),
@@ -267,6 +291,7 @@ Key facts:
 ## Docs
 
 - [How Veiling works](${url("/docs")}): bidding, the final price, new tokens and their pool, drops and collections, fees, privacy, refunds and FAQ
+- [About Veiling](${url("/about")}): who builds Veiling, open source code and the security audit plan
 - [Veiling vs other launchpads](${url("/compare")}): how sealed-bid launches compare to bonding curves like pump.fun, curated sales and NFT mints
 - [Full docs as text](${url("/llms-full.txt")}): the same docs and the comparison in one Markdown file
 - [Source code](${ssr.GITHUB_URL}): the Solana program, the Arcium circuits and the app
@@ -313,7 +338,7 @@ await writeFile(join(dist, "robots.txt"), robots);
 if (SITE) {
   const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${PAGES.filter((p) => !p.noindex).map((p) => `  <url><loc>${escape(url(p.path))}</loc><lastmod>${today}</lastmod></url>`).join("\n")}
+${PAGES.filter((p) => !p.noindex).map((p) => `  <url><loc>${escape(url(p.path))}</loc><lastmod>${p.updated}</lastmod></url>`).join("\n")}
 </urlset>
 `;
   await writeFile(join(dist, "sitemap.xml"), sitemap);

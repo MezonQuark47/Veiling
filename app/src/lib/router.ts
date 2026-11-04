@@ -11,6 +11,59 @@ export const routeOf = (path: string) => path.replace(/^\/+|\/+$/g, "");
 
 export const currentRoute = () => routeOf(window.location.pathname);
 
+export type PageKind =
+  | "home"
+  | "auctions"
+  | "auction"
+  | "launch"
+  | "dashboard"
+  | "stats"
+  | "season"
+  | "docs"
+  | "compare"
+  | "about"
+  | "terms"
+  | "risks"
+  | "privacy"
+  | "notfound";
+
+/** A Solana address: 32 to 44 base58 characters. */
+export const SALE_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * Which page a route is; anything else is "notfound". The app and the
+ * host's worker (worker/index.ts) both use it, so an unknown address is a
+ * real "not found" for search engines too.
+ */
+export function pageKind(route: string): PageKind {
+  const [first, ...rest] = route.split("/");
+  const more = rest.join("/");
+  if (first === "auction") return SALE_ADDRESS.test(more) ? "auction" : "notfound";
+  if (first === "docs") return more === "" || /^[a-z-]+$/.test(more) ? "docs" : "notfound";
+  if (more !== "") return "notfound";
+  switch (first) {
+    case "":
+      return "home";
+    case "auctions":
+    case "launch":
+    case "stats":
+    case "compare":
+    case "about":
+    case "terms":
+    case "risks":
+    case "privacy":
+      return first;
+    case "bids":
+    case "dashboard":
+      return "dashboard";
+    case "season":
+    case "invite":
+      return "season";
+    default:
+      return "notfound";
+  }
+}
+
 /** Opens a page of the site, keeping it in the browser's history. */
 export function navigate(path: string, { replace = false } = {}) {
   if (replace) window.history.replaceState(null, "", path);

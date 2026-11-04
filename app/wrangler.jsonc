@@ -1,12 +1,25 @@
-// Cloudflare hosts the built site (dist) as static files: `npm run build`,
-// then `npx wrangler deploy`. public/_headers sets its security headers.
-// Addresses without a file of their own (/auction/<address>, /docs/fees)
-// are answered with index.html, and the app shows the page they name.
+// Cloudflare hosts the built site (dist): `npm run build`, then
+// `npx wrangler deploy`. public/_headers sets its security headers.
+//
+// worker/index.ts runs in front of the pages (not the files under /assets):
+// it answers unknown addresses with "404 Not Found", and gives each sale's
+// page (/auction/<address>) its own title and link preview, read from the
+// chain. Every other page comes from dist as it is, and addresses without a
+// file of their own (/docs/fees) get index.html, which shows the right page.
 {
   "name": "veiling",
+  "main": "worker/index.ts",
   "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // The app's code reads Vite's build settings; in the worker they are empty,
+  // so it uses its defaults (the public RPC).
+  "define": {
+    "import.meta.env": "{}"
+  },
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/*", "!/assets/*"]
   }
 }

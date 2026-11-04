@@ -48,3 +48,7 @@ Thumbs.db
 # Keeper bot: its settings (API keys) and local state
 keeper.env
 keeper-data/
+
+# Cloudflare worker secrets for local runs (wrangler dev)
+.dev.vars
+.wrangler/
