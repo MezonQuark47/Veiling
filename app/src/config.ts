@@ -176,11 +176,11 @@ export const GITHUB_URL = "https://github.com/MezonQuark47/Veiling";
  * Links left null are not shown.
  */
 export const FOUNDER: { name: string; role: string; location: string | null; x: string | null; linkedin: string | null } = {
-  name: "Berk",
+  name: "Burak Eren",
   role: "Founder",
   location: "Ankara, Turkey",
   x: "https://x.com/mezonquark47",
-  linkedin: null,
+  linkedin: "https://www.linkedin.com/in/burak-eren-y%C4%B1ld%C4%B1z/",
 };
 
 /**
